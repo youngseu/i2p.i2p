@@ -25,7 +25,6 @@ import net.i2p.util.SecureDirectory;
 class SSLUtil {
 
     private static final String PROP_KEYSTORE_PASSWORD = "sam.keystorePassword";
-    private static final String DEFAULT_KEYSTORE_PASSWORD = "changeit";
     private static final String PROP_KEY_PASSWORD = "sam.keyPassword";
     private static final String PROP_KEY_ALIAS = "sam.keyAlias";
     private static final String ASCII_KEYFILE_SUFFIX = ".local.crt";
@@ -89,21 +88,20 @@ class SSLUtil {
     private static boolean createKeyStore(File ks, String name, Properties opts) {
         // make a random 48 character password (30 * 8 / 5)
         String keyPassword = KeyStoreUtil.randomString();
-        // and one for the cname
-        String cname = name + ".sam.i2p.net";
+        String cname = "localhost";
 
         String keyName = opts.getProperty(PROP_KEY_ALIAS);
         boolean success = KeyStoreUtil.createKeys(ks, keyName, cname, "SAM", keyPassword);
         if (success) {
             success = ks.exists();
             if (success) {
-                opts.setProperty(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+                opts.setProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
                 opts.setProperty(PROP_KEY_PASSWORD, keyPassword);
             }
         }
         if (success) {
             logAlways("Created self-signed certificate for " + cname + " in keystore: " + ks.getAbsolutePath() + "\n" +
-                           "The certificate name was generated randomly, and is not associated with your " +
+                           "The certificate was generated randomly, and is not associated with your " +
                            "IP address, host name, router identity, or destination keys.");
         } else {
             error("Failed to create SAM SSL keystore.\n" +
@@ -124,7 +122,7 @@ class SSLUtil {
         File sdir = new SecureDirectory(I2PAppContext.getGlobalContext().getConfigDir(), CERT_DIR);
         if (sdir.exists() || sdir.mkdirs()) {
             String keyAlias = opts.getProperty(PROP_KEY_ALIAS);
-            String ksPass = opts.getProperty(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+            String ksPass = opts.getProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
             File out = new File(sdir, PREFIX + name + ASCII_KEYFILE_SUFFIX);
             boolean success = KeyStoreUtil.exportCert(ks, ksPass, keyAlias, out);
             if (!success)
@@ -142,7 +140,7 @@ class SSLUtil {
      * @return factory, throws on all errors
      */
     public static SSLServerSocketFactory initializeFactory(Properties opts) throws IOException {
-        String ksPass = opts.getProperty(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+        String ksPass = opts.getProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
         String keyPass = opts.getProperty(PROP_KEY_PASSWORD);
         if (keyPass == null) {
             throw new IOException("No key password, set " + PROP_KEY_PASSWORD + " in " +
@@ -165,6 +163,7 @@ class SSLUtil {
             KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
             fis = new FileInputStream(ks);
             keyStore.load(fis, ksPass.toCharArray());
+            KeyStoreUtil.logCertExpiration(keyStore, ks.getAbsolutePath(), 180*24*60*60*1000L);
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(keyStore, keyPass.toCharArray());
             sslc.init(kmf.getKeyManagers(), null, I2PAppContext.getGlobalContext().random());

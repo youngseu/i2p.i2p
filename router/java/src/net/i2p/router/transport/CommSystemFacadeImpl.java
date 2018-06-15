@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.SortedMap;
 import java.util.Vector;
 
@@ -164,7 +165,15 @@ public class CommSystemFacadeImpl extends CommSystemFacade {
     public boolean isEstablished(Hash peer) { 
         return _manager.isEstablished(peer); 
     }
-    
+
+    /**
+     *  @return a new set, may be modified
+     *  @since 0.9.34
+     */    
+    public Set<Hash> getEstablished() {
+        return _manager.getEstablished();
+    }
+
     @Override
     public boolean wasUnreachable(Hash peer) { 
         return _manager.wasUnreachable(peer); 
@@ -618,8 +627,18 @@ public class CommSystemFacadeImpl extends CommSystemFacade {
         public void timeReached() {
              boolean good = Addresses.isConnected();
              if (_netMonitorStatus != good) {
+                 if (good)
+                     _log.logAlways(Log.INFO, "Network reconnected");
+                 else
+                     _log.error("Network disconnected");
                  _context.router().eventLog().addEvent(EventLog.NETWORK, good ? "connected" : "disconnected");
                  _netMonitorStatus = good;
+                 if (good) {
+                     // Check local addresses
+                     _manager.initializeAddress();
+                     // fire UPnP
+                     _manager.transportAddressChanged();
+                 }
              }
              reschedule(good ? LONG_DELAY : SHORT_DELAY);
         }

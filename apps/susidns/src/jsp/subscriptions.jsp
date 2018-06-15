@@ -32,6 +32,7 @@
     response.setHeader("X-XSS-Protection", "1; mode=block");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("Accept-Ranges", "none");
 
 %>
 <%@page pageEncoding="UTF-8"%>
@@ -55,10 +56,10 @@
 </div><hr>
 <div id="navi">
 <a id="overview" href="index"><%=intl._t("Overview")%></a>&nbsp;
-<a class="abook" href="addressbook?book=private"><%=intl._t("Private")%></a>&nbsp;
-<a class="abook" href="addressbook?book=master"><%=intl._t("Master")%></a>&nbsp;
-<a class="abook" href="addressbook?book=router"><%=intl._t("Router")%></a>&nbsp;
-<a class="abook" href="addressbook?book=published"><%=intl._t("Published")%></a>&nbsp;
+<a class="abook" href="addressbook?book=private&amp;filter=none"><%=intl._t("Private")%></a>&nbsp;
+<a class="abook" href="addressbook?book=master&amp;filter=none"><%=intl._t("Master")%></a>&nbsp;
+<a class="abook" href="addressbook?book=router&amp;filter=none"><%=intl._t("Router")%></a>&nbsp;
+<a class="abook" href="addressbook?book=published&amp;filter=none"><%=intl._t("Published")%></a>&nbsp;
 <a id="subs" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
 <a id="config" href="config"><%=intl._t("Configuration")%></a>
 </div>

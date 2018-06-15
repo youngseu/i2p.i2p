@@ -31,9 +31,11 @@ import net.i2p.i2ptunnel.I2PTunnelServer;
 import net.i2p.i2ptunnel.TunnelController;
 import net.i2p.i2ptunnel.TunnelControllerGroup;
 import net.i2p.i2ptunnel.ui.GeneralHelper;
+import net.i2p.i2ptunnel.ui.Messages;
 import net.i2p.i2ptunnel.ui.TunnelConfig;
 import net.i2p.util.Addresses;
 import net.i2p.util.Log;
+import net.i2p.util.UIMessages;
 
 /**
  * Simple accessor for exposing tunnel info, but also an ugly form handler
@@ -54,6 +56,7 @@ public class IndexBean {
     //private long _prevNonce2;
     private String _curNonce;
     //private long _nextNonce;
+    private int _msgID = -1;
 
     private final TunnelConfig _config;
     private boolean _removeConfirmed;
@@ -72,6 +75,7 @@ public class IndexBean {
     private static final int MAX_NONCES = 8;
     /** store nonces in a static FIFO instead of in System Properties @since 0.8.1 */
     private static final List<String> _nonces = new ArrayList<String>(MAX_NONCES + 1);
+    private static final UIMessages _messages = new UIMessages(100);
 
     public static final String PROP_THEME_NAME = "routerconsole.theme";
     public static final String DEFAULT_THEME = "light";
@@ -130,8 +134,11 @@ public class IndexBean {
         }
     }
 
-    /** do we know this nonce? @since 0.8.1 */
-    private static boolean haveNonce(String nonce) {
+    /**
+      * do we know this nonce?
+      * @since 0.8.1 public since 0.9.35
+      */
+    public static boolean haveNonce(String nonce) {
         synchronized (_nonces) {
             return _nonces.contains(nonce);
         }
@@ -150,7 +157,18 @@ public class IndexBean {
             _tunnel = -1;
         }
     }
+
+    /** @since 0.9.33 */
+    public void setMsgid(String id) {
+        if (id == null) return;
+        try {
+            _msgID = Integer.parseInt(id);
+        } catch (NumberFormatException nfe) {
+            _msgID = -1;
+        }
+    }
     
+    /** @return non-null */
     private String processAction() {
         if ( (_action == null) || (_action.trim().length() <= 0) || ("Cancel".equals(_action)))
             return "";
@@ -162,32 +180,43 @@ public class IndexBean {
             return _t("Invalid form submission, probably because you used the 'back' or 'reload' button on your browser. Please resubmit.")
                    + ' ' +
                    _t("If the problem persists, verify that you have cookies enabled in your browser.");
-        if ("Stop all".equals(_action)) 
-            return stopAll();
-        else if ("Start all".equals(_action))
-            return startAll();
-        else if ("Restart all".equals(_action))
-            return restartAll();
-        else if ("Reload configuration".equals(_action))
+        // for any of these that call getMessage(msgs),
+        // we return "", as getMessage() will add them to the returned string.
+        if ("Stop all".equals(_action)) {
+            stopAll();
+            return "";
+        } else if ("Start all".equals(_action)) {
+            startAll();
+            return "";
+        } else if ("Restart all".equals(_action)) {
+            restartAll();
+            return "";
+        } else if ("Reload configuration".equals(_action)) {
             return reloadConfig();
-        else if ("stop".equals(_action))
+        } else if ("stop".equals(_action)) {
             return stop();
-        else if ("start".equals(_action))
+        } else if ("start".equals(_action)) {
             return start();
-        else if ("Save changes".equals(_action) || // IE workaround:
-                (_action.toLowerCase(Locale.US).indexOf("s</span>ave") >= 0))
-            return saveChanges();
-        else if ("Delete this proxy".equals(_action) || // IE workaround:
-                (_action.toLowerCase(Locale.US).indexOf("d</span>elete") >= 0))
-            return deleteTunnel();
-        else if ("Estimate".equals(_action))
+        } else if ("Save changes".equals(_action) || // IE workaround:
+                (_action.toLowerCase(Locale.US).indexOf("s</span>ave") >= 0)) {
+            saveChanges();
+            return "";
+        } else if ("Delete this proxy".equals(_action) || // IE workaround:
+                (_action.toLowerCase(Locale.US).indexOf("d</span>elete") >= 0)) {
+            deleteTunnel();
+            return "";
+        } else if ("Estimate".equals(_action)) {
             return PrivateKeyFile.estimateHashCashTime(_hashCashValue);
-        else if ("Modify".equals(_action))
+        } else if ("Modify".equals(_action)) {
             return modifyDestination();
-        else if ("Generate".equals(_action))
+        } else if ("Generate".equals(_action)) {
             return generateNewEncryptionKey();
-        else
+        } else if ("Clear".equals(_action)) {
+            _messages.clearThrough(_msgID);
+            return "";
+        } else {
             return "Action " + _action + " unknown";
+        }
     }
 
     private String stopAll() {
@@ -238,6 +267,11 @@ public class IndexBean {
         return _t("Stopping tunnel") + ' ' + getTunnelName(_tunnel) + "...";
     }
     
+    /**
+     * Only call this ONCE! Or you will get duplicate tunnels on save.
+     *
+     * @return not HTML escaped, or "" if empty
+     */
     private String saveChanges() {
         // FIXME name will be HTML escaped twice
         return getMessages(_helper.saveTunnel(_tunnel, _config));
@@ -258,7 +292,9 @@ public class IndexBean {
      * Executes any action requested (start/stop/etc) and dump out the 
      * messages.
      *
-     * @return HTML escaped
+     * Only call this ONCE! Or you will get duplicate tunnels on save.
+     *
+     * @return HTML escaped or "" if empty
      */
     public String getMessages() {
         if (_group == null)
@@ -267,14 +303,31 @@ public class IndexBean {
         StringBuilder buf = new StringBuilder(512);
         if (_action != null) {
             try {
-                buf.append(processAction()).append('\n');
+                String result = processAction();
+                if (result.length() > 0)
+                    buf.append(result).append('\n');
             } catch (RuntimeException e) {
                 _log.log(Log.CRIT, "Error processing " + _action, e);
                 buf.append("Error: ").append(e.toString()).append('\n');
             }
         }
+        List<UIMessages.Message> msgs = _messages.getMessages();
+        if (!msgs.isEmpty()) {
+            for (UIMessages.Message msg : msgs) {
+                buf.append(msg.message).append('\n');
+            }
+        }
         getMessages(_group.clearAllMessages(), buf);
         return DataHelper.escapeHTML(buf.toString());
+    }
+    
+    /**
+     * The last stored message ID
+     *
+     * @since 0.9.33
+     */
+    public int getLastMessageID() {
+        return _messages.getLastMessageID();
     }
     
     ////
@@ -321,7 +374,7 @@ public class IndexBean {
     
     public String getTunnelName(int tunnel) {
         String name = _helper.getTunnelName(tunnel);
-        if (name != null)
+        if (name != null && name.length() > 0)
             return DataHelper.escapeHTML(name);
         else
             return _t("New Tunnel");
@@ -542,6 +595,13 @@ public class IndexBean {
         return false;
     }
 
+    /**
+     * @since 0.9.32 moved from EditBean
+     */
+    public String getSpoofedHost(int tunnel) {
+        return DataHelper.escapeHTML(_helper.getSpoofedHost(tunnel));
+    }
+
     ///
     /// bean props for form submission
     ///
@@ -572,7 +632,10 @@ public class IndexBean {
     public void setClientport(String port) {
         _config.setClientPort(port);
     }
-    /** how many hops to use for inbound tunnels */
+
+    /** how many hops to use for inbound tunnels
+     *  In or both in/out
+     */
     public void setTunnelDepth(String tunnelDepth) {
         if (tunnelDepth != null) {
             try {
@@ -580,7 +643,10 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
-    /** how many parallel inbound tunnels to use */
+
+    /** how many parallel inbound tunnels to use
+     *  In or both in/out
+     */
     public void setTunnelQuantity(String tunnelQuantity) {
         if (tunnelQuantity != null) {
             try {
@@ -588,7 +654,10 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
-    /** how much randomisation to apply to the depth of tunnels */
+
+    /** how much randomisation to apply to the depth of tunnels
+     *  In or both in/out
+     */
     public void setTunnelVariance(String tunnelVariance) {
         if (tunnelVariance != null) {
             try {
@@ -596,7 +665,10 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
-    /** how many tunnels to hold in reserve to guard against failures */
+
+    /** how many tunnels to hold in reserve to guard against failures
+     *  In or both in/out
+     */
     public void setTunnelBackupQuantity(String tunnelBackupQuantity) {
         if (tunnelBackupQuantity != null) {
             try {
@@ -604,6 +676,51 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
+
+    /** how many hops to use for outbound tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelDepthOut(String tunnelDepth) {
+        if (tunnelDepth != null) {
+            try {
+                _config.setTunnelDepthOut(Integer.parseInt(tunnelDepth.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /** how many parallel outbound tunnels to use
+     *  @since 0.9.33
+     */
+    public void setTunnelQuantityOut(String tunnelQuantity) {
+        if (tunnelQuantity != null) {
+            try {
+                _config.setTunnelQuantityOut(Integer.parseInt(tunnelQuantity.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /** how much randomisation to apply to the depth of outbound tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelVarianceOut(String tunnelVariance) {
+        if (tunnelVariance != null) {
+            try {
+                _config.setTunnelVarianceOut(Integer.parseInt(tunnelVariance.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /** how many outbound tunnels to hold in reserve to guard against failures
+     *  @since 0.9.33
+     */
+    public void setTunnelBackupQuantityOut(String tunnelBackupQuantity) {
+        if (tunnelBackupQuantity != null) {
+            try {
+                _config.setTunnelBackupQuantityOut(Integer.parseInt(tunnelBackupQuantity.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
     /** what I2P session overrides should be used */
     public void setNofilter_customOptions(String customOptions) { 
         _config.setCustomOptions(customOptions);
@@ -1096,12 +1213,8 @@ public class IndexBean {
     /** New key */
     private String generateNewEncryptionKey() {
         TunnelController tun = getController(_tunnel);
-        Properties config = getConfig();
         if (tun == null) {
             // creating new
-            tun = new TunnelController(config, "", true);
-            _group.addController(tun);
-            saveChanges();
         } else if (tun.getIsRunning() || tun.getIsStarting()) {
             return "Tunnel must be stopped before modifying leaseset encryption key";
         }
@@ -1144,7 +1257,9 @@ public class IndexBean {
     private static void getMessages(List<String> msgs, StringBuilder buf) {
         if (msgs == null) return;
         for (int i = 0; i < msgs.size(); i++) {
-            buf.append(msgs.get(i)).append("\n");
+            String msg = msgs.get(i);
+            _messages.addMessageNoEscape(msg);
+            buf.append(msg).append("\n");
         }
     }
 

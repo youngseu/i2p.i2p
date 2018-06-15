@@ -170,6 +170,11 @@ class BuildHandler implements Runnable {
      *  @since 0.9.18
      */
     void init() {
+        if (_context.commSystem().isDummy()) {
+            _explState = ExplState.BOTH;
+            _context.router().setExplTunnelsReady();
+            return;
+        }
         // fixup startup state if 0-hop exploratory is allowed in either direction
         int ibl = _manager.getInboundSettings().getLength();
         int ibv = _manager.getInboundSettings().getLengthVariance();
@@ -663,6 +668,16 @@ class BuildHandler implements Runnable {
         if (isInGW && isOutEnd) {
             _context.statManager().addRateData("tunnel.rejectHostile", 1);
             _log.error("Dropping build request, IBGW+OBEP: " + req);
+            if (from != null)
+                _context.commSystem().mayDisconnect(from);
+            return;
+        }
+
+        if (ourId <= 0 || ourId > TunnelId.MAX_ID_VALUE ||
+            nextId <= 0 || nextId > TunnelId.MAX_ID_VALUE) {
+            _context.statManager().addRateData("tunnel.rejectHostile", 1);
+            if (_log.shouldWarn())
+                _log.warn("Dropping build request, bad tunnel ID: " + req);
             if (from != null)
                 _context.commSystem().mayDisconnect(from);
             return;

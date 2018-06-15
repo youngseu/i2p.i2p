@@ -23,12 +23,18 @@
  */
 package i2p.susi.webmail.encoding;
 
-import i2p.susi.debug.Debug;
 import i2p.susi.util.Config;
+import i2p.susi.util.Buffer;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+
+import net.i2p.I2PAppContext;
+import net.i2p.data.DataHelper;
+import net.i2p.util.HexDump;
+import net.i2p.util.Log;
 
 /**
  * Manager class to handle content transfer encodings.
@@ -53,14 +59,16 @@ public class EncodingFactory {
 					Class<?> c = Class.forName( classNames[i] );
 					Encoding e = (Encoding) (c.getDeclaredConstructor().newInstance());
 					encodings.put( e.getName(), e );
-					Debug.debug( Debug.DEBUG, "Registered " + e.getClass().getName() );
+					//if (_log.shouldDebug()) _log.debug("Registered " + e.getClass().getName() );
 				}
 				catch (Exception e) {
-					Debug.debug( Debug.ERROR, "Error loading class '" + classNames[i] + "', reason: " + e.getClass().getName() );
+					Log log = I2PAppContext.getGlobalContext().logManager().getLog(EncodingFactory.class);
+					log.error("Error loading class '" + classNames[i] + "'", e);
 				}
 			}
 		}
 	}
+
 	/**
 	 * Retrieve instance of an encoder for a supported encoding (or null).
 	 * 
@@ -81,4 +89,45 @@ public class EncodingFactory {
 	{
 		return encodings.keySet();
 	}
+
+/****
+	public static void main(String[] args) {
+		String text = "Subject: test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test \r\n" +
+		              "From: UTF8 <smoerebroed@mail.i2p>\r\n" +
+		              "To: UTF8 <lalala@mail.i2p>\r\n";
+		byte[] test = DataHelper.getUTF8(text);
+		for (String s : availableEncodings()) {
+			Encoding e = getEncoding(s);
+			try {
+				String enc = e.encode(test);
+				if (enc == null) {
+					System.out.println(s + "\tFAIL - null encode result");
+					continue;
+				}
+				Buffer rb = e.decode(enc);
+				if (rb == null) {
+					System.out.println(s + "\tFAIL - null decode result");
+					continue;
+				}
+				byte[] result = rb.content;
+				if (DataHelper.eq(test, 0, result, rb.offset, test.length)) {
+					System.out.println(s + "\tPASS");
+					System.out.println("encoding:");
+					System.out.println('"' + enc + '"');
+				} else {
+					System.out.println(s + "\tFAIL");
+					System.out.println("expected:");
+					System.out.println(HexDump.dump(test));
+					System.out.println("got:");
+					System.out.println(HexDump.dump(result, rb.offset, rb.length));
+					System.out.println("encoding:");
+					System.out.println('"' + enc + '"');
+				}
+			} catch (Exception ex) {
+				System.out.println(s + "\tFAIL");
+				ex.printStackTrace();
+			}
+		}
+	}
+****/
 }

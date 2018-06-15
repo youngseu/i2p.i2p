@@ -12,7 +12,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
-import java.net.SocketException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
@@ -26,8 +25,10 @@ import net.i2p.client.streaming.I2PSocket;
 import net.i2p.client.streaming.I2PSocketOptions;
 import net.i2p.data.DataFormatException;
 import net.i2p.data.Destination;
+import static net.i2p.socks.SOCKS4Constants.*;
 import net.i2p.util.HexDump;
 import net.i2p.util.Log;
+import net.i2p.socks.SOCKSException;
 
 /*
  * Class that manages SOCKS 4/4a connections, and forwards them to
@@ -70,7 +71,7 @@ class SOCKS4aServer extends SOCKSServer {
 
             manageRequest(in, out);
         } catch (IOException e) {
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
 
         setupCompleted = true;
@@ -149,7 +150,7 @@ class SOCKS4aServer extends SOCKSServer {
 
             sendRequestReply(Reply.SUCCEEDED, InetAddress.getByName("127.0.0.1"), 1, out);
         } catch (IOException e) {
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
     }
 
@@ -200,7 +201,7 @@ class SOCKS4aServer extends SOCKSServer {
         try {
             out = new DataOutputStream(clientSock.getOutputStream());
         } catch (IOException e) {
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
 
         // FIXME: here we should read our config file, select an
@@ -285,40 +286,19 @@ class SOCKS4aServer extends SOCKSServer {
             try {
                 sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
             } catch (IOException ioe) {}
-            throw new SOCKSException("Error in destination format");
-        } catch (SocketException e) {
-            try {
-                sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
-            } catch (IOException ioe) {}
-            throw new SOCKSException("Error connecting ("
-                                     + e.getMessage() + ")");
+            throw new SOCKSException("Error in destination format", e);
         } catch (IOException e) {
             try {
                 sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
             } catch (IOException ioe) {}
-            throw new SOCKSException("Error connecting ("
-                                     + e.getMessage() + ")");
+            throw new SOCKSException("Error connecting", e);
         } catch (I2PException e) {
             try {
                 sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
             } catch (IOException ioe) {}
-            throw new SOCKSException("Error connecting ("
-                                     + e.getMessage() + ")");
+            throw new SOCKSException("Error connecting", e);
         }
 
         return destSock;
-    }
-
-    /*
-     * Some namespaces to enclose SOCKS protocol codes
-     */
-    private static class Command {
-        private static final int CONNECT = 0x01;
-        private static final int BIND = 0x02;
-    }
-
-    private static class Reply {
-        private static final int SUCCEEDED = 0x5a;
-        private static final int CONNECTION_REFUSED = 0x5b;
     }
 }

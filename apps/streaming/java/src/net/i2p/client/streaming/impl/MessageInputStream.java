@@ -101,8 +101,21 @@ class MessageInputStream extends InputStream {
     }
     
     /**
+     * @return true if this has been closed on the read side with close()
+     */
+    public boolean isLocallyClosed() { 
+        synchronized (_dataLock) {
+            return _locallyClosed;
+        }
+    }
+    
+    /**
      *  Determine if this packet will fit in our buffering limits.
-     *  Always returns true for zero payloadSize.
+     *
+     *  Always returns true for zero payloadSize and dups, even if locally closed.
+     *  Returns false if there is no room, OR it's not a dup and the stream has been closed on
+     *  the read side with close().
+     *  If this returns false, you probably want to call isLocallyClosed() to find out why.
      *
      *  @return true if we have room. If false, do not call messageReceived()
      *  @since 0.9.20 moved from ConnectionPacketHandler.receivePacket() so it can all be under one lock,
@@ -111,15 +124,17 @@ class MessageInputStream extends InputStream {
     public boolean canAccept(long messageId, int payloadSize) { 
         if (payloadSize <= 0)
             return true;
-        if (messageId < MIN_READY_BUFFERS)
-            return true;
         synchronized (_dataLock) {
-            // always accept if closed, will be processed elsewhere
-            if (_locallyClosed)
-                return true;
             // ready dup check
             // we always allow sequence numbers less than or equal to highest received
             if (messageId <= _highestReadyBlockId)
+                return true;
+            // We do this after the above dup check.
+            if (_locallyClosed) {
+                // return true if a not-ready dup, false if not
+                return _notYetReadyBlocks.containsKey(Long.valueOf(messageId));
+            }
+            if (messageId < MIN_READY_BUFFERS)
                 return true;
             // shortcut test, assuming all ready and not ready blocks are max size,
             // to avoid iterating through all the ready blocks in getTotalReadySize()
@@ -283,7 +298,7 @@ class MessageInputStream extends InputStream {
                 buf.append("not ready bytes: ").append(notAvailable);
                 buf.append(" highest ready block: ").append(_highestReadyBlockId);
                 
-                _log.debug(buf.toString(), new Exception("closed"));
+                _log.debug(buf.toString(), new Exception("Input stream closed"));
             }
             _closeReceived = true;
             _dataLock.notifyAll();
@@ -296,6 +311,8 @@ class MessageInputStream extends InputStream {
      * A new message has arrived - toss it on the appropriate queue (moving 
      * previously pending messages to the ready queue if it fills the gap, etc).
      * This does no limiting of pending data - see canAccept() for limiting.
+     *
+     * Warning - returns true if locally closed.
      *
      * @param messageId ID of the message
      * @param payload message payload, may be null or have null or zero-length data
@@ -393,7 +410,7 @@ class MessageInputStream extends InputStream {
         else
             expiration = -1;
         synchronized (_dataLock) {
-            if (_locallyClosed) throw new IOException("Already locally closed");
+            if (_locallyClosed) throw new IOException("Input stream closed");
             throwAnyError();
             for (int i = 0; i < length; i++) {
                 if ( (_readyDataBlocks.isEmpty()) && (i == 0) ) {
@@ -402,7 +419,7 @@ class MessageInputStream extends InputStream {
                     
                     while (_readyDataBlocks.isEmpty()) {
                         if (_locallyClosed)
-                            throw new IOException("Already closed");
+                            throw new IOException("Input stream closed");
                         
                         if ( (_notYetReadyBlocks.isEmpty()) && (_closeReceived) ) {
                             if (_log.shouldLog(Log.INFO))
@@ -507,7 +524,7 @@ class MessageInputStream extends InputStream {
     public int available() throws IOException {
         int numBytes = 0;
         synchronized (_dataLock) {
-            if (_locallyClosed) throw new IOException("Already closed");
+            if (_locallyClosed) throw new IOException("Input stream closed");
             throwAnyError();
             for (int i = 0; i < _readyDataBlocks.size(); i++) {
                 ByteArray cur = _readyDataBlocks.get(i);

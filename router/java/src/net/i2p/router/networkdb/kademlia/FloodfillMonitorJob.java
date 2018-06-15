@@ -11,6 +11,8 @@ import net.i2p.router.JobImpl;
 import net.i2p.router.Router;
 import net.i2p.router.RouterContext;
 import net.i2p.router.peermanager.PeerProfile;
+import net.i2p.router.transport.TransportManager;
+import net.i2p.router.transport.TransportUtil;
 import net.i2p.router.transport.udp.UDPTransport;
 import net.i2p.router.util.EventLog;
 import net.i2p.stat.Rate;
@@ -29,6 +31,7 @@ class FloodfillMonitorJob extends JobImpl {
     private final Log _log;
     private final FloodfillNetworkDatabaseFacade _facade;
     private long _lastChanged;
+    private boolean _deferredFlood;
     
     private static final int REQUEUE_DELAY = 60*60*1000;
     private static final long MIN_UPTIME = 2*60*60*1000;
@@ -46,10 +49,10 @@ class FloodfillMonitorJob extends JobImpl {
     
     public String getName() { return "Monitor the floodfill pool"; }
 
-    public void runJob() {
+    public synchronized void runJob() {
         boolean wasFF = _facade.floodfillEnabled();
         boolean ff = shouldBeFloodfill();
-        _facade.setFloodfillEnabled(ff);
+        _facade.setFloodfillEnabledFromMonitor(ff);
         if (ff != wasFF) {
             if (ff) {
                 getContext().router().eventLog().addEvent(EventLog.BECAME_FLOODFILL);
@@ -58,12 +61,15 @@ class FloodfillMonitorJob extends JobImpl {
             }
             getContext().router().rebuildRouterInfo(true);
             Job routerInfoFlood = new FloodfillRouterInfoFloodJob(getContext(), _facade);
-            if(getContext().router().getUptime() < 5*60*1000) {
-                // Needed to prevent race if router.floodfillParticipant=true (not auto)
-                routerInfoFlood.getTiming().setStartAfter(getContext().clock().now() + 5*60*1000);
-                getContext().jobQueue().addJob(routerInfoFlood);
-                if(_log.shouldLog(Log.DEBUG)) {
-                    _log.logAlways(Log.DEBUG, "Deferring our FloodfillRouterInfoFloodJob run because of low uptime.");
+            if (getContext().router().getUptime() < 5*60*1000) {
+                if (!_deferredFlood) {
+                    // Needed to prevent race if router.floodfillParticipant=true (not auto)
+                    // Don't queue multiples
+                    _deferredFlood = true;
+                    routerInfoFlood.getTiming().setStartAfter(getContext().clock().now() + 5*60*1000);
+                    getContext().jobQueue().addJob(routerInfoFlood);
+                    if (_log.shouldLog(Log.DEBUG))
+                        _log.logAlways(Log.DEBUG, "Deferring our FloodfillRouterInfoFloodJob run because of low uptime.");
                 }
             } else {
                 routerInfoFlood.runJob();
@@ -107,6 +113,16 @@ class FloodfillMonitorJob extends JobImpl {
             return false;
 
         if (getContext().getBooleanProperty(UDPTransport.PROP_LAPTOP_MODE))
+            return false;
+
+        // need IPv4 - The setting is the same for both SSU and NTCP, so just take the SSU one
+        if (TransportUtil.getIPv6Config(getContext(), "SSU") == TransportUtil.IPv6Config.IPV6_ONLY)
+            return false;
+
+        // need both transports
+        if (!TransportManager.isNTCPEnabled(getContext()))
+            return false;
+        if (!getContext().getBooleanPropertyDefaultTrue(TransportManager.PROP_ENABLE_UDP))
             return false;
 
         if (getContext().commSystem().isInBadCountry())

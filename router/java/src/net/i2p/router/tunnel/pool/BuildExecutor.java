@@ -8,9 +8,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+import net.i2p.data.DataHelper;
 import net.i2p.data.Hash;
 import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.data.router.RouterInfo;
+import net.i2p.router.CommSystemFacade;
 import net.i2p.router.CommSystemFacade.Status;
 import net.i2p.router.RouterContext;
 import net.i2p.router.TunnelManagerFacade;
@@ -64,7 +66,7 @@ class BuildExecutor implements Runnable {
         _context.statManager().createRequiredRateStat("tunnel.buildClientReject", "Response time for rejection (ms)", "Tunnels", new long[] { 10*60*1000, 60*60*1000 });
         _context.statManager().createRequiredRateStat("tunnel.buildRequestTime", "Time to build a tunnel request (ms)", "Tunnels", new long[] { 60*1000, 10*60*1000 });
         _context.statManager().createRateStat("tunnel.buildConfigTime", "Time to build a tunnel request (ms)", "Tunnels", new long[] { 60*1000, 10*60*1000 });
-        _context.statManager().createRateStat("tunnel.buildRequestZeroHopTime", "How long it takes to build a zero hop tunnel", "Tunnels", new long[] { 60*1000, 10*60*1000 });
+        //_context.statManager().createRateStat("tunnel.buildRequestZeroHopTime", "How long it takes to build a zero hop tunnel", "Tunnels", new long[] { 60*1000, 10*60*1000 });
         //_context.statManager().createRateStat("tunnel.pendingRemaining", "How many inbound requests are pending after a pass (period is how long the pass takes)?", "Tunnels", new long[] { 60*1000, 10*60*1000 });
         _context.statManager().createRateStat("tunnel.buildFailFirstHop", "How often we fail to build a OB tunnel because we can't contact the first hop", "Tunnels", new long[] { 60*1000, 10*60*1000 });
         _context.statManager().createRateStat("tunnel.buildReplySlow", "Build reply late, but not too late", "Tunnels", new long[] { 10*60*1000 });
@@ -110,7 +112,10 @@ class BuildExecutor implements Runnable {
     }
 
     private int allowed() {
-        if (_context.commSystem().getStatus() == Status.DISCONNECTED)
+        CommSystemFacade csf = _context.commSystem();
+        if (csf.getStatus() == Status.DISCONNECTED)
+            return 0;
+        if (csf.isDummy() && csf.getEstablished().size() <= 0)
             return 0;
         int maxKBps = _context.bandwidthLimiter().getOutboundKBytesPerSecond();
         int allowed = maxKBps / 6; // Max. 1 concurrent build per 6 KB/s outbound
@@ -382,12 +387,8 @@ class BuildExecutor implements Runnable {
                             // to the front of the line sometimes, to prevent being "locked up"
                             // for several minutes.
                             boolean preferEmpty = _context.random().nextInt(4) != 0;
-                            try {
-                                Collections.sort(wanted, new TunnelPoolComparator(preferEmpty));
-                            } catch (IllegalArgumentException iae) {
-                                // Java 7 TimSort - see info in TunnelPoolComparator
-                                continue;
-                            }
+                            // Java 7 TimSort - see info in TunnelPoolComparator
+                            DataHelper.sort(wanted, new TunnelPoolComparator(preferEmpty));
                         }
 
                         // force the loops to be short, since 3 consecutive tunnel build requests can take
@@ -534,11 +535,10 @@ class BuildExecutor implements Runnable {
         boolean ok = BuildRequestor.request(_context, pool, cfg, this);
         if (!ok)
             return;
-        long buildTime = System.currentTimeMillis() - beforeBuild;
-        if (cfg.getLength() <= 1)
-            _context.statManager().addRateData("tunnel.buildRequestZeroHopTime", buildTime, 0);
-        else
+        if (cfg.getLength() > 1) {
+            long buildTime = System.currentTimeMillis() - beforeBuild;
             _context.statManager().addRateData("tunnel.buildRequestTime", buildTime, 0);
+        }
         long id = cfg.getReplyMessageId();
         if (id > 0) {
             synchronized (_recentBuildIds) { 

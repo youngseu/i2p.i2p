@@ -18,16 +18,17 @@
 		<pathelement location="${lib}/javax.servlet.jar"/>
 
                 <!-- following jars only present for debian builds -->
+                <pathelement location="${lib}/commons-logging.jar" />
                 <pathelement location="${lib}/jsp-api.jar" />
                 <pathelement location="${lib}/tomcat-api.jar" />
                 <pathelement location="${lib}/tomcat-util.jar" />
                 <pathelement location="${lib}/tomcat-util-scan.jar" />
 		<pathelement location="${lib}/jasper-el.jar" />
+		<pathelement location="lib/jstlel.jar" />
 
 		<pathelement location="lib/jstl.jar" />
 		<pathelement location="lib/standard.jar" />
 		<pathelement location="${lib}/jasper-runtime.jar" />
-		<pathelement location="${lib}/commons-logging.jar" />
 		<pathelement location="${lib}/jetty-util.jar" />
 		<pathelement location="${ant.home}/lib/ant.jar" />
 		<pathelement location="../../../core/java/build/i2p.jar" />
@@ -105,13 +106,7 @@
         <war destfile="${project}.war" webxml="WEB-INF/web-out.xml">
         	<fileset dir=".">
         		<include name="WEB-INF/**/*.class"/>
-                     <!-- pulled out of the jar in 0.7.12
-        		<include name="WEB-INF/lib/*.jar"/>
-                      -->
-        		<include name="images/*.png"/>
-        		<include name="css.css"/>
-        		<include name="index.html"/>
-        		<include name="WEB-INF/classes/${project}.properties"/>
+        		<include name="svg/*"/>
         	</fileset>
             <manifest>
                 <attribute name="Implementation-Version" value="${full.version}" />
@@ -127,7 +122,7 @@
 
     <target name="warUpToDate">
         <uptodate property="war.uptodate" targetfile="${project}.war">
-            <srcfiles dir= "." includes="WEB-INF/web-out.xml WEB-INF/**/*.class images/*.png css.css index.html WEB-INF/classes/${project}.properties" />
+            <srcfiles dir= "." includes="WEB-INF/web-out.xml WEB-INF/**/*.class svg/*" />
         </uptodate>
         <condition property="shouldListChanges" >
             <and>
@@ -161,17 +156,34 @@
         </javac>
     </target>
 
-    <target name="poupdate" depends="compile, precompilejsp">
+    <target name="extractSVGTags">
+        <mkdir dir="build/" />
+        <java classname="net.i2p.util.TranslateReader" fork="true" failonerror="true">
+            <classpath>
+                <pathelement location="../../../build/i2p.jar" />
+            </classpath>
+            <arg value="tag" />
+            <arg value="svg/" />
+            <arg value="build/HowSVG.java" />
+        </java>
+    </target>
+
+    <target name="poupdate" depends="compile, precompilejsp, extractSVGTags">
         <!-- Update the messages_*.po files.  -->
+        <!-- set if unset -->
+        <property name="lg2" value="" />
         <exec executable="sh" osfamily="unix" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="mac" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="windows" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages.sh" />
             <arg value="-p" />
         </exec>

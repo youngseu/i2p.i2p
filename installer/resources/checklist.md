@@ -1,10 +1,12 @@
-# Release checklist
+# Release checklist and process
 
 ## One week before
 
 - Announce string freeze on #i2p-dev
-- Update local English po files: `ant poupdate`
-- Revert non-English changes if any
+- Update local English po files: `ant poupdate-source`
+- Review changes in English po files, fix up any necessary tagged strings in Java source
+- Revert English po files with no actual changes (i.e. with line number changes only)
+- Check in remaining English po files (and any files with changed strings)
 - Push to Transifex: `tx push -s`
 - Make announcement on Transifex with checkin deadline
 
@@ -23,6 +25,13 @@
 
 - Tickets: Check if any blocker or critical tickets for this release remain open;
   get them fixed and closed, or reclassified.
+
+- Review Google Play crash reports, fix any related issues
+
+- Initial review: Review the complete diff from the last release, fix any issues
+
+- Trial Debian build: Build and test a preliminary Debian build
+  with 'ant debian' and fix any issues
 
 
 ## A day or two before
@@ -63,7 +72,8 @@
   - `ant testcripts` to verify that all updated translations are valid
   - For any invalid that break the test, fix up the po file manually, or fix on
     tx and pull again, or (if new) comment out in .tx/config (add a comment why)
-    and delete the po file
+    and delete the po file.
+    See instructions in .tx/config for fixing up getopt properties files.
   - `installer/resources/poupdate-man.sh` to generate new man page translations
     (requires po4a package)
   - `mtn add` for any new po files
@@ -112,7 +122,7 @@
 9. Verify that no untrusted revisions were inadvertently blessed by a trusted party:
 
     ```
-    mtn log --brief --no-graph --to t:i2p-0.9.(xx-1) | cut -d ' ' -f 2 | sort | uniq -c
+    ant revisions
     ```
 
 ### Build and test
@@ -234,6 +244,15 @@
 2. Upload the bundles to Maven Central via https://oss.sonatype.org
 
 
+### Android build
+
+1. See branch i2p.android.base for build instructions
+
+2. Upload to Google Play, f-droid.i2p.io, f-droid.org, and website
+
+3. Announce on Twitter
+
+
 ### Notify release
 
 1. Upload files to launchpad release (download mirror)
@@ -254,15 +273,18 @@
 
 4. Announce on:
   - #i2p, #i2p-dev (also on Freenode side)
-  - forum.i2p
+  - IRC
   - Twitter
 
 5. Launchpad builds
    (see debian-alt/doc/launchpad.txt for instructions)
 
-6. Debian builds
+6. Copy launchpad files to our Debian repo,
+   or build Debian packages and upload them
    (see debian-alt/doc/debian-build.txt for instructions)
 
 7. Announce Launchpad and Debian builds on Twitter
 
-8. Notify Tails that new Debian builds are available
+8. Notify downstream Debian maintainer
+
+9. (if we get back into Tails) Notify Tails that new Debian builds are available

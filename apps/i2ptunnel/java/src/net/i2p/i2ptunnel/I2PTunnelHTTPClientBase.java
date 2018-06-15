@@ -7,12 +7,15 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Reader;
+import java.io.StringReader;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -61,11 +64,18 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     private static final int MAX_NONCE_COUNT = 1024;
     /** @since 0.9.11, moved to Base in 0.9.29 */
     public static final String PROP_USE_OUTPROXY_PLUGIN = "i2ptunnel.useLocalOutproxy";
+    /**
+     *  This is a standard soTimeout, not a total timeout.
+     *  We have no slowloris protection on the client side.
+     *  See I2PTunnelHTTPServer or SAM's ReadLine if we need that.
+     *  @since 0.9.33
+     */
+    protected static final int INITIAL_SO_TIMEOUT = 15*1000;
 
     private static final String ERR_AUTH1 =
             "HTTP/1.1 407 Proxy Authentication Required\r\n" +
             "Content-Type: text/html; charset=UTF-8\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.5\r\n" + // try to get a UTF-8-encoded response back for the password
@@ -80,20 +90,20 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     protected final List<String> _proxyList;
 
     protected final static String ERR_NO_OUTPROXY =
-         "HTTP/1.1 503 Service Unavailable\r\n"+
+         "HTTP/1.1 503 No Outproxy Configured\r\n"+
          "Content-Type: text/html; charset=iso-8859-1\r\n"+
-         "Cache-control: no-cache\r\n"+
+         "Cache-Control: no-cache\r\n"+
          "Connection: close\r\n"+
          "Proxy-Connection: close\r\n"+
          "\r\n"+
          "<html><body><H1>I2P ERROR: No outproxy found</H1>"+
          "Your request was for a site outside of I2P, but you have no "+
-         "HTTP outproxy configured.  Please configure an outproxy in I2PTunnel";
+         "outproxy configured.  Please configure an outproxy in I2PTunnel";
     
     protected final static String ERR_DESTINATION_UNKNOWN =
             "HTTP/1.1 503 Service Unavailable\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -534,28 +544,48 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
         char[] buf = new char[512];
         StringBuilder out = new StringBuilder(2048);
         try {
+            boolean hasSusiDNS = ctx.portMapper().isRegistered(PortMapper.SVC_SUSIDNS);
+            boolean hasI2PTunnel = ctx.portMapper().isRegistered(PortMapper.SVC_I2PTUNNEL);
+            if (hasSusiDNS && hasI2PTunnel) {
+                reader = new TranslateReader(ctx, BUNDLE_NAME, new FileInputStream(file));
+            } else {
+                // strip out the addressbook links
+                reader = new InputStreamReader(new FileInputStream(file), "UTF-8");
+                int len;
+                while((len = reader.read(buf)) > 0) {
+                    out.append(buf, 0, len);
+                }
+                reader.close();
+                if (!hasSusiDNS) {
+                    DataHelper.replace(out, "<a href=\"http://127.0.0.1:7657/susidns/index\">_(\"Addressbook\")</a>", "");
+                }
+                if (!hasI2PTunnel) {
+                    // there are also a couple in auth-header.ht that aren't worth stripping, for auth only
+                    DataHelper.replace(out,
+                                       "<span class=\"script\">_(\"You may want to {0}retry{1} as this will randomly reselect an outproxy from the pool you have defined {2}here{3} (if you have more than one configured).\", \"<a href=\\\"javascript:parent.window.location.reload()\\\">\", \"</a>\", \"<a href=\\\"http://127.0.0.1:7657/i2ptunnel/index.jsp\\\">\", \"</a>\")</span>",
+                                       "");
+                    DataHelper.replace(out,
+                                       "<noscript>_(\"You may want to retry as this will randomly reselect an outproxy from the pool you have defined {0}here{1} (if you have more than one configured).\", \"<a href=\\\"http://127.0.0.1:7657/i2ptunnel/index.jsp\\\">\", \"</a>\")</noscript>",
+                                       "");
+                    DataHelper.replace(out,
+                                       "_(\"If you continue to have trouble you may want to edit your outproxy list {0}here{1}.\", \"<a href=\\\"http://127.0.0.1:7657/i2ptunnel/edit.jsp?tunnel=0\\\">\", \"</a>\")",
+                                       "");
+                }
+                String s = out.toString();
+                out.setLength(0);
+                reader = new TranslateReader(ctx, BUNDLE_NAME, new StringReader(s));
+            }
             int len;
-            reader = new TranslateReader(ctx, BUNDLE_NAME, new FileInputStream(file));
             while((len = reader.read(buf)) > 0) {
                 out.append(buf, 0, len);
             }
-            String rv = out.toString();
             // Do we need to replace http://127.0.0.1:7657 console links in the error page?
             // Get the registered host and port from the PortMapper.
-            final String unset = "*unset*";
-            final String httpHost = ctx.portMapper().getActualHost(PortMapper.SVC_CONSOLE, unset);
-            final String httpsHost = ctx.portMapper().getActualHost(PortMapper.SVC_HTTPS_CONSOLE, unset);
-            final int httpPort = ctx.portMapper().getPort(PortMapper.SVC_CONSOLE, 7657);
-            final int httpsPort = ctx.portMapper().getPort(PortMapper.SVC_HTTPS_CONSOLE, -1);
-            final boolean httpsOnly = httpsPort > 0 && httpHost.equals(unset) && !httpsHost.equals(unset);
-            final int port = httpsOnly ? httpsPort : httpPort;
-            String host = httpsOnly ? httpsHost : httpHost;
-            if (host.equals(unset))
-                host = "127.0.0.1";
-            if (httpsOnly || port != 7657 || !host.equals("127.0.0.1")) {
-                String url = (httpsOnly ? "https://" : "http://") + host + ':' + port;
-                rv = rv.replace("http://127.0.0.1:7657", url);
+            String url = ctx.portMapper().getConsoleURL();
+            if (!url.equals("http://127.0.0.1:7657/")) {
+                DataHelper.replace(out, "http://127.0.0.1:7657/", url);
             }
+            String rv = out.toString();
             return rv;
         } finally {
             try {
@@ -610,7 +640,9 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
         if (out == null)
             return;
         String header;
-        if (usingWWWProxy)
+        if (ex instanceof SocketTimeoutException)
+            header = I2PTunnelHTTPServer.ERR_REQUEST_TIMEOUT;
+        else if (usingWWWProxy)
             header = getErrorPage(I2PAppContext.getGlobalContext(), "dnfp", ERR_DESTINATION_UNKNOWN);
         else
             header = getErrorPage(I2PAppContext.getGlobalContext(), "dnf", ERR_DESTINATION_UNKNOWN);
@@ -698,10 +730,8 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
             out.write("<a href=\"");
             out.write(uri);
             out.write("\">");
-            if (targetRequest.length() > 80)
-                out.write(DataHelper.escapeHTML(targetRequest.substring(0, 75)) + "&hellip;");
-            else
-                out.write(uri);
+            // Long URLs are handled in CSS
+            out.write(uri);
             out.write("</a>");
             if (usingWWWProxy) {
                 out.write("<br><br><b>");
@@ -791,11 +821,12 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     private static String getFooter() {
         // The css is hiding this div for now, but we'll keep it here anyway
         // Tag the strings below for translation if we unhide it.
-        StringBuilder buf = new StringBuilder(128);
-        buf.append("<div class=\"proxyfooter\"><p><i>I2P HTTP Proxy Server<br>Generated on: ")
-           .append(new Date().toString())
-           .append("</i></div>\n</body>\n</html>\n");
-        return buf.toString();
+        //StringBuilder buf = new StringBuilder(128);
+        //buf.append("<div class=\"proxyfooter\"><p><i>I2P HTTP Proxy Server<br>Generated on: ")
+        //   .append(new Date().toString())
+        //   .append("</i></div>\n</body>\n</html>\n");
+        //return buf.toString();
+        return "</body>\n</html>\n";
     }
 
     /**

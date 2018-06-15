@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +21,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import gnu.getopt.Getopt;
 
@@ -41,6 +43,7 @@ import net.i2p.router.crypto.FamilyKeyCrypto;
 import net.i2p.router.message.GarlicMessageHandler;
 import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
 import net.i2p.router.startup.CreateRouterInfoJob;
+import net.i2p.router.startup.PortableWorkingDir;
 import net.i2p.router.startup.StartupJob;
 import net.i2p.router.startup.WorkingDir;
 import net.i2p.router.tasks.*;
@@ -76,7 +79,7 @@ public class Router implements RouterClock.ClockShiftListener {
     /** full path */
     private String _configFilename;
     private RouterInfo _routerInfo;
-    private final Object _routerInfoLock = new Object();
+    private final ReentrantReadWriteLock _routerInfoLock = new ReentrantReadWriteLock(false);
     /** not for external use */
     public final Object routerInfoFileLock = new Object();
     private final Object _configFileLock = new Object();
@@ -112,7 +115,13 @@ public class Router implements RouterClock.ClockShiftListener {
     public final static String PROP_HIDDEN = "router.hiddenMode";
     /** this does not put an 'H' in your routerInfo **/
     public final static String PROP_HIDDEN_HIDDEN = "router.isHidden";
+    /** New router keys at every restart. Disabled. */
     public final static String PROP_DYNAMIC_KEYS = "router.dynamicKeys";
+    /**
+     *  New router keys once only.
+     *  @since 0.9.34
+     */
+    public final static String PROP_REBUILD_KEYS = "router.rebuildKeys";
     /** deprecated, use gracefulShutdownInProgress() */
     private final static String PROP_SHUTDOWN_IN_PROGRESS = "__shutdownInProgress";
     public static final String PROP_IB_RANDOM_KEY = TunnelPoolSettings.PREFIX_INBOUND_EXPLORATORY + TunnelPoolSettings.PROP_RANDOM_KEY;
@@ -262,7 +271,11 @@ public class Router implements RouterClock.ClockShiftListener {
         // Do we copy all the data files to the new directory? default false
         String migrate = System.getProperty("i2p.dir.migrate");
         boolean migrateFiles = Boolean.parseBoolean(migrate);
-        String userDir = WorkingDir.getWorkingDir(envProps, migrateFiles);
+
+
+        String isPortableStr = System.getProperty("i2p.dir.portableMode");
+        boolean isPortable = Boolean.parseBoolean(isPortableStr);
+        String userDir = (!isPortable) ? WorkingDir.getWorkingDir(envProps, migrateFiles) : PortableWorkingDir.getWorkingDir(envProps);
 
         // Use the router.config file specified in the router.configLocation property
         // (default "router.config"),
@@ -308,7 +321,8 @@ public class Router implements RouterClock.ClockShiftListener {
         // i2p.dir.log defaults to i2p.dir.router
         // i2p.dir.pid defaults to i2p.dir.router
         // i2p.dir.base defaults to user.dir == $CWD
-        _context = new RouterContext(this, envProps);
+        _context = new RouterContext(this, envProps, false);
+        RouterContext.setGlobalContext(_context);
         _eventLog = new EventLog(_context, new File(_context.getRouterDir(), EVENTLOG));
 
         // This is here so that we can get the directory location from the context
@@ -388,7 +402,9 @@ public class Router implements RouterClock.ClockShiftListener {
         // Apps may use this as an easy way to determine if they are in the router JVM
         // But context.isRouterContext() is even easier...
         // Both of these as of 0.7.9
-        System.setProperty("router.version", RouterVersion.VERSION);
+        // As of 0.9.34, this is FULL_VERSION, not VERSION, which was the same as CoreVersion.VERSION
+        // and thus not particularly useful.
+        System.setProperty("router.version", RouterVersion.FULL_VERSION);
 
         // crypto init may block for 10 seconds waiting for entropy
         // we want to do this before context.initAll()
@@ -516,10 +532,17 @@ public class Router implements RouterClock.ClockShiftListener {
      *
      *  Warning - risk of deadlock - do not call while holding locks
      *
+     *  Note: Due to lock contention, especially during a
+     *  rebuild of the router info, this may take a long time.
+     *  For determining the current status of the router, use
+     *  RouterContext.commSystem().getStatus().
      */
     public RouterInfo getRouterInfo() {
-        synchronized (_routerInfoLock) {
+        _routerInfoLock.readLock().lock();
+        try {
             return _routerInfo;
+        } finally {
+            _routerInfoLock.readLock().unlock();
         }
     }
 
@@ -531,8 +554,11 @@ public class Router implements RouterClock.ClockShiftListener {
      *
      */
     public void setRouterInfo(RouterInfo info) { 
-        synchronized (_routerInfoLock) {
+        _routerInfoLock.writeLock().lock();
+        try {
             _routerInfo = info; 
+        } finally {
+            _routerInfoLock.writeLock().unlock();
         }
         if (_log.shouldLog(Log.INFO))
             _log.info("setRouterInfo() : " + info, new Exception("I did it"));
@@ -614,6 +640,8 @@ public class Router implements RouterClock.ClockShiftListener {
         //    if ("true".equalsIgnoreCase(_context.getProperty(Router.PROP_HIDDEN, "false")))
         //        killKeys();
         //}
+        if (_context.getBooleanProperty(PROP_REBUILD_KEYS))
+            killKeys();
 
         _context.messageValidator().startup();
         _context.tunnelDispatcher().startup();
@@ -746,6 +774,21 @@ public class Router implements RouterClock.ClockShiftListener {
         /** all done */
         STOPPED
     }
+
+    /**
+     *  For efficiency. EnumSets are bitmasks.
+     *  @since 0.9.34
+     */
+    private static final Set<State> STATES_ALIVE =
+        EnumSet.of(State.RUNNING, State.GRACEFUL_SHUTDOWN, State.STARTING_1, State.STARTING_2,
+                   State.STARTING_3, State.NETDB_READY, State.EXPL_TUNNELS_READY);
+
+    private static final Set<State> STATES_GRACEFUL =
+        EnumSet.of(State.GRACEFUL_SHUTDOWN, State.FINAL_SHUTDOWN_1, State.FINAL_SHUTDOWN_2,
+                   State.FINAL_SHUTDOWN_3, State.STOPPED);
+
+    private static final Set<State> STATES_FINAL =
+        EnumSet.of(State.FINAL_SHUTDOWN_1, State.FINAL_SHUTDOWN_2, State.FINAL_SHUTDOWN_3, State.STOPPED);
     
     /**
      *  @since 0.9.18
@@ -756,8 +799,11 @@ public class Router implements RouterClock.ClockShiftListener {
             oldState = _state;
             _state = state;
         }
-        if (_log != null && state != State.STOPPED && _log.shouldLog(Log.WARN))
+        if (_log != null && oldState != state && state != State.STOPPED && _log.shouldLog(Log.WARN)) {
             _log.warn("Router state change from " + oldState + " to " + state /* , new Exception() */ );
+            //for debugging
+            _context.logManager().flush();
+        }
     }
 
     /**
@@ -765,13 +811,7 @@ public class Router implements RouterClock.ClockShiftListener {
      */
     public boolean isAlive() {
         synchronized(_stateLock) {
-            return _state == State.RUNNING ||
-                   _state == State.GRACEFUL_SHUTDOWN ||
-                   _state == State.STARTING_1 ||
-                   _state == State.STARTING_2 ||
-                   _state == State.STARTING_3 ||
-                   _state == State.NETDB_READY ||
-                   _state == State.EXPL_TUNNELS_READY;
+            return STATES_ALIVE.contains(_state);
         }
     }
 
@@ -818,11 +858,7 @@ public class Router implements RouterClock.ClockShiftListener {
      */
     public boolean gracefulShutdownInProgress() {
         synchronized(_stateLock) {
-            return _state == State.GRACEFUL_SHUTDOWN ||
-                   _state == State.FINAL_SHUTDOWN_1 ||
-                   _state == State.FINAL_SHUTDOWN_2 ||
-                   _state == State.FINAL_SHUTDOWN_3 ||
-                   _state == State.STOPPED;
+            return STATES_GRACEFUL.contains(_state);
         }
     }
 
@@ -832,10 +868,7 @@ public class Router implements RouterClock.ClockShiftListener {
      */
     public boolean isFinalShutdownInProgress() {
         synchronized(_stateLock) {
-            return _state == State.FINAL_SHUTDOWN_1 ||
-                   _state == State.FINAL_SHUTDOWN_2 ||
-                   _state == State.FINAL_SHUTDOWN_3 ||
-                   _state == State.STOPPED;
+            return STATES_FINAL.contains(_state);
         }
     }
 
@@ -844,7 +877,12 @@ public class Router implements RouterClock.ClockShiftListener {
     /**
      * Rebuild and republish our routerInfo since something significant 
      * has changed.
+     * This is a non-blocking rebuild.
+     *
      * Not for external use.
+     *
+     * Warning - risk of deadlock - do not call while holding locks
+     *
      */
     public void rebuildRouterInfo() { rebuildRouterInfo(false); }
 
@@ -855,12 +893,17 @@ public class Router implements RouterClock.ClockShiftListener {
      *
      *  Warning - risk of deadlock - do not call while holding locks
      *
+     * @param blockingRebuild If true, netdb publish will happen in-line.
+     *                        This may take a long time.
      */
     public void rebuildRouterInfo(boolean blockingRebuild) {
         if (_log.shouldLog(Log.INFO))
             _log.info("Rebuilding new routerInfo");
-        synchronized (_routerInfoLock) {
+        _routerInfoLock.writeLock().lock();
+        try {
             locked_rebuildRouterInfo(blockingRebuild);
+        } finally {
+            _routerInfoLock.writeLock().unlock();
         }
     }
         
@@ -951,6 +994,28 @@ public class Router implements RouterClock.ClockShiftListener {
     @Deprecated
     public static final char CAPABILITY_NEW_TUNNEL = 'T';
     
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_K = 0;
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_L = 12;
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_M = 48;
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_N = 64;
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_O = 128;
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_P = 256;
+    /** In binary (1024) Kbytes
+     *  @since 0.9.33 */
+    public static final int MIN_BW_X = 2000;
+
     /**
      *  The current bandwidth class.
      *  For building our RI. Not for external use.
@@ -966,17 +1031,17 @@ public class Router implements RouterClock.ClockShiftListener {
         String force = _context.getProperty(PROP_FORCE_BWCLASS);
         if (force != null && force.length() > 0) {
             return force.charAt(0);
-        } else if (bwLim < 12) {
+        } else if (bwLim < MIN_BW_L) {
             return CAPABILITY_BW12;
-        } else if (bwLim <= 48) {
+        } else if (bwLim <= MIN_BW_M) {
             return CAPABILITY_BW32;
-        } else if (bwLim <= 64) {
+        } else if (bwLim <= MIN_BW_N) {
             return CAPABILITY_BW64;
-        } else if (bwLim <= 128) {
+        } else if (bwLim <= MIN_BW_O) {
             return CAPABILITY_BW128;
-        } else if (bwLim <= 256) {
+        } else if (bwLim <= MIN_BW_P) {
             return CAPABILITY_BW256;
-        } else if (bwLim <= 2000) {    // TODO adjust threshold
+        } else if (bwLim <= MIN_BW_X) {    // TODO adjust threshold
             // 512 supported as of 0.9.18;
             return CAPABILITY_BW512;
         } else {
@@ -1109,6 +1174,7 @@ public class Router implements RouterClock.ClockShiftListener {
             removeConfigSetting(UDPTransport.PROP_EXTERNAL_PORT);
             removeConfigSetting(PROP_IB_RANDOM_KEY);
             removeConfigSetting(PROP_OB_RANDOM_KEY);
+            removeConfigSetting(PROP_REBUILD_KEYS);
             saveConfig();
         }
     }

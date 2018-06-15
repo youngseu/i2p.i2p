@@ -22,9 +22,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.StringTokenizer;
-import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
 
 import net.i2p.I2PAppContext;
 import net.i2p.app.ClientApp;
@@ -36,6 +34,7 @@ import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.update.*;
 import net.i2p.util.ConcurrentHashSet;
+import net.i2p.util.FileSuffixFilter;
 import net.i2p.util.FileUtil;
 import net.i2p.util.I2PAppThread;
 import net.i2p.util.Log;
@@ -46,6 +45,7 @@ import net.i2p.util.SimpleTimer;
 import net.i2p.util.SimpleTimer2;
 import net.i2p.util.SystemVersion;
 import net.i2p.util.Translate;
+import net.i2p.util.UIMessages;
 
 import org.klomp.snark.comments.Comment;
 import org.klomp.snark.comments.CommentSet;
@@ -75,7 +75,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
     private final String _contextPath;
     private final String _contextName;
     private final Log _log;
-    private final Queue<String> _messages;
+    private final UIMessages _messages;
     private final I2PSnarkUtil _util;
     private PeerCoordinatorSet _peerCoordinatorSet;
     private ConnectionAcceptor _connectionAcceptor;
@@ -131,6 +131,8 @@ public class SnarkManager implements CompleteListener, ClientApp {
     public static final String RC_PROP_UNIVERSAL_THEMING = "routerconsole.universal.theme";
     public static final String PROP_THEME = "i2psnark.theme";
     public static final String DEFAULT_THEME = "ubergine";
+    /** @since 0.9.32 */
+    public static final String PROP_COLLAPSE_PANELS = "i2psnark.collapsePanels";
     private static final String PROP_USE_OPENTRACKERS = "i2psnark.useOpentrackers";
     public static final String PROP_OPENTRACKERS = "i2psnark.opentrackers";
     public static final String PROP_PRIVATETRACKERS = "i2psnark.privatetrackers";
@@ -154,6 +156,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
     public static final String CONFIG_DIR_SUFFIX = ".d";
     private static final String SUBDIR_PREFIX = "s";
     private static final String B64 = Base64.ALPHABET_I2P;
+    private static final int MAX_MESSAGES = 100;
 
     /**
      *  "name", "announceURL=websiteURL" pairs
@@ -244,7 +247,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
         _contextPath = ctxPath;
         _contextName = ctxName;
         _log = _context.logManager().getLog(SnarkManager.class);
-        _messages = new LinkedBlockingQueue<String>();
+        _messages = new UIMessages(MAX_MESSAGES);
         _util = new I2PSnarkUtil(_context, ctxName);
         String cfile = ctxName + CONFIG_FILE_SUFFIX;
         File configFile = new File(cfile);
@@ -327,8 +330,8 @@ public class SnarkManager implements CompleteListener, ClientApp {
      *  Runs inline.
      */
     public void stop() {
-        if (_log.shouldWarn())
-            _log.warn("Snark stop() begin", new Exception("I did it"));
+        if (_log.shouldDebug())
+            _log.debug("Snark stop() begin", new Exception("I did it"));
         if (_umgr != null && _uhandler != null) {
             //_uhandler.shutdown();
             _umgr.unregister(_uhandler, UpdateType.ROUTER_SIGNED, UpdateMethod.TORRENT);
@@ -395,8 +398,6 @@ public class SnarkManager implements CompleteListener, ClientApp {
     /** hook to I2PSnarkUtil for the servlet */
     public I2PSnarkUtil util() { return _util; }
 
-    private static final int MAX_MESSAGES = 100;
-
     /**
      *  Use if it does not include a link.
      *  Escapes '&lt;' and '&gt;' before queueing
@@ -411,24 +412,27 @@ public class SnarkManager implements CompleteListener, ClientApp {
      * @since 0.9.14.1
      */
     public void addMessageNoEscape(String message) {
-        _messages.offer(message);
-        while (_messages.size() > MAX_MESSAGES) {
-            _messages.poll();
-        }
+        _messages.addMessageNoEscape(message);
         if (_log.shouldLog(Log.INFO))
             _log.info("MSG: " + message);
     }
     
     /** newest last */
-    public List<String> getMessages() {
-        if (_messages.isEmpty())
-            return Collections.emptyList();
-        return new ArrayList<String>(_messages);
+    public List<UIMessages.Message> getMessages() {
+        return _messages.getMessages();
     }
     
     /** @since 0.9 */
     public void clearMessages() {
             _messages.clear();
+    }
+    
+    /**
+     *  Clear through this id
+     *  @since 0.9.33
+     */
+    public void clearMessages(int id) {
+            _messages.clearThrough(id);
     }
     
     /**
@@ -451,6 +455,17 @@ public class SnarkManager implements CompleteListener, ClientApp {
         String val = _config.getProperty(PROP_SMART_SORT);
         if (val == null)
             return true;
+        return Boolean.parseBoolean(val);
+    }
+
+    /**
+     *  @return default true
+     *  @since 0.9.32
+     */
+    public boolean isCollapsePanelsEnabled() {
+        String val = _config.getProperty(PROP_COLLAPSE_PANELS);
+        if (val == null)
+            return I2PSnarkUtil.DEFAULT_COLLAPSE_PANELS;
         return Boolean.parseBoolean(val);
     }
 
@@ -798,6 +813,9 @@ public class SnarkManager implements CompleteListener, ClientApp {
             _config.setProperty(PROP_COMMENTS, "true");
         if (!_config.containsKey(PROP_COMMENTS_NAME))
             _config.setProperty(PROP_COMMENTS_NAME, "");
+        if (!_config.containsKey(PROP_COLLAPSE_PANELS))
+            _config.setProperty(PROP_COLLAPSE_PANELS,
+                                Boolean.toString(I2PSnarkUtil.DEFAULT_COLLAPSE_PANELS));
         updateConfig();
     }
 
@@ -871,7 +889,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
                 _util.setMaxUpBW(limits[1]);
         }
     }
-    
+
     private void updateConfig() {
         String i2cpHost = _config.getProperty(PROP_I2CP_HOST);
         int i2cpPort = getInt(PROP_I2CP_PORT, 7654);
@@ -908,6 +926,8 @@ public class SnarkManager implements CompleteListener, ClientApp {
         _util.setRatingsEnabled(Boolean.parseBoolean(_config.getProperty(PROP_RATINGS, "true")));
         _util.setCommentsEnabled(Boolean.parseBoolean(_config.getProperty(PROP_COMMENTS, "true")));
         _util.setCommentsName(_config.getProperty(PROP_COMMENTS_NAME, ""));
+        _util.setCollapsePanels(Boolean.parseBoolean(_config.getProperty(PROP_COLLAPSE_PANELS,
+                                          Boolean.toString(I2PSnarkUtil.DEFAULT_COLLAPSE_PANELS))));
         File dd = getDataDir();
         if (dd.isDirectory()) {
             if (!dd.canWrite())
@@ -918,7 +938,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
         }
         initTrackerMap();
     }
-    
+
     private int getInt(String prop, int defaultVal) {
         String p = _config.getProperty(prop);
         try {
@@ -929,29 +949,29 @@ public class SnarkManager implements CompleteListener, ClientApp {
         }
         return defaultVal;
     }
-    
+
     /**
      *  all params may be null or need trimming
      */
     public void updateConfig(String dataDir, boolean filesPublic, boolean autoStart, boolean smartSort, String refreshDelay,
-                             String startDelay, String pageSize, String seedPct, String eepHost, 
+                             String startDelay, String pageSize, String seedPct, String eepHost,
                              String eepPort, String i2cpHost, String i2cpPort, String i2cpOpts,
                              String upLimit, String upBW, boolean useOpenTrackers, boolean useDHT, String theme,
-                             String lang, boolean enableRatings, boolean enableComments, String commentName) {
+                             String lang, boolean enableRatings, boolean enableComments, String commentName, boolean collapsePanels) {
         synchronized(_configLock) {
-            locked_updateConfig(dataDir, filesPublic, autoStart, smartSort,refreshDelay,
-                                startDelay,  pageSize,  seedPct,  eepHost, 
-                                eepPort,  i2cpHost,  i2cpPort,  i2cpOpts,
-                                upLimit,  upBW, useOpenTrackers, useDHT,  theme,
-                                lang, enableRatings, enableComments, commentName);
+            locked_updateConfig(dataDir, filesPublic, autoStart, smartSort, refreshDelay,
+                                startDelay, pageSize, seedPct, eepHost,
+                                eepPort, i2cpHost, i2cpPort, i2cpOpts,
+                                upLimit, upBW, useOpenTrackers, useDHT, theme,
+                                lang, enableRatings, enableComments, commentName, collapsePanels);
         }
     }
 
     private void locked_updateConfig(String dataDir, boolean filesPublic, boolean autoStart, boolean smartSort, String refreshDelay,
-                             String startDelay, String pageSize, String seedPct, String eepHost, 
+                             String startDelay, String pageSize, String seedPct, String eepHost,
                              String eepPort, String i2cpHost, String i2cpPort, String i2cpOpts,
                              String upLimit, String upBW, boolean useOpenTrackers, boolean useDHT, String theme,
-                             String lang, boolean enableRatings, boolean enableComments, String commentName) {
+                             String lang, boolean enableRatings, boolean enableComments, String commentName, boolean collapsePanels) {
         boolean changed = false;
         boolean interruptMonitor = false;
         //if (eepHost != null) {
@@ -996,7 +1016,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
                 }
             }
         }
-        
+
 	if (startDelay != null && _context.isRouterContext()) {
 		int minutes = _util.getStartupDelay();
                 try { minutes = Integer.parseInt(startDelay.trim()); } catch (NumberFormatException nfe) {}
@@ -1004,7 +1024,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
                 	    _util.setStartupDelay(minutes);
 	                    changed = true;
         	            _config.setProperty(PROP_STARTUP_DELAY, Integer.toString(minutes));
-                	    addMessage(_t("Startup delay changed to {0}", DataHelper.formatDuration2(minutes * (60L * 1000))));
+                	    addMessageNoEscape(_t("Startup delay changed to {0}", DataHelper.formatDuration2(minutes * (60L * 1000))));
                 }
 	}
 
@@ -1015,7 +1035,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
 	            changed = true;
 	            _config.setProperty(PROP_REFRESH_DELAY, Integer.toString(secs));
                     if (secs >= 0)
-	                addMessage(_t("Refresh time changed to {0}", DataHelper.formatDuration2(secs * 1000)));
+	                addMessageNoEscape(_t("Refresh time changed to {0}", DataHelper.formatDuration2(secs * 1000)));
 	            else
 	                addMessage(_t("Refresh disabled"));
 	        }
@@ -1038,13 +1058,27 @@ public class SnarkManager implements CompleteListener, ClientApp {
             } catch (NumberFormatException nfe) {}
         }
 
+        // set this before we check the data dir
+        if (areFilesPublic() != filesPublic) {
+            _config.setProperty(PROP_FILES_PUBLIC, Boolean.toString(filesPublic));
+            _util.setFilesPublic(filesPublic);
+            if (filesPublic)
+                addMessage(_t("New files will be publicly readable"));
+            else
+                addMessage(_t("New files will not be publicly readable"));
+            changed = true;
+        }
+
         if (dataDir != null && !dataDir.equals(getDataDir().getAbsolutePath())) {
             dataDir = DataHelper.stripHTML(dataDir.trim());
-            File dd = new File(dataDir);
+            File dd = areFilesPublic() ? new File(dataDir) : new SecureDirectory(dataDir);
             if (!dd.isAbsolute()) {
                 addMessage(_t("Data directory must be an absolute path") + ": " + dataDir);
-            } else if (!dd.exists()) {
-                addMessage(_t("Data directory does not exist") + ": " + dataDir);
+            } else if (!dd.exists() && !dd.mkdirs()) {
+                // save this tag for now, may need it again
+                if (false)
+                    addMessage(_t("Data directory does not exist") + ": " + dataDir);
+                addMessage(_t("Data directory cannot be created") + ": " + dataDir);
             } else if (!dd.isDirectory()) {
                 addMessage(_t("Not a directory") + ": " + dataDir);
             } else if (!dd.canRead()) {
@@ -1115,7 +1149,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
                 if (split > 0)
                     oldOpts.put(pair.substring(0, split), pair.substring(split+1));
             }
-            
+
             boolean reconnect = i2cpHost != null && i2cpHost.trim().length() > 0 && port > 0 &&
                                 (port != _util.getI2CPPort() || !oldI2CPHost.equals(i2cpHost));
             if (reconnect || !oldOpts.equals(opts)) {
@@ -1176,16 +1210,6 @@ public class SnarkManager implements CompleteListener, ClientApp {
                 changed = true;
             }  // reconnect || changed options
 
-        if (areFilesPublic() != filesPublic) {
-            _config.setProperty(PROP_FILES_PUBLIC, Boolean.toString(filesPublic));
-            _util.setFilesPublic(filesPublic);
-            if (filesPublic)
-                addMessage(_t("New files will be publicly readable"));
-            else
-                addMessage(_t("New files will not be publicly readable"));
-            changed = true;
-        }
-
         if (shouldAutoStart() != autoStart) {
             _config.setProperty(PROP_AUTO_START, Boolean.toString(autoStart));
             if (autoStart)
@@ -1245,13 +1269,13 @@ public class SnarkManager implements CompleteListener, ClientApp {
         if (commentName == null) {
             commentName = "";
         } else {
-            commentName = commentName.replaceAll("[\n\r<>#;]", "");
+            commentName = commentName.trim().replaceAll("[\n\r<>#;]", "");
             if (commentName.length() > Comment.MAX_NAME_LEN)
                 commentName = commentName.substring(0, Comment.MAX_NAME_LEN);
         }
         if (!_util.getCommentsName().equals(commentName)) {
             _config.setProperty(PROP_COMMENTS_NAME, commentName);
-            addMessage(_t("Comments name set to {0}.", commentName));
+            addMessage(_t("Comments name set to {0}.", '"' + commentName + '"'));
             _util.setCommentsName(commentName);
             changed = true;
         }
@@ -1261,6 +1285,15 @@ public class SnarkManager implements CompleteListener, ClientApp {
                 addMessage(_t("{0} theme loaded.", theme));
                 changed = true;
             }
+        }
+        if (_util.collapsePanels() != collapsePanels) {
+            _config.setProperty(PROP_COLLAPSE_PANELS, Boolean.toString(collapsePanels));
+            if (collapsePanels)
+                addMessage(_t("Collapsible panels enabled."));
+            else
+                addMessage(_t("Collapsible panels disabled."));
+            _util.setCollapsePanels(collapsePanels);
+            changed = true;
         }
         if (changed) {
             saveConfig();
@@ -1485,7 +1518,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
                         fis.close();
                         fis = null;
                     } catch (IOException e) {}
-                    
+
                     // This test may be a duplicate, but not if we were called
                     // from the DirMonitor, which only checks for dup torrent file names.
                     Snark snark = getTorrentByInfoHash(info.getInfoHash());
@@ -1522,11 +1555,13 @@ public class SnarkManager implements CompleteListener, ClientApp {
                         _log.info("New Snark, torrent: " + filename + " base: " + baseFile);
                     torrent = new Snark(_util, filename, null, -1, null, null, this,
                                         _peerCoordinatorSet, _connectionAcceptor,
-                                        shouldAutoStart(), dataDir.getPath(), baseFile);
+                                        dataDir.getPath(), baseFile);
                     loadSavedFilePriorities(torrent);
                     synchronized (_snarks) {
                         _snarks.put(filename, torrent);
                     }
+                    if (shouldAutoStart())
+                        torrent.startTorrent();
                 } catch (IOException ioe) {
                     // close before rename/delete for windows
                     if (fis != null) try { fis.close(); fis = null; } catch (IOException ioe2) {}
@@ -1627,7 +1662,7 @@ public class SnarkManager implements CompleteListener, ClientApp {
         String dirPath = dataDir != null ? dataDir.getAbsolutePath() : getDataDir().getPath();
         Snark torrent = new Snark(_util, name, ih, trackerURL, listener,
                                   _peerCoordinatorSet, _connectionAcceptor,
-                                  false, dirPath);
+                                  dirPath);
 
         synchronized (_snarks) {
             Snark snark = getTorrentByInfoHash(ih);
@@ -1643,7 +1678,8 @@ public class SnarkManager implements CompleteListener, ClientApp {
         }
         if (autoStart) {
             startTorrent(ih);
-            addMessage(_t("Fetching {0}", name));
+            if (false)
+                addMessage(_t("Fetching {0}", name));
             DHT dht = _util.getDHT();
             boolean shouldWarn = _util.connected() &&
                                  _util.getOpenTrackers().isEmpty() &&
@@ -2025,14 +2061,16 @@ public class SnarkManager implements CompleteListener, ClientApp {
         if (config.getProperty(PROP_META_ADDED) == null)
             config.setProperty(PROP_META_ADDED, now);
         String bfs;
-        if (bitfield.complete()) {
-          bfs = ".";
-          if (config.getProperty(PROP_META_COMPLETED) == null)
-              config.setProperty(PROP_META_COMPLETED, now);
-        } else {
-          byte[] bf = bitfield.getFieldBytes();
-          bfs = Base64.encode(bf);
-          config.remove(PROP_META_COMPLETED);
+        synchronized(bitfield) {
+            if (bitfield.complete()) {
+              bfs = ".";
+              if (config.getProperty(PROP_META_COMPLETED) == null)
+                  config.setProperty(PROP_META_COMPLETED, now);
+            } else {
+              byte[] bf = bitfield.getFieldBytes();
+              bfs = Base64.encode(bf);
+              config.remove(PROP_META_COMPLETED);
+            }
         }
         config.setProperty(PROP_META_BITFIELD, bfs);
         config.setProperty(PROP_META_PRESERVE_NAMES, Boolean.toString(preserveNames));
@@ -2336,11 +2374,10 @@ public class SnarkManager implements CompleteListener, ClientApp {
             // don't bother delaying if auto start is false
             long delay = (60L * 1000) * getStartupDelayMinutes();
             if (delay > 0 && shouldAutoStart()) {
-                addMessageNoEscape(_t("Adding torrents in {0}", DataHelper.formatDuration2(delay)));
+                int id = _messages.addMessageNoEscape(_t("Adding torrents in {0}", DataHelper.formatDuration2(delay)));
                 try { Thread.sleep(delay); } catch (InterruptedException ie) {}
                 // Remove that first message
-                if (_messages.size() == 1)
-                    _messages.poll();
+                _messages.clearThrough(id);
             }
 
             // here because we need to delay until I2CP is up
@@ -2499,7 +2536,8 @@ public class SnarkManager implements CompleteListener, ClientApp {
             return DataHelper.escapeHTML(snark.getBaseName());
         StringBuilder buf = new StringBuilder(256);
         String base = DataHelper.escapeHTML(storage.getBaseName());
-        buf.append("<a href=\"").append(_contextPath).append('/').append(base);
+        String enc = base.replace("[", "%5B").replace("]", "%5D").replace("|", "%7C");
+        buf.append("<a href=\"").append(_contextPath).append('/').append(enc);
         if (meta.getFiles() != null || !storage.complete())
             buf.append('/');
         buf.append("\">").append(base).append("</a>");
@@ -2546,14 +2584,14 @@ public class SnarkManager implements CompleteListener, ClientApp {
      */
     private boolean monitorTorrents(File dir) {
         boolean rv = true;
-        String fileNames[] = dir.list(TorrentFilenameFilter.instance());
+        File files[] = dir.listFiles(new FileSuffixFilter(".torrent"));
         List<String> foundNames = new ArrayList<String>(0);
-        if (fileNames != null) {
-            for (int i = 0; i < fileNames.length; i++) {
+        if (files != null) {
+            for (int i = 0; i < files.length; i++) {
                 try {
-                    foundNames.add(new File(dir, fileNames[i]).getCanonicalPath());
+                    foundNames.add(files[i].getCanonicalPath());
                 } catch (IOException ioe) {
-                    _log.error("Error resolving '" + fileNames[i] + "' in '" + dir, ioe);
+                    _log.error("Error resolving '" + files[i] + "' in '" + dir, ioe);
                 }
             }
         }
@@ -2698,14 +2736,6 @@ public class SnarkManager implements CompleteListener, ClientApp {
         }
         _config.setProperty(PROP_TRACKERS, buf.toString());
         saveConfig();
-    }
-
-    private static class TorrentFilenameFilter implements FilenameFilter {
-        private static final TorrentFilenameFilter _filter = new TorrentFilenameFilter();
-        public static TorrentFilenameFilter instance() { return _filter; }
-        public boolean accept(File dir, String name) {
-            return (name != null) && (name.endsWith(".torrent"));
-        }
     }
 
     /**

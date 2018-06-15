@@ -1,5 +1,7 @@
 package net.i2p.jetty;
 
+import java.io.IOException;
+
 // Contains code from org.mortbay.xml.XmlConfiguation:
 
 // ========================================================================
@@ -16,7 +18,10 @@ package net.i2p.jetty;
 // limitations under the License.
 // ========================================================================
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -29,11 +34,10 @@ import static net.i2p.app.ClientAppState.*;
 import net.i2p.util.I2PAppThread;
 import net.i2p.util.PortMapper;
 
+import org.eclipse.jetty.server.AbstractNetworkConnector;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.NetworkConnector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.component.LifeCycle;
-import org.eclipse.jetty.util.resource.Resource;
 import org.eclipse.jetty.xml.XmlConfiguration;
 
 /**
@@ -51,9 +55,10 @@ public class JettyStart implements ClientApp {
     private final ClientAppManager _mgr;
     private final String[] _args;
     private final List<LifeCycle> _jettys;
+    // warning, may be null if called from main
     private final I2PAppContext _context;
     private volatile ClientAppState _state;
-    private volatile int _port;
+    private volatile int _port, _sslPort;
 
     /**
      *  All args must be XML file names.
@@ -79,14 +84,19 @@ public class JettyStart implements ClientApp {
     public void parseArgs(String[] args) throws Exception {
         Properties properties=new Properties();
         XmlConfiguration last=null;
-        InputStream in = null;
         for (int i = 0; i < args.length; i++) {
+            File f = new File(args[i]);
             if (args[i].toLowerCase().endsWith(".properties")) {
-                in = Resource.newResource(args[i]).getInputStream();
-                properties.load(in);
-                in.close();
+                InputStream in = null;
+                try {
+                    in = new FileInputStream(f);
+                    properties.load(in);
+                } finally {
+                    if (in != null) try { in.close(); } catch (IOException ioe) {}
+                }
             } else {
-                XmlConfiguration configuration = new XmlConfiguration(Resource.newResource(args[i]).getURL());
+                URL configUrl = f.toURI().toURL();
+                XmlConfiguration configuration = new XmlConfiguration(configUrl);
                 if (last!=null)
                     configuration.getIdMap().putAll(last.getIdMap());
                 if (properties.size()>0) {
@@ -103,7 +113,7 @@ public class JettyStart implements ClientApp {
     }
 
     public synchronized void startup() {
-        if (_state != INITIALIZED)
+        if (_state != INITIALIZED && _state != STOPPED && _state != START_FAILED)
             return;
         if (_jettys.isEmpty()) {
             changeState(START_FAILED);
@@ -126,21 +136,34 @@ public class JettyStart implements ClientApp {
                 if (!lc.isRunning()) {
                     try {
                         lc.start();
-                        if (_context != null && _context.portMapper().getPort(PortMapper.SVC_EEPSITE) <= 0) {
+                        if (_context != null) {
+                            PortMapper pm = _context.portMapper();
                             if (lc instanceof Server) {
                                 Server server = (Server) lc;
                                 Connector[] connectors = server.getConnectors();
-                                if (connectors.length > 0) {
-                                    Connector conn = connectors[0];
-                                    if (conn instanceof NetworkConnector) {
-                                        NetworkConnector nconn = (NetworkConnector) conn;
+                                for (int i = 0; i < connectors.length; i++) {
+                                    Connector conn = connectors[i];
+                                    if (conn instanceof AbstractNetworkConnector) {
+                                        AbstractNetworkConnector nconn = (AbstractNetworkConnector) conn;
                                         int port = nconn.getPort();
                                         if (port > 0) {
-                                            _port = port;
                                             String host = nconn.getHost();
-                                            if (host.equals("0.0.0.0") || host.equals("::"))
+                                            if (host.equals("0.0.0.0"))
                                                 host = "127.0.0.1";
-                                            _context.portMapper().register(PortMapper.SVC_EEPSITE, host, port);
+                                            else if (host.equals("::"))
+                                                host = "::1";
+                                            // see ConnectionFactory javadoc, but from testing, it ends with /1.1
+                                            boolean isSSL = nconn.getConnectionFactory("SSL-http/1.1") != null;
+                                            String svc;
+                                            if (isSSL) {
+                                                _sslPort = port;
+                                                svc = PortMapper.SVC_HTTPS_EEPSITE;
+                                            } else {
+                                                _port = port;
+                                                svc = PortMapper.SVC_EEPSITE;
+                                            }
+                                            if (pm.getPort(svc) <= 0)
+                                                pm.register(svc, host, port);
                                         }
                                     }
                                 }
@@ -184,9 +207,16 @@ public class JettyStart implements ClientApp {
                     }
                 }
             }
-            if (_context != null && _port > 0 && _context.portMapper().getPort(PortMapper.SVC_EEPSITE) == _port) {
-                _port = 0;
-                _context.portMapper().unregister(PortMapper.SVC_EEPSITE);
+            if (_context != null) {
+                PortMapper pm = _context.portMapper();
+                if (_port > 0 && pm.getPort(PortMapper.SVC_EEPSITE) == _port) {
+                    _port = 0;
+                    pm.unregister(PortMapper.SVC_EEPSITE);
+                }
+                if (_sslPort > 0 && pm.getPort(PortMapper.SVC_HTTPS_EEPSITE) == _sslPort) {
+                    _sslPort = 0;
+                    pm.unregister(PortMapper.SVC_HTTPS_EEPSITE);
+                }
             }
             changeState(STOPPED);
         }

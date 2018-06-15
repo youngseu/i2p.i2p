@@ -48,8 +48,8 @@ public class EepGet {
     protected final I2PAppContext _context;
     protected final Log _log;
     protected final boolean _shouldProxy;
-    private final String _proxyHost;
-    private final int _proxyPort;
+    protected final String _proxyHost;
+    protected final int _proxyPort;
     protected final int _numRetries;
     private final long _minSize; // minimum and maximum acceptable response size, -1 signifies unlimited,
     private final long _maxSize; // applied both against whole responses and chunks
@@ -85,7 +85,6 @@ public class EepGet {
     protected boolean _notModified;
     protected String _contentType;
     protected boolean _transferFailed;
-    protected boolean _headersRead;
     protected boolean _aborted;
     protected int _fetchHeaderTimeout;
     private long _fetchEndTime;
@@ -328,6 +327,9 @@ public class EepGet {
         try {
             nameURL = new URI(url);
         } catch (URISyntaxException e) {
+            String msg = e.getLocalizedMessage();
+            if (msg != null)
+                System.err.println(msg);
             System.err.println("Please enter a properly formed URL.");
             System.exit(1);
         }
@@ -695,13 +697,8 @@ public class EepGet {
      *  @param timeout may be null
      */
     protected void doFetch(SocketTimeout timeout) throws IOException {
-        _headersRead = false;
         _aborted = false;
-        try {
-            readHeaders();
-        } finally {
-            _headersRead = true;
-        }
+        readHeaders();
         if (_aborted)
             throw new IOException("Timed out reading the HTTP headers");
         
@@ -726,6 +723,8 @@ public class EepGet {
             try {
                 if (_redirectLocation.startsWith("http://")) {
                     _actualURL = _redirectLocation;
+                } else if (_redirectLocation.startsWith("https://")) {
+                    throw new IOException("Redirect to https unsupported");
                 } else { 
                     // the Location: field has been required to be an absolute URI at least since
                     // RFC 1945 (HTTP/1.0 1996), so it isn't clear what the point of this is.
@@ -797,7 +796,7 @@ public class EepGet {
         if (_isGzippedResponse) {
             if (_log.shouldInfo())
                 _log.info("Gzipped response, starting decompressor");
-            PipedInputStream pi = BigPipedInputStream.getInstance();
+            PipedInputStream pi = new PipedInputStream(64*1024);
             PipedOutputStream po = new PipedOutputStream(pi);
             pusher = new I2PAppThread(new Gunzipper(pi, _out), "EepGet Decompressor");
             _out = po;
@@ -956,6 +955,7 @@ public class EepGet {
             case 302:
             case 303:
             case 307:
+            case 308:
                 _alreadyTransferred = 0;
                 rcOk = true;
                 redirect = true;
@@ -1079,11 +1079,14 @@ public class EepGet {
 
         buf.setLength(0);
         byte lookahead[] = new byte[3];
+        // "prime" the lookahead buffer with a '\n',
+        // so it works if there's no header lines at all, like a HTTPS proxy
+        increment(lookahead, '\n');
         while (true) {
             int cur = _proxyIn.read();
             switch (cur) {
                 case -1: 
-                    throw new IOException("Headers ended too soon");
+                    throw new IOException("EOF reading headers");
                 case ':':
                     if (key == null) {
                         key = buf.toString();
@@ -1105,7 +1108,7 @@ public class EepGet {
                     increment(lookahead, cur);
                     if (isEndOfHeaders(lookahead)) {
                         if (!rcOk)
-                            throw new IOException("Invalid HTTP response code: " + _responseCode + ' ' + _responseText);
+                            throw new IOException("Invalid HTTP response: " + _responseCode + ' ' + _responseText);
                         if (_encodingChunked) {
                             _bytesRemaining = readChunkLength();
                         }
@@ -1121,7 +1124,7 @@ public class EepGet {
                     increment(lookahead, cur);
             }
             
-            if (buf.length() > 1024)
+            if (buf.length() > 4096)
                 throw new IOException("Header line too long: " + buf.toString());
         }
     }
@@ -1166,8 +1169,9 @@ public class EepGet {
      * @return HTTP response code (200, 206, other)
      */
     private int handleStatus(String line) {
+        line = line.trim();
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Status line: [" + line.trim() + "]");
+            _log.debug("Status line: [" + line + "]");
         String[] toks = DataHelper.split(line, " ", 3);
         if (toks.length < 2) {
             if (_log.shouldLog(Log.WARN))
@@ -1360,7 +1364,7 @@ public class EepGet {
             buf.append("-\r\n");
         }
         if (!_allowCaching) {
-            buf.append("Cache-control: no-cache\r\n" +
+            buf.append("Cache-Control: no-cache\r\n" +
                        "Pragma: no-cache\r\n");
         }
         boolean uaOverridden = false;
@@ -1501,6 +1505,8 @@ public class EepGet {
      *  As of 0.9.14, If name is If-None-Match or If-Modified-Since,
      *  this will replace the etag or last-modified value given in the constructor.
      *  Note that headers may be subsequently modified or removed in the I2PTunnel HTTP Client proxy.
+     *
+     *  In proxied SSLEepGet, these headers are sent to the remote server, NOT the proxy.
      *
      *  @since 0.8.8
      */
@@ -1738,6 +1744,12 @@ public class EepGet {
             rv.put("response", '"' + PasswordManager.md5Hex(kd) + '"');
             return rv;
         }
+
+        /** @since 0.9.33 */
+        public String getUsername() { return username; }
+
+        /** @since 0.9.33 */
+        public String getPassword() { return password; }
     }
 
     /**

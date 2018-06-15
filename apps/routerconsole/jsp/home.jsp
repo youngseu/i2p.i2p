@@ -54,7 +54,7 @@
 %>
 
 <div class="main" id="home">
-<jsp:useBean class="net.i2p.router.web.HomeHelper" id="homehelper" scope="request" />
+<jsp:useBean class="net.i2p.router.web.helpers.HomeHelper" id="homehelper" scope="request" />
 <jsp:setProperty name="homehelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
 <% if (homehelper.shouldShowWelcome()) { %>
 <div class="welcome" title="<%=intl._t("Click a flag to select a language. Click 'Configure UI' below to change it later.")%>">
@@ -71,6 +71,7 @@
     <a href="/home?lang=fr&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=fr" title="Français" alt="Français"></a>
     <a href="/home?lang=gl&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=lang_gl" title="Galician" alt="Galician"></a>
     <a href="/home?lang=el&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=gr" title="Greek ελληνικά" alt="Greek ελληνικά"></a>
+    <a href="/home?lang=in&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=id" title="bahasa Indonesia" alt="bahasa Indonesia"></a>
     <a href="/home?lang=it&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=it" title="Italiano" alt="Italiano"></a>
     <a href="/home?lang=ja&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=jp" title="Japanese 日本語" alt="Japanese 日本語"></a>
     <a href="/home?lang=ko&amp;consoleNonce=<%=consoleNonce%>"><img height="11" width="16" style="padding: 0 2px;" src="/flags.jsp?c=kr" title="Korean 한국어" alt="Korean 한국어"></a><br>
@@ -105,7 +106,7 @@
       </td><td align="left">
         <button type="submit" value="search" class="search"><%=intl._t("Search")%></button>
       </td><td align="left">
-        <jsp:useBean class="net.i2p.router.web.SearchHelper" id="searchhelper" scope="request" />
+        <jsp:useBean class="net.i2p.router.web.helpers.SearchHelper" id="searchhelper" scope="request" />
         <jsp:setProperty name="searchhelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
         <jsp:getProperty name="searchhelper" property="selector" />
       </td></tr></table>

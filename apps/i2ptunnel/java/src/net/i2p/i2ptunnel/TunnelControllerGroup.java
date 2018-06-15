@@ -45,8 +45,8 @@ public class TunnelControllerGroup implements ClientApp {
     
     private final List<TunnelController> _controllers;
     private final ReadWriteLock _controllersLock;
+    // locking: this
     private boolean _controllersLoaded;
-    private final Object _controllersLoadedLock = new Object();
     private final String _configFile;
     
     private static final String REGISTERED_NAME = "i2ptunnel";
@@ -155,7 +155,7 @@ public class TunnelControllerGroup implements ClientApp {
         } catch (IllegalArgumentException iae) {
             if (DEFAULT_CONFIG_FILE.equals(_configFile) && !_context.isRouterContext()) {
                 // for i2ptunnel command line
-                synchronized (_controllersLoadedLock) {
+                synchronized (this) {
                     _controllersLoaded = true;
                 }
                 _log.logAlways(Log.WARN, "Not in router context and no preconfigured tunnels");
@@ -263,10 +263,8 @@ public class TunnelControllerGroup implements ClientApp {
      * @throws IllegalArgumentException if unable to load from file
      */
     public synchronized void loadControllers(String configFile) {
-        synchronized (_controllersLoadedLock) {
-            if (_controllersLoaded)
-                return;
-        }
+        if (_controllersLoaded)
+            return;
 
         Properties cfg = loadConfig(configFile);
         int i = 0;
@@ -284,9 +282,7 @@ public class TunnelControllerGroup implements ClientApp {
             _controllersLock.writeLock().unlock();
         }
 
-        synchronized (_controllersLoadedLock) {
-            _controllersLoaded = true;
-        }
+        _controllersLoaded = true;
         if (i > 0) {
             if (_log.shouldLog(Log.INFO))
                 _log.info(i + " controllers loaded from " + configFile);
@@ -330,6 +326,7 @@ public class TunnelControllerGroup implements ClientApp {
     /**
      * Stop all tunnels, reload config, and restart those configured to do so.
      * WARNING - Does NOT simply reload the configuration!!! This is probably not what you want.
+     * This does not return or clear the controller messages.
      *
      * @throws IllegalArgumentException if unable to reload config file
      */
@@ -345,10 +342,8 @@ public class TunnelControllerGroup implements ClientApp {
      *
      */
     public synchronized void unloadControllers() {
-        synchronized (_controllersLoadedLock) {
-            if (!_controllersLoaded)
-                return;
-        }
+        if (!_controllersLoaded)
+            return;
 
         _controllersLock.writeLock().lock();
         try {
@@ -358,9 +353,7 @@ public class TunnelControllerGroup implements ClientApp {
             _controllersLock.writeLock().unlock();
         }
 
-        synchronized (_controllersLoadedLock) {
-            _controllersLoaded = false;
-        }
+        _controllersLoaded = false;
         if (_log.shouldLog(Log.INFO))
             _log.info("All controllers stopped and unloaded");
     }
@@ -380,7 +373,8 @@ public class TunnelControllerGroup implements ClientApp {
     }
 
     /**
-     * Stop and remove the given tunnel
+     * Stop and remove the given tunnel.
+     * Side effect - clears all messages the controller.
      *
      * @return list of messages from the controller as it is stopped
      */
@@ -400,6 +394,7 @@ public class TunnelControllerGroup implements ClientApp {
     
     /**
      * Stop all tunnels. May be restarted.
+     * Side effect - clears all messages from all controllers.
      *
      * @return list of messages the tunnels generate when stopped
      */
@@ -436,7 +431,8 @@ public class TunnelControllerGroup implements ClientApp {
     }
     
     /**
-     * Start all tunnels
+     * Start all tunnels.
+     * Side effect - clears all messages from all controllers.
      *
      * @return list of messages the tunnels generate when started
      */
@@ -459,7 +455,8 @@ public class TunnelControllerGroup implements ClientApp {
     }
     
     /**
-     * Restart all tunnels
+     * Restart all tunnels.
+     * Side effect - clears all messages from all controllers.
      *
      * @return list of messages the tunnels generate when restarted
      */
@@ -481,7 +478,7 @@ public class TunnelControllerGroup implements ClientApp {
     }
     
     /**
-     * Fetch all outstanding messages from any of the known tunnels
+     * Fetch and clear all outstanding messages from any of the known tunnels.
      *
      * @return list of messages the tunnels have generated
      */
@@ -572,7 +569,7 @@ public class TunnelControllerGroup implements ClientApp {
      * @throws IllegalArgumentException if unable to load config from file
      */
     public List<TunnelController> getControllers() {
-        synchronized (_controllersLoadedLock) {
+        synchronized (this) {
             if (!_controllersLoaded)
                 loadControllers(_configFile);
         }

@@ -1,0 +1,34 @@
+apply plugin: 'java-library'
+
+sourceSets {
+    main {
+        java {
+            srcDir 'java/src'
+            exclude 'com'
+        }
+    }
+    test {
+        java {
+            srcDir 'java/test/junit'
+            exclude {
+                it.name.endsWith('IT.java')
+            }
+            // Needs rewriting
+            exclude 'net/i2p/router/tunnel/BuildMessageTestStandalone.java'
+        }
+    }
+}
+
+dependencies {
+    api project(':core')
+    implementation 'com.maxmind.geoip:geoip-api:1.3.1'
+    implementation 'gnu.getopt:java-getopt:1.0.13'
+    testImplementation project(path: ':core', configuration: 'tests')
+}
+
+jar {
+    manifest {
+        // so people with very old wrapper.config files will still work with Jetty 6
+        attributes 'Class-Path': 'jetty-i2p.jar jetty-java5-threadpool.jar jetty-rewrite-handler.jar jetty-sslengine.jar jetty-start.jar jetty-util.jar'
+    }
+}

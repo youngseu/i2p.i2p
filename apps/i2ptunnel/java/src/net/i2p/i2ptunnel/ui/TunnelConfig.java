@@ -31,6 +31,9 @@ import net.i2p.util.PasswordManager;
  * Helper class to generate a valid TunnelController configuration from provided
  * settings.
  *
+ * This class is also used by Android.
+ * Maintain as a stable API and take care not to break Android.
+ *
  * @since 0.9.19 logic moved from IndexBean
  */
 public class TunnelConfig {
@@ -50,6 +53,10 @@ public class TunnelConfig {
     // -2 or higher is valid
     private int _tunnelVariance = -3;
     private int _tunnelBackupQuantity = -1;
+    private int _tunnelDepthOut = -1;
+    private int _tunnelQuantityOut = -1;
+    private int _tunnelVarianceOut = -3;
+    private int _tunnelBackupQuantityOut = -1;
     private boolean _connectDelay;
     private String _customOptions;
     private String _proxyList;
@@ -104,22 +111,63 @@ public class TunnelConfig {
     public void setClientPort(String port) {
         _i2cpPort = (port != null ? port.trim() : null);
     }
-    /** how many hops to use for inbound tunnels */
+
+    /** how many hops to use for inbound tunnels
+     *  In or both in/out
+     */
     public void setTunnelDepth(int tunnelDepth) { 
         _tunnelDepth = tunnelDepth;
     }
-    /** how many parallel inbound tunnels to use */
+
+    /** how many parallel inbound tunnels to use
+     *  In or both in/out
+     */
     public void setTunnelQuantity(int tunnelQuantity) { 
         _tunnelQuantity = tunnelQuantity;
     }
-    /** how much randomisation to apply to the depth of tunnels */
+
+    /** how much randomisation to apply to the depth of tunnels
+     *  In or both in/out
+     */
     public void setTunnelVariance(int tunnelVariance) { 
         _tunnelVariance = tunnelVariance;
     }
-    /** how many tunnels to hold in reserve to guard against failures */
+
+    /** how many tunnels to hold in reserve to guard against failures
+     *  In or both in/out
+     */
     public void setTunnelBackupQuantity(int tunnelBackupQuantity) { 
         _tunnelBackupQuantity = tunnelBackupQuantity;
     }
+
+    /** how many hops to use for outbound tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelDepthOut(int tunnelDepth) { 
+        _tunnelDepthOut = tunnelDepth;
+    }
+
+    /** how many parallel outbound tunnels to use
+     *  @since 0.9.33
+     */
+    public void setTunnelQuantityOut(int tunnelQuantity) { 
+        _tunnelQuantityOut = tunnelQuantity;
+    }
+
+    /** how much randomisation to apply to the depth of tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelVarianceOut(int tunnelVariance) { 
+        _tunnelVarianceOut = tunnelVariance;
+    }
+
+    /** how many tunnels to hold in reserve to guard against failures
+     *  @since 0.9.33
+     */
+    public void setTunnelBackupQuantityOut(int tunnelBackupQuantity) { 
+        _tunnelBackupQuantityOut = tunnelBackupQuantity;
+    }
+
     /** what I2P session overrides should be used */
     public void setCustomOptions(String customOptions) { 
         _customOptions = (customOptions != null ? customOptions.trim() : null);
@@ -427,13 +475,13 @@ public class TunnelConfig {
     /**
      * all of these are @since 0.8.3 (moved from IndexBean)
      */
-    public static final String PROP_MAX_CONNS_MIN = "i2p.streaming.maxConnsPerMinute";
-    public static final String PROP_MAX_CONNS_HOUR = "i2p.streaming.maxConnsPerHour";
-    public static final String PROP_MAX_CONNS_DAY = "i2p.streaming.maxConnsPerDay";
-    public static final String PROP_MAX_TOTAL_CONNS_MIN = "i2p.streaming.maxTotalConnsPerMinute";
-    public static final String PROP_MAX_TOTAL_CONNS_HOUR = "i2p.streaming.maxTotalConnsPerHour";
-    public static final String PROP_MAX_TOTAL_CONNS_DAY = "i2p.streaming.maxTotalConnsPerDay";
-    public static final String PROP_MAX_STREAMS = "i2p.streaming.maxConcurrentStreams";
+    public static final String PROP_MAX_CONNS_MIN = TunnelController.PROP_MAX_CONNS_MIN;
+    public static final String PROP_MAX_CONNS_HOUR = TunnelController.PROP_MAX_CONNS_HOUR;
+    public static final String PROP_MAX_CONNS_DAY = TunnelController.PROP_MAX_CONNS_DAY;
+    public static final String PROP_MAX_TOTAL_CONNS_MIN = TunnelController.PROP_MAX_TOTAL_CONNS_MIN;
+    public static final String PROP_MAX_TOTAL_CONNS_HOUR = TunnelController.PROP_MAX_TOTAL_CONNS_HOUR;
+    public static final String PROP_MAX_TOTAL_CONNS_DAY = TunnelController.PROP_MAX_TOTAL_CONNS_DAY;
+    public static final String PROP_MAX_STREAMS = TunnelController.PROP_MAX_STREAMS;
 
     public void setLimitMinute(int val) {
         _otherOptions.put(PROP_MAX_CONNS_MIN, Integer.toString(val));
@@ -552,6 +600,9 @@ public class TunnelConfig {
             if (_port >= 0)
                 config.setProperty(TunnelController.PROP_LISTEN_PORT, Integer.toString(_port));
             config.setProperty(TunnelController.PROP_SHARED, _sharedClient + "");
+            // see I2PTunnelHTTPClient
+            if (TunnelController.TYPE_HTTP_CLIENT.equals(_type))
+                _booleanOptions.add(I2PTunnelHTTPClient.PROP_SSL_SET);
             for (String p : _booleanClientOpts)
                 config.setProperty(OPT + p, "" + _booleanOptions.contains(p));
             for (String p : _otherClientOpts) {
@@ -562,6 +613,8 @@ public class TunnelConfig {
             // generic server stuff
             if (_targetPort >= 0)
                 config.setProperty(TunnelController.PROP_TARGET_PORT, Integer.toString(_targetPort));
+            // see TunnelController.setConfig()
+            _booleanOptions.add(TunnelController.PROP_LIMITS_SET);
             for (String p : _booleanServerOpts)
                 config.setProperty(OPT + p, "" + _booleanOptions.contains(p));
             for (String p : _otherServerOpts) {
@@ -709,7 +762,8 @@ public class TunnelConfig {
         I2PTunnelHTTPClient.PROP_USER_AGENT,
         I2PTunnelHTTPClient.PROP_REFERER,
         I2PTunnelHTTPClient.PROP_ACCEPT,
-        I2PTunnelHTTPClient.PROP_INTERNAL_SSL
+        I2PTunnelHTTPClient.PROP_INTERNAL_SSL,
+        I2PTunnelHTTPClient.PROP_SSL_SET
         };
     private static final String _booleanServerOpts[] = {
         "i2cp.reduceOnIdle", "i2cp.encryptLeaseSet", PROP_ENABLE_ACCESS_LIST, PROP_ENABLE_BLACKLIST,
@@ -718,7 +772,8 @@ public class TunnelConfig {
         I2PTunnelHTTPServer.OPT_REJECT_REFERER,
         I2PTunnelHTTPServer.OPT_REJECT_USER_AGENTS,
         I2PTunnelServer.PROP_UNIQUE_LOCAL,
-        "shouldBundleReplyInfo"
+        "shouldBundleReplyInfo",
+        TunnelController.PROP_LIMITS_SET
         };
     private static final String _otherClientOpts[] = {
         "i2cp.reduceIdleTime", "i2cp.reduceQuantity", "i2cp.closeIdleTime",
@@ -840,19 +895,27 @@ public class TunnelConfig {
     public void updateTunnelQuantities(Properties config) {
         if (_tunnelQuantity >= 0) {
             config.setProperty("option.inbound.quantity", Integer.toString(_tunnelQuantity));
-            config.setProperty("option.outbound.quantity", Integer.toString(_tunnelQuantity));
+            if (_tunnelQuantityOut < 0)
+                _tunnelQuantityOut = _tunnelQuantity;
+            config.setProperty("option.outbound.quantity", Integer.toString(_tunnelQuantityOut));
         }
         if (_tunnelDepth >= 0) {
             config.setProperty("option.inbound.length", Integer.toString(_tunnelDepth));
-            config.setProperty("option.outbound.length", Integer.toString(_tunnelDepth));
+            if (_tunnelDepthOut < 0)
+                _tunnelDepthOut = _tunnelDepth;
+            config.setProperty("option.outbound.length", Integer.toString(_tunnelDepthOut));
         }
         if (_tunnelVariance >= -2) {
             config.setProperty("option.inbound.lengthVariance", Integer.toString(_tunnelVariance));
-            config.setProperty("option.outbound.lengthVariance", Integer.toString(_tunnelVariance));
+            if (_tunnelVarianceOut < -2)
+                _tunnelVarianceOut = _tunnelVariance;
+            config.setProperty("option.outbound.lengthVariance", Integer.toString(_tunnelVarianceOut));
         }
         if (_tunnelBackupQuantity >= 0) {
             config.setProperty("option.inbound.backupQuantity", Integer.toString(_tunnelBackupQuantity));
-            config.setProperty("option.outbound.backupQuantity", Integer.toString(_tunnelBackupQuantity));
+            if (_tunnelBackupQuantityOut < 0)
+                _tunnelBackupQuantityOut = _tunnelBackupQuantity;
+            config.setProperty("option.outbound.backupQuantity", Integer.toString(_tunnelBackupQuantityOut));
         }
     }
 }

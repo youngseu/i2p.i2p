@@ -11,6 +11,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
 
+import net.i2p.data.DataHelper;
 import net.i2p.data.Hash;
 import net.i2p.data.Lease;
 import net.i2p.data.LeaseSet;
@@ -65,8 +66,18 @@ public class TunnelPool {
         _expireSkew = _context.random().nextInt(90*1000);
         _started = System.currentTimeMillis();
         _lastRateUpdate = _started;
-        _rateName = "tunnel.Bps." +
-                    (_settings.isExploratory() ? "exploratory" : _settings.getDestinationNickname()) +
+        String name;
+        if (_settings.isExploratory()) {
+            name = "exploratory";
+        } else {
+            name = _settings.getDestinationNickname();
+            // just strip HTML here rather than escape it everywhere in the console
+            if (name != null)
+                name = DataHelper.stripHTML(name);
+            else
+                name = _settings.getDestination().toBase32();
+        }
+        _rateName = "tunnel.Bps." + name +
                     (_settings.isInbound() ? ".in" : ".out");
         refreshSettings();
         ctx.statManager().createRateStat("tunnel.matchLease", "How often does our OBEP match their IBGW?", "Tunnels", 
@@ -102,7 +113,7 @@ public class TunnelPool {
             if (ls != null)
                 _context.clientManager().requestLeaseSet(_settings.getDestination(), ls);
         }
-        _context.statManager().createRateStat(_rateName,
+        _context.statManager().createRequiredRateStat(_rateName,
                                "Tunnel Bandwidth (Bytes/sec)", "Tunnels", 
                                new long[] { 5*60*1000l });
     }
@@ -117,6 +128,15 @@ public class TunnelPool {
         synchronized (_inProgress) {
             _inProgress.clear();
         }
+    }
+
+    /** 
+     *  RateStat name for the bandwidth graph
+     *  @return non-null
+     *  @since 0.9.35
+     */
+    public String getRateName() {
+        return _rateName;
     }
 
     private void refreshSettings() {
@@ -156,8 +176,7 @@ public class TunnelPool {
     TunnelInfo selectTunnel() { return selectTunnel(true); }
 
     private TunnelInfo selectTunnel(boolean allowRecurseOnFail) {
-        boolean avoidZeroHop = getSettings().getLength() > 0 &&
-                               getSettings().getLength() + getSettings().getLengthVariance() > 0;
+        boolean avoidZeroHop = !_settings.getAllowZeroHop();
         
         long period = curPeriod();
         synchronized (_tunnels) {
@@ -223,7 +242,7 @@ public class TunnelPool {
             }
         }
         
-        if (_alive && _settings.getAllowZeroHop())
+        if (_alive && !avoidZeroHop)
             buildFallback();
         if (allowRecurseOnFail)
             return selectTunnel(false); 
@@ -244,8 +263,7 @@ public class TunnelPool {
      * @since 0.8.10
      */
     TunnelInfo selectTunnel(Hash closestTo) {
-        boolean avoidZeroHop = getSettings().getLength() > 0 &&
-                               getSettings().getLength() + getSettings().getLengthVariance() > 0;
+        boolean avoidZeroHop = !_settings.getAllowZeroHop();
         TunnelInfo rv = null;
         synchronized (_tunnels) {
             if (!_tunnels.isEmpty()) {
@@ -639,13 +657,6 @@ public class TunnelPool {
             return false;
 
         if (_settings.getAllowZeroHop()) {
-            if ( (_settings.getLength() + _settings.getLengthVariance() > 0) && 
-                 (!_settings.isExploratory()) &&
-                 (_context.profileOrganizer().countActivePeers() > 0) ) {
-                // if it is a client tunnel pool and our variance doesn't allow 0 hop, prefer failure to
-                // 0 hop operation (unless our router is offline)
-                return false;
-            }
             if (_log.shouldLog(Log.INFO))
                 _log.info(toString() + ": building a fallback tunnel (usable: " + usable + " needed: " + quantity + ")");
             
@@ -827,7 +838,7 @@ public class TunnelPool {
         }
         int wanted = getAdjustedTotalQuantity();
         
-        boolean allowZeroHop = ((getSettings().getLength() + getSettings().getLengthVariance()) <= 0);
+        boolean allowZeroHop = _settings.getAllowZeroHop();
           
         /**
          * This algorithm builds based on the previous average length of time it takes

@@ -6,7 +6,7 @@ body {
      padding: 0;
      text-align: center;
      font-family: "Droid Sans", "Noto Sans", Ubuntu, "Segoe UI", "Lucida Grande", "DejaVu Sans", Verdana, Helvetica, sans-serif;
-     color: #333;
+     color: #2c354f;
      font-size: 9pt;
      background: #a4a4cb url(images/bg.png);
 }
@@ -345,9 +345,10 @@ th:last-child, td:last-child {
 }
 
 td.infohelp {
+     padding: 10px 10px 10px 38px !important;
+     text-align: justify;
      background: url(/themes/console/images/info/infohelp.png) 10px center no-repeat;
      background-size: 20px 20px;
-     padding: 10px 10px 10px 38px !important;
 }
 
 .tunnelConfig td {
@@ -575,6 +576,7 @@ input {
 }
 
 #tunnelDepth, #tunnelVariance, #tunnelQuantity, #tunnelBackupQuantity,
+#tunnelDepthOut, #tunnelVarianceOut, #tunnelQuantityOut, #tunnelBackupQuantityOut,
 #localDestination, #customOptions, #leasesetKey, #name, #description, textarea[name="accessList"] {
      width: 100% !important;
      margin: 0 !important;
@@ -710,7 +712,7 @@ input:focus::-moz-placeholder {
      opacity: 0;
 }
 
-input.tunnelName, input.tunnelDescription, #userAgents {
+input.tunnelName, input.tunnelDescriptionText, #userAgents {
      width: 80%;
      min-width: 280px;
      text-overflow: ellipsis;
@@ -864,7 +866,9 @@ input[type="file"] {
      margin: 5px !important;
 }
 
-#tunnelDepth, #tunnelVariance, #tunnelQuantity, #tunnelBackupQuantity, #leasesetKey {
+#tunnelDepth, #tunnelVariance, #tunnelQuantity, #tunnelBackupQuantity,
+#tunnelDepthOut, #tunnelVarianceOut, #tunnelQuantityOut, #tunnelBackupQuantityOut,
+#leasesetKey {
      margin: 5px !important;
      width: calc(100% - 10px) !important;
 }
@@ -893,12 +897,8 @@ textarea[name="accessList"], #hostField, #localDestination, .authentication {
      border-bottom: 1px solid transparent !important;
 }
 
-#clientTunnels .tunnelDescription {
+.tunnelDescription {
      padding-top: 1px !important;
-}
-
-.tunnelDestination b, .tunnelDescription b {
-     color: #444;
 }
 
 td.tunnelDestination, td.tunnelDescription {
@@ -910,7 +910,9 @@ td.tunnelDestination, td.tunnelDescription {
 /* responsive layout */
 
 @media screen and (max-width: 700px) {
-#leasesetKey, #tunnelDepth, #tunnelVariance, #tunnelQuantity, #tunnelBackupQuantity, #leasesetKey {
+#tunnelDepth, #tunnelVariance, #tunnelQuantity, #tunnelBackupQuantity,
+#tunnelDepthOut, #tunnelVarianceOut, #tunnelQuantityOut, #tunnelBackupQuantityOut,
+#leasesetKey {
     min-width: 270px;
 }
 }

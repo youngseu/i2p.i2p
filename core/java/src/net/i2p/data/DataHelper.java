@@ -29,9 +29,12 @@ import java.security.MessageDigest;
 import java.text.DecimalFormat;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
@@ -494,11 +497,12 @@ public class DataHelper {
      *                                  or a value contains '#' or '\n'
      */
     public static void storeProps(Properties props, File file) throws IOException {
+        FileOutputStream fos = null;
         PrintWriter out = null;
         IllegalArgumentException iae = null;
         File tmpFile = new File(file.getPath() + ".tmp");
         try {
-            FileOutputStream fos = new SecureFileOutputStream(tmpFile);
+            fos = new SecureFileOutputStream(tmpFile);
             out = new PrintWriter(new BufferedWriter(new OutputStreamWriter(fos, "UTF-8")));
             out.println("# NOTE: This I2P config file must use UTF-8 encoding");
             for (Map.Entry<Object, Object> entry : props.entrySet()) {
@@ -533,6 +537,7 @@ public class DataHelper {
                 throw new IOException("Failed rename from " + tmpFile + " to " + file);
         } finally {
             if (out != null) out.close();
+            if (fos != null) try { fos.close(); } catch (IOException ioe) {}
         }
         if (iae != null)
             throw iae;
@@ -610,7 +615,7 @@ public class DataHelper {
 
     /**
      *  Lower-case hex without leading zeros.
-     *  Use toString(byte[] to get leading zeros
+     *  Use toString(byte[]) to get leading zeros
      *  @param data may be null (returns "00")
      */
     public final static String toHexString(byte data[]) {
@@ -1523,8 +1528,15 @@ public class DataHelper {
     }
 
     /**
-     * Caller should append 'B' or 'b' as appropriate
-     * NOTE: formatDuration2() recommended in most cases for readability
+     * This is binary, i.e. multiples of 1024.
+     * For decimal, see formatSize2Decimal().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
+     *
+     * No space between the number and the letter.
+     * NOTE: formatSize2() recommended in most cases for readability
+     *
+     * @return e.g. "123.05Ki"
      */
     public static String formatSize(long bytes) {
         float val = bytes;
@@ -1538,23 +1550,29 @@ public class DataHelper {
 
         String str = fmt.format(val);
         switch (scale) {
-            case 1: return str + "K";
-            case 2: return str + "M";
-            case 3: return str + "G";
-            case 4: return str + "T";
-            case 5: return str + "P";
-            case 6: return str + "E";
-            case 7: return str + "Z";
-            case 8: return str + "Y";
-            default: return bytes + "";
+            case 1: return str + "Ki";
+            case 2: return str + "Mi";
+            case 3: return str + "Gi";
+            case 4: return str + "Ti";
+            case 5: return str + "Pi";
+            case 6: return str + "Ei";
+            case 7: return str + "Zi";
+            case 8: return str + "Yi";
+            default: return Long.toString(bytes);
         }
     }
 
     /**
+     * This is binary, i.e. multiples of 1024.
+     * For decimal, see formatSize2Decimal().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
      * Like formatSize but with a non-breaking space after the number
      * This seems consistent with most style guides out there.
      * Use only in HTML, and not inside form values (use
      * formatSize2(bytes, false) there instead).
+     *
+     * @return e.g. "123.05&amp;#8239;Ki"
      * @since 0.7.14, uses thin non-breaking space since 0.9.31
      */
     public static String formatSize2(long bytes) {
@@ -1562,12 +1580,21 @@ public class DataHelper {
     }
 
     /**
+     * This is binary, i.e. multiples of 1024.
+     * For decimal, see formatSize2Decimal().
+     *
+     * Caller should append 'B' or 'b' as appropriate,
      * Like formatSize but with a space after the number
      * This seems consistent with most style guides out there.
-     * @param nonBreaking use an HTML thin non-breaking space (&#8239;)
+     *
+     * @param nonBreaking use an HTML thin non-breaking space (&amp;#8239;)
+     * @return e.g. "123.05&amp;#8239;Ki" or "123.05 Ki"
      * @since 0.9.31
      */
     public static String formatSize2(long bytes, boolean nonBreaking) {
+        String space = nonBreaking ? "&#8239;" : " ";
+        if (bytes < 1024)
+            return bytes + space;
         double val = bytes;
         int scale = 0;
         while (val >= 1024) {
@@ -1575,11 +1602,72 @@ public class DataHelper {
             val /= 1024;
         }
         
-        DecimalFormat fmt = new DecimalFormat("##0.00");
+        DecimalFormat fmt = new DecimalFormat("##0.##");
+        if (val >= 200) {
+            fmt.setMaximumFractionDigits(0);
+        } else if (val >= 20) {
+            fmt.setMaximumFractionDigits(1);
+        }
 
         // Replace &nbsp; with thin non-breaking space &#8239; (more consistent/predictable width between fonts & point sizes)
 
+        String str = fmt.format(val) + space;
+        switch (scale) {
+            case 1: return str + "Ki";
+            case 2: return str + "Mi";
+            case 3: return str + "Gi";
+            case 4: return str + "Ti";
+            case 5: return str + "Pi";
+            case 6: return str + "Ei";
+            case 7: return str + "Zi";
+            case 8: return str + "Yi";
+            default: return bytes + space;
+        }
+    }
+
+    /**
+     * This is decimal, i.e. multiples of 1000.
+     * For binary, see formatSize2().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
+     * Like formatSize but with a space after the number
+     * This seems consistent with most style guides out there.
+     *
+     * @return e.g. "123.05&amp;#8239;K"
+     * @since 0.9.34
+     */
+    public static String formatSize2Decimal(long bytes) {
+        return formatSize2Decimal(bytes, true);
+    }
+
+    /**
+     * This is decimal, i.e. multiples of 1000.
+     * For binary, see formatSize2().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
+     * Like formatSize but with a space after the number
+     * This seems consistent with most style guides out there.
+     *
+     * @param nonBreaking use an HTML thin non-breaking space (&amp;#8239;)
+     * @return e.g. "123.05&amp;#8239;K" or "123.05 K"
+     * @since 0.9.34
+     */
+    public static String formatSize2Decimal(long bytes, boolean nonBreaking) {
         String space = nonBreaking ? "&#8239;" : " ";
+        if (bytes < 1000)
+            return bytes + space;
+        double val = bytes;
+        int scale = 0;
+        while (val >= 1000) {
+            scale++; 
+            val /= 1000;
+        }
+        DecimalFormat fmt = new DecimalFormat("##0.##");
+        if (val >= 200) {
+            fmt.setMaximumFractionDigits(0);
+        } else if (val >= 20) {
+            fmt.setMaximumFractionDigits(1);
+        }
         String str = fmt.format(val) + space;
         switch (scale) {
             case 1: return str + "K";
@@ -1862,8 +1950,11 @@ public class DataHelper {
      *  Same as s.split(regex) but caches the compiled pattern for speed.
      *  This saves about 10 microseconds (Bulldozer) on subsequent invocations.
      *
+     *  Note: For an input "" this returns [""], not a zero-length array.
+     *  This is the same behavior as String.split().
+     *
      *  @param s non-null
-     *  @param regex non-null
+     *  @param regex non-null, don't forget to enclose multiple choices with []
      *  @throws java.util.regex.PatternSyntaxException unchecked
      *  @since 0.9.24
      */
@@ -1877,8 +1968,11 @@ public class DataHelper {
      *  Same as s.split(regex, limit) but caches the compiled pattern for speed.
      *  This saves about 10 microseconds (Bulldozer) on subsequent invocations.
      *
+     *  Note: For an input "" this returns [""], not a zero-length array.
+     *  This is the same behavior as String.split().
+     *
      *  @param s non-null
-     *  @param regex non-null
+     *  @param regex non-null, don't forget to enclose multiple choices with []
      *  @param limit result threshold
      *  @throws java.util.regex.PatternSyntaxException unchecked
      *  @since 0.9.24
@@ -1886,6 +1980,11 @@ public class DataHelper {
     public static String[] split(String s, String regex, int limit) {
         Pattern p = patterns.get(regex);
         if (p == null) {
+            // catches easy mistake, and also swapping the args by mistake
+            if (regex.length() > 1 && !regex.startsWith("[") && !regex.equals("\r\n")) {
+                //(new Exception("Warning: Split on regex: \"" + regex + "\" should probably be enclosed with []")).printStackTrace();
+                System.out.println("Warning: Split on regex: \"" + regex + "\" should probably be enclosed with []");
+            }
             p = Pattern.compile(regex);
             patterns.putIfAbsent(regex, p);
         }
@@ -1910,6 +2009,78 @@ public class DataHelper {
             }   
         } finally {
             cache.release(ba);
+        }
+    }
+
+    /**
+      * Same as Collections.sort(), but guaranteed not to throw an IllegalArgumentException if the
+      * sort is unstable. As of Java 7, TimSort will throw an IAE if the underlying sort order
+      * changes during the sort.
+      *
+      * This catches the IAE, retries once, and then returns.
+      * If an IAE is thrown twice, this method will return, with the list possibly unsorted.
+      *
+      * @param list the list to be sorted.
+      * @param c the comparator to determine the order of the list. A null value indicates that the elements' natural ordering should be used.
+      * @since 0.9.34
+      */
+    public static <T> void sort(List<T> list, Comparator<? super T> c) {
+        try {
+            Collections.sort(list, c);
+        } catch (IllegalArgumentException iae1) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ie) {}
+            try {
+                Collections.sort(list, c);
+            } catch (IllegalArgumentException iae2) {}
+        }
+    }
+
+    /**
+      * Same as Arrays.sort(), but guaranteed not to throw an IllegalArgumentException if the
+      * sort is unstable. As of Java 7, TimSort will throw an IAE if the underlying sort order
+      * changes during the sort.
+      *
+      * This catches the IAE, retries once, and then returns.
+      * If an IAE is thrown twice, this method will return, with the array possibly unsorted.
+      *
+      * @param a the array to be sorted.
+      * @param c the comparator to determine the order of the array. A null value indicates that the elements' natural ordering should be used.
+      * @since 0.9.34
+      */
+    public static <T> void sort(T[] a, Comparator<? super T> c) {
+        try {
+            Arrays.sort(a, c);
+        } catch (IllegalArgumentException iae1) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ie) {}
+            try {
+                Arrays.sort(a, c);
+            } catch (IllegalArgumentException iae2) {}
+        }
+    }
+
+    /**
+      * Replace all instances of "from" with "to" in the StringBuilder buf.
+      * Same as String.replace(), but in-memory with no object churn,
+      * as long as "to" is equal size or smaller than "from", or buf has capacity.
+      * Use for large Strings or for multiple replacements in a row.
+      *
+      * @param buf contains the string to be searched
+      * @param from the string to be replaced
+      * @param to the replacement string
+      * @since 0.9.34
+      */
+    public static void replace(StringBuilder buf, String from, String to) {
+        int oidx = 0;
+        while (oidx < buf.length()) {
+            int idx = buf.indexOf(from, oidx);
+            if (idx < 0)
+                break;
+            buf.replace(idx, idx + from.length(), to);
+            oidx = idx + to.length();
         }
     }
 }

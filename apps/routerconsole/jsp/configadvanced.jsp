@@ -12,7 +12,7 @@
 
 <%@include file="summary.jsi" %>
 
-<jsp:useBean class="net.i2p.router.web.ConfigAdvancedHelper" id="advancedhelper" scope="request" />
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigAdvancedHelper" id="advancedhelper" scope="request" />
 <jsp:setProperty name="advancedhelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
 
 <h1><%=intl._t("I2P Advanced Configuration")%></h1>
@@ -20,7 +20,7 @@
 
  <%@include file="confignav.jsi" %>
 
- <jsp:useBean class="net.i2p.router.web.ConfigAdvancedHandler" id="formhandler" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.ConfigAdvancedHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
  <div class="configure">
  <div class="wideload">
@@ -56,10 +56,14 @@
 </form>
 
 <h3 id="advancedconfig" class="tabletitle"><%=intl._t("Advanced I2P Configuration")%>&nbsp;<a title="Help with additional configuration settings" href="/help#advancedsettings">[Additional Options]</a></h3>
-<% if (advancedhelper.isAdvanced()) { %>
+<%
+  String advConfig = advancedhelper.getSettings();
+  if (advancedhelper.isAdvanced()) {
+%>
  <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>" >
  <input type="hidden" name="action" value="blah" >
+ <input type="hidden" name="nofilter_oldConfig" value="<%=advConfig%>" >
 <% }  // isAdvanced %>
 <table class="configtable" id="advconf">
 <% if (advancedhelper.isAdvanced()) { %>
@@ -72,7 +76,7 @@
  </td></tr>
 <% }  // isAdvanced %>
  <tr><td class="tabletextarea">
- <textarea id="advancedsettings" rows="32" cols="60" name="nofilter_config" wrap="off" spellcheck="false" <% if (!advancedhelper.isAdvanced()) { %>readonly="readonly"<% } %>><jsp:getProperty name="advancedhelper" property="settings" /></textarea>
+ <textarea id="advancedsettings" rows="32" cols="60" name="nofilter_config" wrap="off" spellcheck="false" <% if (!advancedhelper.isAdvanced()) { %>readonly="readonly"<% } %>><%=advConfig%></textarea>
  </td></tr>
 <% if (advancedhelper.isAdvanced()) { %>
  <tr><td class="optionsave" align="right">

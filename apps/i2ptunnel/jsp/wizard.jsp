@@ -10,13 +10,14 @@
     response.setHeader("X-XSS-Protection", "1; mode=block");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("Accept-Ranges", "none");
 
 %><%@page pageEncoding="UTF-8"
 %><%@page contentType="text/html" import="net.i2p.i2ptunnel.web.EditBean"
 %><?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <jsp:useBean class="net.i2p.i2ptunnel.web.EditBean" id="editBean" scope="request" />
-<jsp:useBean class="net.i2p.i2ptunnel.web.Messages" id="intl" scope="request" />
+<jsp:useBean class="net.i2p.i2ptunnel.ui.Messages" id="intl" scope="request" />
 <% String pageStr = request.getParameter("page");
    /* Get the number of the page we came from */
    int lastPage = 0;
@@ -58,7 +59,6 @@
     <title><%=intl._t("I2P Tunnel Manager - Tunnel Creation Wizard")%></title>
 
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=UTF-8" />
     <link href="/themes/console/images/favicon.ico" type="image/x-icon" rel="shortcut icon" />
 
     <% if (editBean.allowCSS()) {

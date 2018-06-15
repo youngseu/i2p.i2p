@@ -18,9 +18,12 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
+import java.util.TreeSet;
 
 import javax.crypto.interfaces.DHPublicKey;
 import javax.crypto.spec.DHParameterSpec;
@@ -33,6 +36,7 @@ import net.i2p.data.Signature;
 import net.i2p.data.SigningPrivateKey;
 import net.i2p.data.SigningPublicKey;
 import net.i2p.data.SimpleDataStructure;
+import net.i2p.util.Addresses;
 import net.i2p.util.HexDump;
 import net.i2p.util.RandomSource;
 import net.i2p.util.SecureFileOutputStream;
@@ -42,10 +46,12 @@ import net.i2p.util.SystemVersion;
  *  Generate keys and a selfsigned certificate, suitable for
  *  storing in a Keystore with KeyStoreUtil.storePrivateKey().
  *  All done programatically, no keytool, no BC libs, no sun classes.
- *  Ref: RFC 2459
+ *  Ref: RFC 2459, RFC 5280
  *
- *  This is coded to create a cert that matches what comes out of keytool
- *  exactly, even if I don't understand all of it.
+ *  This is coded to create a cert that is similar to what comes out of keytool.
+ *
+ *  NOTE: Recommended use is via KeyStoreUtil.createKeys() and related methods.
+ *  This API may not be stable.
  *
  *  @since 0.9.25
  */
@@ -53,6 +59,10 @@ public final class SelfSignedGenerator {
 
     private static final boolean DEBUG = false;
 
+    // Policy Qualifier CPS URI
+    private static final String OID_QT_CPSURI = "1.3.6.1.5.5.7.2.1";
+    // Policy Qualifier User Notice
+    private static final String OID_QT_UNOTICE = "1.3.6.1.5.5.7.2.2";
     private static final String OID_CN = "2.5.4.3";
     private static final String OID_C = "2.5.4.6";
     private static final String OID_L = "2.5.4.7";
@@ -69,6 +79,10 @@ public final class SelfSignedGenerator {
     private static final String OID_BASIC = "2.5.29.19";
     // CRL number
     private static final String OID_CRLNUM = "2.5.29.20";
+    // Certificate Policy
+    private static final String OID_POLICY = "2.5.29.32";
+    // Certificate Policy - Any
+    private static final String OID_POLICY_ANY = "2.5.29.32.0";
     // Authority Key Identifier
     private static final String OID_AKI = "2.5.29.35";
 
@@ -85,7 +99,7 @@ public final class SelfSignedGenerator {
     }
 
     /**
-     *  @param cname the common name, non-null
+     *  @param cname the common name, non-null. Must be a hostname or email address. IP addresses will not be correctly encoded.
      *  @param ou The OU (organizational unit) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      *  @param o The O (organization)in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      *  @param l The L (city or locality) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
@@ -100,12 +114,58 @@ public final class SelfSignedGenerator {
      */
     public static Object[] generate(String cname, String ou, String o, String l, String st, String c,
                              int validDays, SigType type) throws GeneralSecurityException {
+        return generate(cname, null, ou, o, l, st, c, validDays, type);
+    }
+
+    /**
+     *  @param cname the common name, non-null. Must be a hostname or email address. IP addresses will not be correctly encoded.
+     *  @param altNames the Subject Alternative Names. May be null. May contain hostnames and/or IP addresses.
+     *                  cname, localhost, 127.0.0.1, and ::1 will be automatically added.
+     *  @param ou The OU (organizational unit) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param o The O (organization)in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param l The L (city or locality) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param st The ST (state or province) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param c The C (country) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *
+     *  @return length 4 array:
+     *  rv[0] is a Java PublicKey
+     *  rv[1] is a Java PrivateKey
+     *  rv[2] is a Java X509Certificate
+     *  rv[3] is a Java X509CRL
+     *
+     *  @since 0.9.34 added altNames param
+     */
+    public static Object[] generate(String cname, Set<String> altNames, String ou, String o, String l, String st, String c,
+                             int validDays, SigType type) throws GeneralSecurityException {
         SimpleDataStructure[] keys = KeyGenerator.getInstance().generateSigningKeys(type);
         SigningPublicKey pub = (SigningPublicKey) keys[0];
         SigningPrivateKey priv = (SigningPrivateKey) keys[1];
         PublicKey jpub = SigUtil.toJavaKey(pub);
         PrivateKey jpriv = SigUtil.toJavaKey(priv);
+        return generate(jpub, jpriv, priv, type, cname, altNames, ou, o, l, st, c, validDays);
+    }
 
+    /**
+     *  @param cname the common name, non-null. Must be a hostname or email address. IP addresses will not be correctly encoded.
+     *  @param altNames the Subject Alternative Names. May be null. May contain hostnames and/or IP addresses.
+     *                  cname, localhost, 127.0.0.1, and ::1 will be automatically added.
+     *  @param ou The OU (organizational unit) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param o The O (organization)in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param l The L (city or locality) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param st The ST (state or province) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *  @param c The C (country) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
+     *
+     *  @return length 4 array:
+     *  rv[0] is a Java PublicKey
+     *  rv[1] is a Java PrivateKey
+     *  rv[2] is a Java X509Certificate
+     *  rv[3] is a Java X509CRL
+     *
+     *  @since 0.9.34 added altNames param
+     */
+    private static Object[] generate(PublicKey jpub, PrivateKey jpriv, SigningPrivateKey priv, SigType type,
+                                     String cname, Set<String> altNames, String ou, String o, String l, String st, String c,
+                                     int validDays) throws GeneralSecurityException {
         String oid;
         switch (type) {
             case DSA_SHA1:
@@ -124,7 +184,7 @@ public final class SelfSignedGenerator {
         }
         byte[] sigoid = getEncodedOIDSeq(oid);
 
-        byte[] tbs = genTBS(cname, ou, o, l, st, c, validDays, sigoid, jpub);
+        byte[] tbs = genTBS(cname, altNames, ou, o, l, st, c, validDays, sigoid, jpub);
         int tbslen = tbs.length;
 
         Signature sig = DSAEngine.getInstance().sign(tbs, priv);
@@ -184,6 +244,37 @@ public final class SelfSignedGenerator {
 
         Object[] rv = { jpub, jpriv, cert, crl };
         return rv;
+    }
+
+    /**
+     *  @param cert the old cert to be replaced
+     *  @param jpriv the private key
+     *
+     *  @return length 4 array:
+     *  rv[0] is a Java PublicKey, from cert as passed in
+     *  rv[1] is a Java PrivateKey, jpriv as passed in
+     *  rv[2] is a Java X509Certificate, new one
+     *  rv[3] is a Java X509CRL, new one
+     *
+     *  @since 0.9.34 added altNames param
+     */
+    public static Object[] renew(X509Certificate cert, PrivateKey jpriv, int validDays) throws GeneralSecurityException {
+        String cname = CertUtil.getSubjectValue(cert, "CN");
+        if (cname == null)
+            cname = "localhost";
+        String ou = CertUtil.getSubjectValue(cert, "OU");
+        String o = CertUtil.getSubjectValue(cert, "O");
+        String l = CertUtil.getSubjectValue(cert, "L");
+        String st = CertUtil.getSubjectValue(cert, "ST");
+        String c = CertUtil.getSubjectValue(cert, "C");
+        Set<String> altNames = CertUtil.getSubjectAlternativeNames(cert);
+        SigningPrivateKey priv = SigUtil.fromJavaKey(jpriv);
+        SigType type = priv.getType();
+        SigningPublicKey pub = KeyGenerator.getSigningPublicKey(priv);
+        PublicKey jpub = SigUtil.toJavaKey(pub);
+        if (type == null)
+                throw new GeneralSecurityException("Unsupported: " + jpriv);
+        return generate(jpub, jpriv, priv, type, cname, altNames, ou, o, l, st, c, validDays);
     }
 
     /**
@@ -253,13 +344,15 @@ public final class SelfSignedGenerator {
 
     /**
      *  @param cname the common name, non-null
+     *  @param altNames the Subject Alternative Names. May be null. May contain hostnames and/or IP addresses.
+     *                  cname, localhost, 127.0.0.1, and ::1 will be automatically added.
      *  @param ou The OU (organizational unit) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      *  @param o The O (organization)in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      *  @param l The L (city or locality) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      *  @param st The ST (state or province) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      *  @param c The C (country) in the distinguished name, non-null before 0.9.28, may be null as of 0.9.28
      */
-    private static byte[] genTBS(String cname, String ou, String o, String l, String st, String c,
+    private static byte[] genTBS(String cname, Set<String> altNames, String ou, String o, String l, String st, String c,
                           int validDays, byte[] sigoid, PublicKey jpub) throws GeneralSecurityException {
         // a0 ???, int = 2
         byte[] version = { (byte) 0xa0, 3, 2, 1, 2 };
@@ -290,7 +383,7 @@ public final class SelfSignedGenerator {
         byte[] subject = issuer;
 
         byte[] pubbytes = jpub.getEncoded();
-        byte[] extbytes = getExtensions(pubbytes, cname);
+        byte[] extbytes = getExtensions(pubbytes, cname, altNames);
 
         int len = version.length + serial.length + sigoid.length + issuer.length +
                   validity.length + subject.length + pubbytes.length + extbytes.length;
@@ -352,8 +445,9 @@ public final class SelfSignedGenerator {
         byte[] serial = cert.getSerialNumber().toByteArray();
         if (serial.length > 255)
             throw new IllegalArgumentException();
-        long now = System.currentTimeMillis();
-        long then = now + (validDays * 24L * 60 * 60 * 1000);
+        // backdate to allow for clock skew
+        long now = System.currentTimeMillis() - (24L * 60 * 60 * 1000);
+        long then = now + ((validDays + 1) * 24L * 60 * 60 * 1000);
         // used for CRL time and revocation time
         byte[] nowbytes = getDate(now);
         // used for next CRL time
@@ -443,8 +537,9 @@ public final class SelfSignedGenerator {
         byte[] rv = new byte[32];
         rv[0] = 0x30;
         rv[1] = 30;
-        long now = System.currentTimeMillis();
-        long then = now + (validDays * 24L * 60 * 60 * 1000);
+        // backdate to allow for clock skew
+        long now = System.currentTimeMillis() - (24L * 60 * 60 * 1000);
+        long then = now + ((validDays + 1) * 24L * 60 * 60 * 1000);
         byte[] nowbytes = getDate(now);
         byte[] thenbytes = getDate(then);
         System.arraycopy(nowbytes, 0, rv, 2, 15);
@@ -477,15 +572,18 @@ public final class SelfSignedGenerator {
      *   2) Key Usage
      *   3) Basic Constraints
      *   4) Subject Alternative Name
+     *      As of 0.9.34, adds 127.0.0.1 and ::1 to the SAN also
      *   5) Authority Key Identifier
      *  (not necessarily output in that order)
      *
      *  Ref: RFC 5280
      *
      *  @param pubbytes bit string
+     *  @param altNames the Subject Alternative Names. May be null. May contain hostnames and/or IP addresses.
+     *                  cname, localhost, 127.0.0.1, and ::1 will be automatically added.
      *  @return ASN.1 encoded object
      */
-    private static byte[] getExtensions(byte[] pubbytes, String cname) {
+    private static byte[] getExtensions(byte[] pubbytes, String cname, Set<String> altNames) {
         // RFC 2549 sec. 4.2.1.2
         // subject public key identifier is the sha1 hash of the bit string of the public key
         // without the tag, length, and igore fields
@@ -502,7 +600,13 @@ public final class SelfSignedGenerator {
         byte[] oid3 = getEncodedOID(OID_BASIC);
         byte[] oid4 = getEncodedOID(OID_SAN);
         byte[] oid5 = getEncodedOID(OID_AKI);
+        byte[] oid6 = getEncodedOID(OID_POLICY);
+        byte[] oid7 = getEncodedOID(OID_POLICY_ANY);
+        byte[] oid8 = getEncodedOID(OID_QT_UNOTICE);
+        byte[] oid9 = getEncodedOID(OID_QT_CPSURI);
         byte[] TRUE = new byte[] { 1, 1, (byte) 0xff };
+
+        // extXlen does NOT include the 0x30 and length
 
         int wrap1len = spaceFor(sha.length);
         int ext1len = oid1.length + spaceFor(wrap1len);
@@ -513,8 +617,32 @@ public final class SelfSignedGenerator {
         int wrap3len = spaceFor(TRUE.length);
         int ext3len = oid3.length + TRUE.length + spaceFor(wrap3len);
 
-        byte[] cnameBytes = DataHelper.getASCII(cname);
-        int wrap41len = spaceFor(cnameBytes.length);
+        int wrap41len = 0;
+        // SEQUENCE doesn't have to be sorted, but let's do it for consistency,
+        // so it's platform-independent and the same after renewal
+        if (altNames == null) {
+            altNames = new TreeSet<String>();
+        } else {
+            altNames = new TreeSet<String>(altNames);
+            altNames.remove("0:0:0:0:0:0:0:1");  // We don't want dup of "::1"
+        }
+        altNames.add(cname);
+        final boolean isCA = !cname.contains("@") && !cname.endsWith(".family.i2p.net");
+        if (isCA) {
+            altNames.add("localhost");
+            altNames.add("127.0.0.1");
+            altNames.add("::1");
+        }
+        for (String n : altNames) {
+            int len;
+            if (Addresses.isIPv4Address(n))
+                len = 4;
+            else if (Addresses.isIPv6Address(n))
+                len = 16;
+            else
+                len = n.length();
+            wrap41len += spaceFor(len);
+        }
         int wrap4len = spaceFor(wrap41len);
         int ext4len = oid4.length + spaceFor(wrap4len);
 
@@ -522,10 +650,21 @@ public final class SelfSignedGenerator {
         int wrap5len = spaceFor(wrap51len);
         int ext5len = oid5.length + spaceFor(wrap5len);
 
+        byte[] policyTextBytes = DataHelper.getASCII("This self-signed certificate is required for secure local access to I2P services.");
+        byte[] policyURIBytes = DataHelper.getASCII("https://geti2p.net/");
+        int wrap61len = spaceFor(policyTextBytes.length); // usernotice ia5string
+        int wrap62len = oid8.length + spaceFor(wrap61len); // PQ 1 Info OID + usernotice seq.
+        int wrap63len = spaceFor(policyURIBytes.length); // uri ia5string
+        int wrap64len = oid9.length + wrap63len; // PQ 2 Info OID + ia5string
+        int wrap65len = spaceFor(wrap62len) + spaceFor(wrap64len); // qualifiers seq
+        int wrap66len = spaceFor(oid7.length + wrap65len); // PInfo elements seq
+        int wrap67len = spaceFor(wrap66len); // PInfo seq
+        int wrap68len = spaceFor(wrap67len); // Policies seq
+        int ext6len = oid6.length + spaceFor(wrap68len); // OID + octet string
+
         int extslen = spaceFor(ext1len) + spaceFor(ext2len) + spaceFor(ext4len) + spaceFor(ext5len);
-        final boolean isCA = !cname.contains("@");
         if (isCA)
-            extslen += spaceFor(ext3len);
+            extslen += spaceFor(ext3len) + spaceFor(ext6len);
         int seqlen = spaceFor(extslen);
         int totlen = spaceFor(seqlen);
         byte[] rv = new byte[totlen];
@@ -601,15 +740,68 @@ public final class SelfSignedGenerator {
         idx = intToASN1(rv, idx, ext4len);
         System.arraycopy(oid4, 0, rv, idx, oid4.length);
         idx += oid4.length;
-        // octet string wraps a sequence containing a choice 2 (DNSName) IA5String
+        // octet string wraps a sequence containing the names and IP addresses
         rv[idx++] = (byte) 0x04;
         idx = intToASN1(rv, idx, wrap4len);
         rv[idx++] = (byte) 0x30;
         idx = intToASN1(rv, idx, wrap41len);
-        rv[idx++] = (byte) (isCA ? 0x82 : 0x81); // choice, dNSName or rfc822Name, IA5String implied
-        idx = intToASN1(rv, idx, cnameBytes.length);
-        System.arraycopy(cnameBytes, 0, rv, idx, cnameBytes.length);
-        idx += cnameBytes.length;
+        for (String n : altNames) {
+            byte[] b;
+            if (Addresses.isIPv4Address(n) ||
+                Addresses.isIPv6Address(n)) {
+                b = Addresses.getIP(n);
+                if (b == null)  // shouldn't happen
+                    throw new IllegalArgumentException("fail " + n);
+                rv[idx++] = (byte) 0x87; // choice, octet string for IP address
+            } else {
+                b = DataHelper.getASCII(n);
+                rv[idx++] = (byte) (isCA ? 0x82 : 0x81); // choice, dNSName or rfc822Name, IA5String implied
+            }
+            idx = intToASN1(rv, idx, b.length);
+            System.arraycopy(b, 0, rv, idx, b.length);
+            idx += b.length;
+        }
+
+        // Policy
+        // https://www.sysadmins.lv/blog-en/certificate-policies-extension-all-you-should-know-part-1.aspx
+        if (isCA) {
+            rv[idx++] = (byte) 0x30;
+            idx = intToASN1(rv, idx, ext6len);
+            System.arraycopy(oid6, 0, rv, idx, oid6.length);
+            idx += oid6.length;
+            rv[idx++] = (byte) 0x04;  // octet string wraps a sequence
+            idx = intToASN1(rv, idx, wrap68len);
+            rv[idx++] = (byte) 0x30;  // Policies seq
+            idx = intToASN1(rv, idx, wrap67len);
+            rv[idx++] = (byte) 0x30;  // Policy info seq
+            idx = intToASN1(rv, idx, wrap66len);
+            System.arraycopy(oid7, 0, rv, idx, oid7.length);
+            idx += oid7.length;
+            rv[idx++] = (byte) 0x30;  // Policy qualifiers seq
+            idx = intToASN1(rv, idx, wrap65len);
+
+            // This should be what IE links to as "Issuer Statement"
+            rv[idx++] = (byte) 0x30;  // Policy qualifier info 2 seq
+            idx = intToASN1(rv, idx, wrap64len);
+            System.arraycopy(oid9, 0, rv, idx, oid9.length);
+            idx += oid9.length;
+            rv[idx++] = (byte) 0x16;  // choice 0 URI ia5string
+            idx = intToASN1(rv, idx, policyURIBytes.length);
+            System.arraycopy(policyURIBytes, 0, rv, idx, policyURIBytes.length);
+            idx += policyURIBytes.length;
+
+            // User notice text
+            rv[idx++] = (byte) 0x30;  // Policy qualifier info 1 seq
+            idx = intToASN1(rv, idx, wrap62len);
+            System.arraycopy(oid8, 0, rv, idx, oid8.length);
+            idx += oid8.length;
+            rv[idx++] = (byte) 0x30;  // choice 1 notice seq.
+            idx = intToASN1(rv, idx, wrap61len);
+            rv[idx++] = (byte) 0x16;  // choice 0 ia5string
+            idx = intToASN1(rv, idx, policyTextBytes.length);
+            System.arraycopy(policyTextBytes, 0, rv, idx, policyTextBytes.length);
+            idx += policyTextBytes.length;
+        }
 
         return rv;
     }
@@ -697,8 +889,57 @@ public final class SelfSignedGenerator {
         return rv;
     }
 
+    /**
+     *  Note: For CLI testing, use java -jar i2p.jar su3file keygen pubkey.crt keystore.ks commonName
+     */
+    public static void main(String[] args) throws Exception {
+        if (args.length == 0) {
+            usage();
+        } else if (args[0].equals("keygen")) {
+            if (args.length >= 4)
+                SU3File.main(args);
+            else
+                usage();
+        } else if (args[0].equals("renew")) {
+            if (args.length >= 3) {
+                String ksPW, cert, ks;
+                if (args[1].equals("-p")) {
+                    ksPW = args[2];
+                    cert = args[3];
+                    ks = args[4];
+                } else {
+                    ksPW = KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD;
+                    cert = args[1];
+                    ks = args[2];
+                }
+                String keypw = "";
+                try {
+                    while (keypw.length() < 6) {
+                        System.out.print("Enter password for key: ");
+                        keypw = DataHelper.readLine(System.in);
+                        if (keypw == null) {
+                            System.out.println("\nEOF reading password");
+                            System.exit(1);
+                        }
+                        keypw = keypw.trim();
+                        if (keypw.length() > 0 && keypw.length() < 6)
+                            System.out.println("Key password must be at least 6 characters");
+                    }
+                } catch (IOException ioe) {
+                    System.out.println("Error asking for password");
+                    throw ioe;
+                }
+                File ksf = new File(ks);
+                X509Certificate newCert = KeyStoreUtil.renewPrivateKeyCertificate(ksf, ksPW, null, keypw, 3652);
+                CertUtil.saveCert(newCert, new File(cert));
+                System.out.println("Certificate renewed for 10 years, and stored in " + cert + " and " + ks);
+            } else {
+                usage();
+            }
+        } else {
+            usage();
+        }
 /****
-    public static void main(String[] args) {
         try {
             int i = 0;
             for (SigType t : java.util.EnumSet.allOf(SigType.class)) {
@@ -709,8 +950,14 @@ public final class SelfSignedGenerator {
         } catch (Exception e) {
             e.printStackTrace();
         }
+****/
     }
 
+    private static void usage() {
+        System.err.println("Usage: selfsignedgenerator keygen [-t type|code] [-p keystorepw] [-r crlFile.crl] publicKeyFile.crt keystore.ks localhost\n" +
+                           "       selfsignedgenerator renew  [-p keystorepw] publicKeyFile.crt keystore.ks");
+    }
+/****
     private static final void test(String name, SigType type) throws Exception {
             Object[] rv = generate("cname@example.com", "ou", "o", null, "st", "c", 3652, type);
             //PublicKey jpub = (PublicKey) rv[0];

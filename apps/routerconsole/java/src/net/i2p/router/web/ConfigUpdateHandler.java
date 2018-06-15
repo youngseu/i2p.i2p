@@ -83,21 +83,21 @@ public class ConfigUpdateHandler extends FormHandler {
      */
     private static final String PACK200_URLS =
     "http://echelon.i2p/i2p/i2pupdate.su2\r\n" +
-    "http://inr.i2p/i2p/i2pupdate.su2\r\n" +
+    //"http://inr.i2p/i2p/i2pupdate.su2\r\n" +
     //"http://meeh.i2p/i2pupdate/i2pupdate.su2\r\n" +
-    "http://stats.i2p/i2p/i2pupdate.su2\r\n" +
+    "http://stats.i2p/i2p/i2pupdate.su2";
     // "http://www.i2p2.i2p/_static/i2pupdate.su2\r\n" +
-    "http://update.dg.i2p/files/i2pupdate.su2";
+    //"http://update.dg.i2p/files/i2pupdate.su2";
     //"http://update.killyourtv.i2p/i2pupdate.su2\r\n" ;
     // "http://update.postman.i2p/i2pupdate.su2" ;
 
     private static final String NO_PACK200_URLS =
     "http://echelon.i2p/i2p/i2pupdate.sud\r\n" +
-    "http://inr.i2p/i2p/i2pupdate.sud\r\n" +
+    //"http://inr.i2p/i2p/i2pupdate.sud\r\n" +
     //"http://meeh.i2p/i2pupdate/i2pupdate.sud\r\n" +
-    "http://stats.i2p/i2p/i2pupdate.sud\r\n" +
+    "http://stats.i2p/i2p/i2pupdate.sud";
     // "http://www.i2p2.i2p/_static/i2pupdate.sud\r\n" +
-    "http://update.dg.i2p/files/i2pupdate.sud";
+    //"http://update.dg.i2p/files/i2pupdate.sud";
     //"http://update.killyourtv.i2p/i2pupdate.sud\r\n" ;
     // "http://update.postman.i2p/i2pupdate.sud" ;
 
@@ -127,13 +127,15 @@ public class ConfigUpdateHandler extends FormHandler {
 
     private static final String DEFAULT_SU3_UPDATE_URLS =
     "http://echelon.i2p/i2p/i2pupdate.su3\r\n" +
-    "http://inr.i2p/i2p/i2pupdate.su3\r\n" +
+    //"http://inr.i2p/i2p/i2pupdate.su3\r\n" +
     //"http://meeh.i2p/i2pupdate/i2pupdate.su3\r\n" +
     "http://stats.i2p/i2p/i2pupdate.su3\r\n" +
     // "http://www.i2p2.i2p/_static/i2pupdate.su3\r\n" +
-    "http://update.dg.i2p/files/i2pupdate.su3";
+    //"http://update.dg.i2p/files/i2pupdate.su3";
     //"http://update.killyourtv.i2p/i2pupdate.su3\r\n" ;
     // "http://update.postman.i2p/i2pupdate.su3" ;
+    // project download server
+    "http://whnxvjwjhzsske5yevyokhskllvtisv5ueokw6yvh6t7zqrpra2q.b32.i2p/current/i2pupdate.su3";
 
     /**
      *  Empty string if disabled. Cannot be overridden by config.
@@ -173,7 +175,7 @@ public class ConfigUpdateHandler extends FormHandler {
             int proxyPort = proxyPort(_context);
             if (shouldProxy && proxyPort == ConfigUpdateHandler.DEFAULT_PROXY_PORT_INT &&
                 proxyHost.equals(ConfigUpdateHandler.DEFAULT_PROXY_HOST) &&
-                _context.portMapper().getPort(PortMapper.SVC_HTTP_PROXY) < 0) {
+                !_context.portMapper().isRegistered(PortMapper.SVC_HTTP_PROXY)) {
                 addFormError(_t("HTTP client proxy tunnel must be running"));
                 return;
             }
@@ -236,11 +238,13 @@ public class ConfigUpdateHandler extends FormHandler {
             }
         }
         
-        changes.put(PROP_SHOULD_PROXY, Boolean.toString(_updateThroughProxy));
-        changes.put(PROP_SHOULD_PROXY_NEWS, Boolean.toString(_newsThroughProxy));
         if (isAdvanced()) {
-            changes.put(PROP_UPDATE_UNSIGNED, Boolean.toString(_updateUnsigned));
-            changes.put(PROP_UPDATE_DEV_SU3, Boolean.toString(_updateDevSU3));
+            changes.put(PROP_SHOULD_PROXY_NEWS, Boolean.toString(_newsThroughProxy));
+            if (!_context.getBooleanProperty(PROP_UPDATE_DISABLED)) {
+                changes.put(PROP_SHOULD_PROXY, Boolean.toString(_updateThroughProxy));
+                changes.put(PROP_UPDATE_UNSIGNED, Boolean.toString(_updateUnsigned));
+                changes.put(PROP_UPDATE_DEV_SU3, Boolean.toString(_updateDevSU3));
+            }
         }
         
         String oldFreqStr = _context.getProperty(PROP_REFRESH_FREQUENCY, DEFAULT_REFRESH_FREQUENCY);

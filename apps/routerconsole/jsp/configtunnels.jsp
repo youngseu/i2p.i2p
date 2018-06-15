@@ -11,12 +11,12 @@
 
 <%@include file="summary.jsi" %>
 
-<jsp:useBean class="net.i2p.router.web.ConfigTunnelsHelper" id="tunnelshelper" scope="request" />
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigTunnelsHelper" id="tunnelshelper" scope="request" />
 <jsp:setProperty name="tunnelshelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
 <h1><%=intl._t("I2P Tunnel Configuration")%></h1>
 <div class="main" id="config_tunnels">
  <%@include file="confignav.jsi" %>
- <jsp:useBean class="net.i2p.router.web.ConfigTunnelsHandler" id="formhandler" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.ConfigTunnelsHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
  <p id="tunnelconfig" class="infowarn">
  <%=intl._t("The default settings work for most people.")%> 
@@ -28,7 +28,12 @@
  <p class="infohelp">
  <%=intl._t("Exploratory tunnel setting changes are stored in the router.config file.")%>
  <%=intl._t("Client tunnel changes are temporary and are not saved.")%>
+<%
+    net.i2p.util.PortMapper pm = net.i2p.I2PAppContext.getGlobalContext().portMapper();
+    if (pm.isRegistered(net.i2p.util.PortMapper.SVC_I2PTUNNEL)) {
+%>
  <%=intl._t("To make permanent client tunnel changes see the")%>&nbsp;<a href="/i2ptunnelmgr"><%=intl._t("i2ptunnel page")%></a>.
+<%  }  %>
  </p>
 <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>" >

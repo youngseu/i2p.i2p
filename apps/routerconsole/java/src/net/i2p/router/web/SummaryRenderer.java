@@ -18,6 +18,7 @@ import net.i2p.I2PAppContext;
 import net.i2p.data.DataHelper;
 import net.i2p.router.RouterContext;
 import net.i2p.router.util.EventLog;
+import static net.i2p.router.web.GraphConstants.*;
 import net.i2p.util.Log;
 import net.i2p.util.SystemVersion;
 
@@ -40,6 +41,8 @@ class SummaryRenderer {
     private static final Color SHADEB_COLOR = new Color(246, 246, 255);
     private static final Color GRID_COLOR = new Color(100, 100, 100, 75);
     private static final Color MGRID_COLOR = new Color(255, 91, 91, 110);
+    private static final Color FONT_COLOR = new Color(51, 51, 63);
+    private static final Color FRAME_COLOR = new Color(51, 51, 63);
     private static final Color AREA_COLOR = new Color(100, 160, 200, 200);
     private static final Color LINE_COLOR = new Color(0, 30, 110, 255);
     private static final Color RESTART_BAR_COLOR = new Color(223, 13, 13, 255);
@@ -72,8 +75,8 @@ class SummaryRenderer {
             RrdGraphDef def = template.getRrdGraphDef();
             def.setTimeSpan(start/1000, end/1000); // ignore the periods in the template
             // FIXME not clear how to get the height and width from the template
-            int width = GraphHelper.DEFAULT_X;
-            int height = GraphHelper.DEFAULT_Y;
+            int width = DEFAULT_X;
+            int height = DEFAULT_Y;
             def.setWidth(width);
             def.setHeight(height);
 
@@ -95,7 +98,7 @@ class SummaryRenderer {
 *****/
     }
 
-    public void render(OutputStream out) throws IOException { render(out, GraphHelper.DEFAULT_X, GraphHelper.DEFAULT_Y,
+    public void render(OutputStream out) throws IOException { render(out, DEFAULT_X, DEFAULT_Y,
                                                                      false, false, false, false, -1, 0, false); }
 
     /**
@@ -139,6 +142,8 @@ class SummaryRenderer {
             def.setColor(RrdGraphDef.COLOR_SHADEB, SHADEB_COLOR);
             def.setColor(RrdGraphDef.COLOR_GRID,   GRID_COLOR);
             def.setColor(RrdGraphDef.COLOR_MGRID,  MGRID_COLOR);
+            def.setColor(RrdGraphDef.COLOR_FONT,   FONT_COLOR);
+            def.setColor(RrdGraphDef.COLOR_FRAME,  FRAME_COLOR);
             def.setFont(RrdGraphDef.FONTTAG_DEFAULT, new Font(DEFAULT_FONT_NAME, Font.PLAIN, 10));
             def.setFont(RrdGraphDef.FONTTAG_TITLE,   new Font(DEFAULT_FONT_NAME, Font.PLAIN, 10));
             def.setFont(RrdGraphDef.FONTTAG_AXIS,    new Font("Droid Sans Mono", Font.PLAIN, 10));
@@ -166,7 +171,8 @@ class SummaryRenderer {
             def.setMinValue(0d);
             String name = _listener.getRate().getRateStat().getName();
             // heuristic to set K=1024
-            if ((name.startsWith("bw.") || name.indexOf("Size") >= 0 || name.indexOf("Bps") >= 0 || name.indexOf("memory") >= 0)
+            //if ((name.startsWith("bw.") || name.indexOf("Size") >= 0 || name.indexOf("Bps") >= 0 || name.indexOf("memory") >= 0)
+            if ((name.indexOf("Size") >= 0 || name.indexOf("memory") >= 0)
                 && !showEvents)
                 def.setBase(1024);
             if (titleOverride != null) {
@@ -187,8 +193,8 @@ class SummaryRenderer {
             }
             String path = _listener.getData().getPath();
             String dsNames[] = _listener.getData().getDsNames();
-            String plotName = null;
-            String descr = null;
+            String plotName;
+            String descr;
             if (showEvents) {
                 // include the average event count on the plot
                 plotName = dsNames[1];
@@ -262,7 +268,7 @@ class SummaryRenderer {
                 def.area(dsNames[0], AREA_COLOR, _listener.getRate().getRateStat().getDescription());
                 def.line(dsNames[1], LINE_COLOR, "Events per period");
             */
-            if (hideLegend) 
+            if (hideLegend)
                 def.setNoLegend(true);
             if (hideGrid) {
                 def.setDrawXGrid(false);

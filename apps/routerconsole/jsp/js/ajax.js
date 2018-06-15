@@ -34,6 +34,13 @@ function ajaxDone(url, target, refresh) {
       document.getElementById(target).innerHTML = failMessage;
       //document.getElementByClassName("hideifdown").style.display="none";
     }
+
+    // conditionally display graph so ajax call doesn't interfere with refreshGraph.js
+    var graph = document.getElementById("sb_graphcontainer");
+      if (graph) {
+      graph.style.backgroundImage = "url(/viewstat.jsp?stat=bw.combined&periodCount=20&width=220&height=50&hideLegend=true&hideGrid=true&time=" + new Date().getTime();
+    }
+
     setTimeout(function() {ajax(url, target, refresh);}, refresh);
   }
 }

@@ -20,8 +20,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import org.apache.http.conn.util.InetAddressUtils;
-
 import net.i2p.crypto.SigType;
 import net.i2p.data.DatabaseEntry;
 import net.i2p.data.DataHelper;
@@ -1074,7 +1072,8 @@ public class UDPTransport extends TransportImpl implements TimedWeightedPriority
                     _context.getBooleanProperty(PROP_LAPTOP_MODE) &&
                     now - lastChanged > 10*60*1000 &&
                     _context.router().getUptime() < 10*60*1000) {
-                    _log.log(Log.CRIT, "IP changed, restarting with a new identity and port");
+                    System.out.println("WARN: IP changed, restarting with a new identity and port");
+                    _log.logAlways(Log.WARN, "IP changed, restarting with a new identity and port");
                     // this removes the UDP port config
                     _context.router().killKeys();
                     // do we need WrapperManager.signalStopped() like in ConfigServiceHandler ???
@@ -1174,6 +1173,16 @@ public class UDPTransport extends TransportImpl implements TimedWeightedPriority
      */
     public Collection<PeerState> getPeers() {
         return _peersByIdent.values();
+    }
+    
+    /** 
+     * Connected peers.
+     *
+     * @return not a copy, do not modify
+     * @since 0.9.34
+     */
+    public Set<Hash> getEstablished() {
+        return _peersByIdent.keySet();
     }
 
     /** 
@@ -1572,8 +1581,9 @@ public class UDPTransport extends TransportImpl implements TimedWeightedPriority
     private boolean locked_needsRebuild() {
         if (_needsRebuild) return true; // simple enough
         if (_context.router().isHidden()) return false;
-        RouterAddress addr = getCurrentAddress(false);
-        if (introducersRequired()) {
+        boolean v6Only = getIPv6Config() == IPV6_ONLY;
+        RouterAddress addr = getCurrentAddress(v6Only);
+        if (!v6Only && introducersRequired()) {
             UDPAddress ua = new UDPAddress(addr);
             long now = _context.clock().now();
             int valid = 0;
@@ -2083,11 +2093,11 @@ public class UDPTransport extends TransportImpl implements TimedWeightedPriority
                     String h = hosts[i];
                     if (h.length() <= 0)
                         continue;
-                    if (InetAddressUtils.isIPv4Address(h)) {
+                    if (Addresses.isIPv4Address(h)) {
                         if (v4)
                             continue;
                         v4 = true;
-                    } else if (InetAddressUtils.isIPv6Address(h)) {
+                    } else if (Addresses.isIPv6Address(h)) {
                         if (v6)
                             continue;
                         v6 = true;
@@ -2130,7 +2140,8 @@ public class UDPTransport extends TransportImpl implements TimedWeightedPriority
             }
         } else {
             if (!introducersRequired()) {
-                RouterAddress cur = getCurrentExternalAddress(false);
+                boolean v6Only = getIPv6Config() == IPV6_ONLY;
+                RouterAddress cur = getCurrentExternalAddress(v6Only);
                 if (cur != null)
                     host = cur.getHost();
             }
@@ -2639,7 +2650,7 @@ public class UDPTransport extends TransportImpl implements TimedWeightedPriority
     
     @Override
     public boolean isEstablished(Hash dest) {
-        return getPeerState(dest) != null;
+        return _peersByIdent.containsKey(dest);
     }
 
     /**

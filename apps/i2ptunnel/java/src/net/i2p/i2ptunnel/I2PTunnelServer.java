@@ -37,6 +37,7 @@ import net.i2p.client.streaming.I2PServerSocket;
 import net.i2p.client.streaming.I2PSocket;
 import net.i2p.client.streaming.I2PSocketManager;
 import net.i2p.client.streaming.I2PSocketManagerFactory;
+import net.i2p.client.streaming.RouterRestartException;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Base64;
 import net.i2p.data.Hash;
@@ -547,46 +548,66 @@ public class I2PTunnelServer extends I2PTunnelTask implements Runnable {
             // Never shut down.
             _clientExecutor = new TunnelControllerGroup.CustomThreadPoolExecutor();
         }
+        I2PSocket i2ps = null;
         while (open) {
             try {
+                i2ps = null;
                 I2PServerSocket ci2pss = i2pss;
                 if (ci2pss == null)
                     throw new I2PException("I2PServerSocket closed");
-                final I2PSocket i2ps = ci2pss.accept();
-                if (i2ps == null) throw new I2PException("I2PServerSocket closed");
+                // returns non-null as of 0.9.17
+                i2ps = ci2pss.accept();
                 if (_usePool) {
                     try {
                         _executor.execute(new Handler(i2ps));
                     } catch (RejectedExecutionException ree) {
                          try {
-                             i2ps.close();
+                             i2ps.reset();
                          } catch (IOException ioe) {}
                          if (open)
                              _log.logAlways(Log.WARN, "ServerHandler queue full, dropping incoming connection to " +
                                         remoteHost + ':' + remotePort +
-                                        "; increase server max threads or " + PROP_HANDLER_COUNT);
+                                        "; increase server max threads or " + PROP_HANDLER_COUNT +
+                                        "; current is " + getHandlerCount());
                     }
                 } else {
                     // use only for standard servers that can't get slowlorissed! Not for http or irc
                     blockingHandle(i2ps);
                 }
+            } catch (RouterRestartException rre) {
+                // Delay and loop if router is soft restarting
+                _log.logAlways(Log.WARN, "Waiting for router restart");
+                if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
+                try {
+                    Thread.sleep(2*60*1000);
+                } catch (InterruptedException ie) {}
+                // This should be the same as before, but we have to call getServerSocket()
+                // so sockMgr will call ConnectionManager.setAllowIncomingConnections(true) again
+                i2pss = sockMgr.getServerSocket();
             } catch (I2PException ipe) {
                 if (_log.shouldLog(Log.ERROR))
                     _log.error("Error accepting - KILLING THE TUNNEL SERVER", ipe);
-                // TODO delay and loop if internal router is soft restarting?
                 open = false;
+                if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
                 break;
             } catch (ConnectException ce) {
                 if (_log.shouldLog(Log.ERROR))
                     _log.error("Error accepting", ce);
-                open = false;
-                break;
+                if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
+                try {
+                    Thread.sleep(2*60*1000);
+                } catch (InterruptedException ie) {}
+                // Server socket possbily closed out from under us, perhaps as part of a router restart;
+                // wait a while and try to get a new socket
+                i2pss = sockMgr.getServerSocket();
             } catch(SocketTimeoutException ste) {
                 // ignored, we never set the timeout
+                if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
             } catch (RuntimeException e) {
                 // streaming borkage
                 if (_log.shouldLog(Log.ERROR))
                     _log.error("Uncaught exception accepting", e);
+                if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
                 // not killing the server..
                 try {
                     Thread.sleep(500);

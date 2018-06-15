@@ -32,6 +32,7 @@
     response.setHeader("X-XSS-Protection", "1; mode=block");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("Accept-Ranges", "none");
 
 %>
 <%@page pageEncoding="UTF-8"%>
@@ -61,10 +62,10 @@
 <hr>
 <div id="navi">
 <a id="overview" href="index"><%=intl._t("Overview")%></a>&nbsp;
-<a class="abook" href="addressbook?book=private"><%=intl._t("Private")%></a>&nbsp;
-<a class="abook" href="addressbook?book=master"><%=intl._t("Master")%></a>&nbsp;
-<a class="abook" href="addressbook?book=router"><%=intl._t("Router")%></a>&nbsp;
-<a class="abook" href="addressbook?book=published"><%=intl._t("Published")%></a>&nbsp;
+<a class="abook" href="addressbook?book=private&amp;filter=none"><%=intl._t("Private")%></a>&nbsp;
+<a class="abook" href="addressbook?book=master&amp;filter=none"><%=intl._t("Master")%></a>&nbsp;
+<a class="abook" href="addressbook?book=router&amp;filter=none"><%=intl._t("Router")%></a>&nbsp;
+<a class="abook" href="addressbook?book=published&amp;filter=none"><%=intl._t("Published")%></a>&nbsp;
 <a id="subs" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
 <a id="config" href="config"><%=intl._t("Configuration")%></a>
 </div>
@@ -140,12 +141,10 @@ ${book.loadBookMessages}
 <input type="hidden" name="book" value="${book.book}">
 <input type="hidden" name="begin" value="0">
 <input type="hidden" name="end" value="49">
-<table>
-<tr>
-<td class="search"><%=intl._t("Search")%>: <input class="search" type="text" name="search" value="${book.search}" size="20" ></td>
-<td class="search"><input class="search" type="submit" name="submitsearch" value="<%=intl._t("Search")%>" ></td>
-</tr>
-</table>
+<div id="booksearch">
+<input class="search" type="text" name="search" value="${book.search}" size="20" >
+<input class="search" type="submit" name="submitsearch" value="<%=intl._t("Search")%>" >
+</div>
 </form>
 </div>
 </c:if>
@@ -177,11 +176,21 @@ ${book.loadBookMessages}
 </c:if>
 
 </tr>
-
+<%
+    boolean haveImagegen = book.haveImagegen();
+%>
 <!-- limit iterator, or "Form too large" may result on submit, and is a huge web page if we don't -->
 <c:forEach items="${book.entries}" var="addr" begin="${book.resultBegin}" end="${book.resultEnd}">
 <tr class="list${book.trClass}">
-<td class="names"><a href="/imagegen/id?s=256&amp;c=${addr.b32}" target="_blank" title="<%=intl._t("View larger version of identicon for this hostname")%>"><img src="/imagegen/id?s=20&amp;c=${addr.b32}"></a><a href="http://${addr.name}/" target="_top">${addr.displayName}</a></td>
+<td class="names">
+<%
+    if (haveImagegen) {
+%>
+<a href="/imagegen/id?s=256&amp;c=${addr.b32}" target="_blank" title="<%=intl._t("View larger version of identicon for this hostname")%>"><img src="/imagegen/id?s=20&amp;c=${addr.b32}"></a>
+<%
+    }  // haveImagegen
+%>
+<a href="http://${addr.name}/" target="_top">${addr.displayName}</a></td>
 <td class="names"><span class="addrhlpr"><a href="http://${addr.b32}/" target="_blank" title="<%=intl._t("Base 32 address")%>">b32</a></span></td>
 <td class="helper"><a href="http://${addr.name}/?i2paddresshelper=${addr.destination}" target="_blank" title="<%=intl._t("Helper link to share host address with option to add to addressbook")%>">link</a></td>
 <td class="names"><span class="addrhlpr"><a href="details?h=${addr.name}&amp;book=${book.book}" title="<%=intl._t("More information on this entry")%>"><%=intl._t("details")%></a></span></td>
@@ -212,7 +221,7 @@ ${book.loadBookMessages}
 </c:if><% /* book.notEmpty */ %>
 
 <c:if test="${book.isEmpty}">
-<div id="book">
+<div id="emptybook">
 <p class="book"><%=intl._t("This address book is empty.")%></p>
 </div>
 </c:if>

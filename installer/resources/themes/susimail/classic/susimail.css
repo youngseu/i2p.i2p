@@ -2,6 +2,7 @@
 /* Author: dr|z3d */
 
 body {
+     margin: 3px 4px;
      background: #eef url(/themes/console/classic/images/bg0.png);
      background-size: 120px 120px;
      color: #2c354f;
@@ -77,9 +78,10 @@ p.text {
 
 p.error, p.info {
      color: #900;
-     padding: 15px 15px 15px 55px;
+     padding: 15px 15px 15px 45px;
      border: 1px solid #89f;
      background: #ffe url(/themes/console/images/info/errortriangle.png) 8px center no-repeat;
+     background-size: 28px auto;
      text-align: left;
      margin: -1px -11px;
      box-shadow: inset 0 0 0 1px #fff;
@@ -109,7 +111,7 @@ p.info {
 }
 
 span.coloured {
-     color:#327BBF;
+     color: #327bbf;
 }
 
 div.footer {
@@ -124,8 +126,8 @@ div.footer {
 p.footer {
      padding: 1px;
      margin: 0;
-     font-size:8pt;
-     line-height:10pt;
+     font-size: 8pt;
+     line-height: 10pt;
      text-align: center;
 }
 
@@ -164,6 +166,7 @@ div.attached {
 .attached img {
      border: 1px solid #cfd6ff;
      padding: 2px;
+     image-orientation: from-image;
 }
 
 td#addattach {
@@ -213,7 +216,6 @@ a.linknew {
 }
 
 td {
-     color: #0c153d;
      line-height: 12pt;
      font-size: 9pt;
      padding: 1px 3px;
@@ -507,6 +509,7 @@ button:focus, input[type="submit"]:focus, input[type="reset"]:focus {
      filter: drop-shadow(0 0 1px #89f);
 }
 
+select,
 button, input[type="submit"], input[type="reset"] {
      padding: 5px;
      border-radius: 2px;
@@ -628,13 +631,14 @@ input.offline:hover, input.offline:focus {
      background: url(/themes/susimail/images/offline_hover.png) no-repeat 7px center, linear-gradient(to bottom, #ddd 0%, #fff 100%);
 }
 
-input.list {
+input.list, input.moveto, #pagenav input.switchto {
      background: #eee url(/themes/susimail/images/folder.png) no-repeat 7px center;
      background: url(/themes/susimail/images/folder.png) no-repeat 7px center, linear-gradient(to bottom, #fff 0%, #ddd 100%);
      padding: 5px 8px 5px 24px;
 }
 
-input.list:hover, input.list:focus {
+input.list:hover, input.moveto:hover, input.switchto:hover,
+input.list:focus, input.moveto:focus, input.switchto:focus {
      background: #eee url(/themes/susimail/images/folder-open.png) no-repeat 7px center;
      background: url(/themes/susimail/images/folder-open.png) no-repeat 7px center, linear-gradient(to bottom, #ddd 0%, #fff 100%);
 }
@@ -1153,6 +1157,10 @@ table#pagenav td:first-child {
      width: 49%;
 }
 
+table#pagenav td:nth-child(2) {
+     padding-left: 35px;
+}
+
 table#pagenav td:last-child {
      text-align: left;
      width: 49%;
@@ -1180,7 +1188,13 @@ table#pagenav td:last-child {
 }
 }
 
-@media screen and (min-width: 1024px) {
+@media screen and (min-width: 1300px) {
+.iframed body, .iframed td, .iframed textarea, .iframed input, .iframed div, .iframed p.mailbody, .iframed p.error {
+     font-size: 10pt !important;
+}
+}
+
+@media screen and (min-width: 1500px) {
 body, td, textarea, input, div, p.mailbody, p.error {
      font-size: 10pt !important;
 }

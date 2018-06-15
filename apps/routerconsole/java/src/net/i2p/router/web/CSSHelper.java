@@ -5,6 +5,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import net.i2p.servlet.util.ServletUtil;
 import net.i2p.util.RandomSource;
 
 /**
@@ -17,6 +18,8 @@ public class CSSHelper extends HelperBase {
 
     public static final String PROP_UNIVERSAL_THEMING = "routerconsole.universal.theme";
     public static final String PROP_THEME_NAME = "routerconsole.theme";
+    /**  @since 0.9.33 moved from ConfigUIHelper */
+    public static final String PROP_THEME_PFX = PROP_THEME_NAME + '.';
     public static final String DEFAULT_THEME = "light";
     public static final String BASE_THEME_PATH = "/themes/console/";
     private static final String FORCE = "classic";
@@ -26,6 +29,8 @@ public class CSSHelper extends HelperBase {
     public static final String PROP_DISABLE_REFRESH = "routerconsole.summaryDisableRefresh";
     private static final String PROP_XFRAME = "routerconsole.disableXFrame";
     public static final String PROP_FORCE_MOBILE_CONSOLE = "routerconsole.forceMobileConsole";
+    /** @since 0.9.32 */
+    public static final String PROP_EMBED_APPS = "routerconsole.embedApps";
 
     private static final String _consoleNonce = Long.toString(RandomSource.getInstance().nextLong());
 
@@ -49,6 +54,14 @@ public class CSSHelper extends HelperBase {
             url += theme + "/";
         }
         return url;
+    }
+
+    /**
+     * Returns whether app embedding is enabled or disabled
+     * @since 0.9.32
+     */
+    public boolean embedApps() {
+        return _context.getBooleanProperty(PROP_EMBED_APPS);
     }
 
     /**
@@ -172,29 +185,6 @@ public class CSSHelper extends HelperBase {
     }
 
     private static boolean shouldAllowIFrame(String ua) {
-        return
-                               // text
-                             !(ua.startsWith("Lynx") || ua.startsWith("w3m") ||
-                               ua.startsWith("ELinks") || ua.startsWith("Links") ||
-                               ua.startsWith("Dillo") || ua.startsWith("Emacs-w3m") ||
-                               // mobile
-                               // http://www.zytrax.com/tech/web/mobile_ids.html
-                               // Android tablet UAs don't have "Mobile" in them
-                               (ua.contains("Android") && ua.contains("Mobile")) ||
-                               ua.contains("iPhone") ||
-                               ua.contains("iPod") || ua.contains("iPad") ||
-                               ua.contains("Kindle") || ua.contains("Mobile") ||
-                               ua.contains("Nintendo Wii") ||
-                               ua.contains("Opera Mini") || ua.contains("Opera Mobi") ||
-                               ua.contains("Palm") ||
-                               ua.contains("PLAYSTATION") || ua.contains("Playstation") ||
-                               ua.contains("Profile/MIDP-") || ua.contains("SymbianOS") ||
-                               ua.contains("Windows CE") || ua.contains("Windows Phone") ||
-                               ua.startsWith("BlackBerry") || ua.startsWith("DoCoMo") ||
-                               ua.startsWith("Nokia") || ua.startsWith("OPWV-SDK") ||
-                               ua.startsWith("MOT-") || ua.startsWith("SAMSUNG-") ||
-                               ua.startsWith("nook") || ua.startsWith("SCH-") ||
-                               ua.startsWith("SEC-") || ua.startsWith("SonyEricsson") ||
-                               ua.startsWith("Vodafone"));
+        return !ServletUtil.isSmallBrowser(ua);
     }
 }

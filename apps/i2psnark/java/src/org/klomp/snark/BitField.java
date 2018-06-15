@@ -71,6 +71,8 @@ public class BitField
    * affect this BitField.  Note that some bits at the end of the byte
    * array are supposed to be always unset if they represent bits
    * bigger then the size of the bitfield.
+   *
+   * Caller should synch on this and copy!
    */
   public byte[] getFieldBytes()
   {
@@ -170,7 +172,24 @@ public class BitField
     return count >= size;
   }
 
-    @Override
+  /** @since 0.9.33 */
+  @Override
+  public int hashCode() {
+      return (count << 16) ^ size;
+  }
+
+  /** @since 0.9.33 */
+  @Override
+  public boolean equals(Object o) {
+      if (o == null || !(o instanceof BitField))
+          return false;
+      BitField bf = (BitField) o;
+      return count == bf.count() &&
+             size == bf.size() &&
+             Arrays.equals(bitfield, bf.getFieldBytes());
+  }
+
+  @Override
   public String toString()
   {
     // Not very efficient

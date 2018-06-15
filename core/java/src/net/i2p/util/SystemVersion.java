@@ -45,6 +45,8 @@ public abstract class SystemVersion {
     private static final boolean _oneDotSeven;
     private static final boolean _oneDotEight;
     private static final boolean _oneDotNine;
+    private static final boolean _oneDotTen;
+    private static final boolean _oneDotEleven;
     private static final int _androidSDK;
 
     static {
@@ -85,10 +87,12 @@ public abstract class SystemVersion {
         if (_isAndroid) {
             _oneDotSix = _androidSDK >= 9;
             _oneDotSeven = _androidSDK >= 19;
-            // https://developer.android.com/guide/platform/j8-jack.html
-            // some stuff in 23, some in 24
+            // https://developer.android.com/studio/write/java8-support.html
+            // some stuff in 24
             _oneDotEight = false;
             _oneDotNine = false;
+            _oneDotTen = false;
+            _oneDotEleven = false;
         } else {
             String version = System.getProperty("java.version");
             // handle versions like "8-ea" or "9-internal"
@@ -98,6 +102,9 @@ public abstract class SystemVersion {
             _oneDotSeven = _oneDotSix && VersionComparator.comp(version, "1.7") >= 0;
             _oneDotEight = _oneDotSeven && VersionComparator.comp(version, "1.8") >= 0;
             _oneDotNine = _oneDotEight && VersionComparator.comp(version, "1.9") >= 0;
+            // Starting 2018, versions are YY.M, this works for that also
+            _oneDotTen = _oneDotNine && VersionComparator.comp(version, "1.10") >= 0;
+            _oneDotEleven = _oneDotTen && VersionComparator.comp(version, "1.11") >= 0;
         }
     }
 
@@ -199,11 +206,29 @@ public abstract class SystemVersion {
 
     /**
      *
-     *  @return true if Java 1.9 or higher, false for Android.
+     *  @return true if Java 9 or higher, false for Android.
      *  @since 0.9.23
      */
     public static boolean isJava9() {
         return _oneDotNine;
+    }
+
+    /**
+     *
+     *  @return true if Java 10 or higher, false for Android.
+     *  @since 0.9.33
+     */
+    public static boolean isJava10() {
+        return _oneDotTen;
+    }
+
+    /**
+     *
+     *  @return true if Java 11 or higher, false for Android.
+     *  @since 0.9.35
+     */
+    public static boolean isJava11() {
+        return _oneDotEleven;
     }
 
     /**
@@ -257,6 +282,15 @@ public abstract class SystemVersion {
     }
 
     /**
+     *  Runtime.getRuntime().availableProcssors()
+     *  @return never smaller than 1
+     *  @since 0.9.34
+     */
+    public static int getCores() {
+        return Runtime.getRuntime().availableProcessors();
+    }
+
+    /**
      *  The system's time zone, which is probably different from the
      *  JVM time zone, because Router changes the JVM default to GMT.
      *  It saves the old default in the context properties where we can get it.
@@ -294,11 +328,14 @@ public abstract class SystemVersion {
         System.out.println("Java 7   : " + isJava7());
         System.out.println("Java 8   : " + isJava8());
         System.out.println("Java 9   : " + isJava9());
+        System.out.println("Java 10  : " + isJava10());
+        System.out.println("Java 11  : " + isJava11());
         System.out.println("Android  : " + isAndroid());
         if (isAndroid())
             System.out.println("  Version: " + getAndroidVersion());
         System.out.println("Apache   : " + isApache());
         System.out.println("ARM      : " + isARM());
+        System.out.println("Cores    : " + getCores());
         System.out.println("Gentoo   : " + isGentoo());
         System.out.println("GNU      : " + isGNU());
         System.out.println("Linux Svc: " + isLinuxService());

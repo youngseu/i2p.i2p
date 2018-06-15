@@ -63,7 +63,6 @@ HTMLFILES="\
 ./apps/BOB/src/net/i2p/BOB/package.html \
 ./apps/desktopgui/src/net/i2p/desktopgui/package.html \
 ./apps/ministreaming/java/src/net/i2p/client/streaming/package.html \
-./apps/susidns/src/index.html \
 ./apps/susimail/src/index.html \
 ./core/java/src/net/i2p/client/datagram/package.html \
 ./core/java/src/net/i2p/client/naming/package.html \
@@ -109,7 +108,7 @@ HTMLFILES="\
 echo 'Checking XML files....................'
 for i in $XMLFILES
 do
-	echo "Checking $i ..."
+	#echo "Checking $i ..."
 	xmllint --noout $i
         if [ $? -ne 0 ]
 	then
@@ -121,7 +120,7 @@ done
 echo 'Checking HTML files....................'
 for i in $HTMLFILES
 do
-	echo "Checking $i ..."
+	#echo "Checking $i ..."
 	xmllint --html --noout $i
 	# FIXME html mode never exits with an error code
 	# ... but it does output errors

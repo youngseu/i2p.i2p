@@ -150,14 +150,18 @@ public class LogManager implements Flushable {
         // so it doesn't create a log directory and log files unless there is output.
         // In the router context, we have to rotate to a new log file at startup or the logs.jsp
         // page will display the old log.
-        if (context.isRouterContext())
+        if (context.isRouterContext()) {
             startLogWriter();
-        try {
-            Runtime.getRuntime().addShutdownHook(new ShutdownHook());
-        } catch (IllegalStateException ise) {
-            // shutdown in progress, fsck it
+        } else {
+            // Only in App Context.
+            // In Router Context, the router has its own shutdown hook,
+            // and will call our shutdown() from Router.finalShutdown()
+            try {
+                Runtime.getRuntime().addShutdownHook(new ShutdownHook());
+            } catch (IllegalStateException ise) {
+                // shutdown in progress
+            }
         }
-        //System.out.println("Created logManager " + this + " with context: " + context);
     }
 
     /** @since 0.8.2 */
@@ -552,7 +556,9 @@ public class LogManager implements Flushable {
             String v = size.trim().toUpperCase(Locale.US);
             if (v.length() < 2)
                 return -1;
-            if (v.endsWith("B"))
+            if (v.endsWith("IB"))
+                v = v.substring(0, v.length() - 2);
+            else if (v.endsWith("B"))
                 v = v.substring(0, v.length() - 1);
             char mod = v.charAt(v.length() - 1);
             if (!Character.isDigit(mod)) v = v.substring(0, v.length() - 1);

@@ -58,6 +58,9 @@ class UPnPManager {
     // 30 minutes is also the default "lease time" in cybergarage.
     // It expires after 31 minutes.
     private static final long RESCAN_LONG_DELAY = 14*60*1000;
+    // make these generic so we don't advertise we're running I2P
+    private static final String TCP_PORT_NAME = "TCP";
+    private static final String UDP_PORT_NAME = "UDP";
 
     public UPnPManager(RouterContext context, TransportManager manager) {
         _context = context;
@@ -69,24 +72,27 @@ class UPnPManager {
         // set up logging in the UPnP package
         Debug.initialize(context);
         _upnp = new UPnP(context);
-        _upnp.setHTTPPort(_context.getProperty(PROP_HTTP_PORT, DEFAULT_HTTP_PORT));
-        _upnp.setSSDPPort(_context.getProperty(PROP_SSDP_PORT, DEFAULT_SSDP_PORT));
         _upnpCallback = new UPnPCallback();
         _rescanner = new Rescanner();
     }
     
     /**
-     *  Blocking, may take a while
+     *  Blocking, may take a while.
+     *  May be called even if already running.
      */
     public synchronized void start() {
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("UPnP Start");
         _shouldBeRunning = true;
-        if (!_isRunning) {
+        if (!_isRunning && Addresses.isConnected()) {
+            if (_log.shouldLog(Log.DEBUG))
+                _log.debug("UPnP Start");
             long b = _context.clock().now();
             try {
+                // We set these here every time, because ControlPoint auto-decrements on failure,
+                // and will eventually hit 1024 and then negative
+                _upnp.setHTTPPort(_context.getProperty(PROP_HTTP_PORT, DEFAULT_HTTP_PORT));
+                _upnp.setSSDPPort(_context.getProperty(PROP_SSDP_PORT, DEFAULT_SSDP_PORT));
                 _isRunning = _upnp.runPlugin();
-                if (_log.shouldLog(Log.INFO))
+                if (_log.shouldDebug())
                     _log.info("UPnP runPlugin took " + (_context.clock().now() - b));
             } catch (RuntimeException e) {
                 // NPE in UPnP (ticket #728), can't let it bring us down
@@ -98,8 +104,6 @@ class UPnPManager {
         }
         if (_isRunning) {
             _rescanner.schedule(RESCAN_LONG_DELAY);
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("UPnP Start Done");
         } else {
             _rescanner.schedule(RESCAN_SHORT_DELAY);
             // Do we have a non-loopback, non-broadcast address?
@@ -150,9 +154,9 @@ class UPnPManager {
         if (_lastRescan + RESCAN_MIN_DELAY > now)
             return;
         _lastRescan = now;
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("UPnP Rescan Start");
         if (_isRunning) {
+            if (_log.shouldLog(Log.DEBUG))
+                _log.debug("UPnP Rescan");
             // TODO default search MX (jitter) is 3 seconds... reduce?
             // See also:
             // Adaptive Jitter Control for UPnP M-Search
@@ -207,16 +211,20 @@ class UPnPManager {
         for (TransportManager.Port entry : ports) {
             String style = entry.style;
             int port = entry.port;
-            int protocol = -1;
-            if ("SSU".equals(style))
+            int protocol;
+            String name;
+            if ("SSU".equals(style)) {
                 protocol = ForwardPort.PROTOCOL_UDP_IPV4;
-            else if ("NTCP".equals(style))
+                name = UDP_PORT_NAME;
+            } else if ("NTCP".equals(style)) {
                 protocol = ForwardPort.PROTOCOL_TCP_IPV4;
-            else
+                name = TCP_PORT_NAME;
+            } else {
                 continue;
+            }
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("Adding: " + style + " " + port);
-            ForwardPort fp = new ForwardPort(style, false, protocol, port);
+            ForwardPort fp = new ForwardPort(name, false, protocol, port);
             forwards.add(fp);
         }
         // non-blocking
@@ -249,6 +257,7 @@ class UPnPManager {
             if (ips != null) {
                 for (DetectedIP ip : ips) {
                     // store the first public one and tell the transport manager if it changed
+                    // Note that getAddress() will actually return a max of one address.
                     if (TransportUtil.isPubliclyRoutable(ip.publicAddress.getAddress(), false)) {
                         if (_log.shouldLog(Log.DEBUG))
                             _log.debug("External address: " + ip.publicAddress + " type: " + ip.natType);

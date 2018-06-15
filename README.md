@@ -17,6 +17,10 @@ FAQ: https://geti2p.net/faq
 API: http://docs.i2p-projekt.de/javadoc/
 or run 'ant javadoc' then start at build/javadoc/index.html
 
+## How to contribute / Hack on I2P
+
+Please check out [HACKING.md](docs/HACKING.md) and other documents in the docs directory.
+
 ## Building packages from source
 
 To get development branch from source control: https://geti2p.net/newdevelopers
@@ -32,7 +36,7 @@ To get development branch from source control: https://geti2p.net/newdevelopers
   http://www.gnu.org/software/gettext/
 - Build environment must use a UTF-8 locale.
 
-### Build process
+### Ant build process
 
 On x86 systems do:
 
@@ -45,6 +49,20 @@ On non-x86, use one of the following instead:
     ant installer-osx
 
 Run 'ant' with no arguments to see other build options.
+
+### Gradle build process
+
+Full builds of installers or updates are not yet possible, but the code can be
+compiled with:
+
+    ./gradlew assemble
+
+This will download dependencies over the clearnet by default, including Gradle
+itself. To download through a SOCKS proxy (e.g. Tor), add the following lines to
+your `~/.gradle/gradle.properties`:
+
+    systemProp.socksProxyHost=localhost
+    systemProp.socksProxyPort=9150
 
 ## Contact info
 

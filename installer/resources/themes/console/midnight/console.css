@@ -172,7 +172,7 @@ input[type=text], input[type=password], textarea {
      background: linear-gradient(to bottom, #000, #000019);
      box-shadow: inset 0 0 3px 3px #000;
      border: 1px solid #3e3f8f;
-     padding: 4px;
+     padding: 5px;
 }
 
 input[type=text]:focus, input[type=password]:focus, textarea:focus {
@@ -855,6 +855,9 @@ button::-moz-focus-inner, input[type="submit"]::-moz-focus-inner, input[type="re
      background-size: 16px 16px, 100% 100% !important;
      background-position: center center !important;
      padding: 5px !important;
+     min-width: 92px !important;
+     margin-top: 3px;
+     margin-bottom: 3px;
 }
 
 .routersummary .reload, .routersummary .reload[value$="restart"] {
@@ -1293,20 +1296,20 @@ div.logo hr {
      text-transform: capitalize;
 }
 
-#sb_general, #sb_shortgeneral, #sb_bandwidth, #sb_peers, #sb_tunnels, #sb_queue {
+#sb_general, #sb_shortgeneral, #sb_advancedgeneral, #sb_bandwidth, #sb_peers, #sb_peersadvanced, #sb_tunnels, #sb_queue {
      margin-top: -6px !important;
      margin-bottom: -5px !important;
 }
 
-#sb_general td::after, #sb_shortgeneral td::after, #sb_bandwidth td::after,
-#sb_peers td::after, #sb_tunnels td::after, #sb_queue td::after {
+#sb_general td::after, #sb_shortgeneral td::after, #sb_advancedgeneral td::after, #sb_bandwidth td::after,
+#sb_peers td::after, #sb_peersadvanced td::after, #sb_tunnels td::after, #sb_queue td::after {
      content: "";
      display: inline-block;
      vertical-align: bottom;
      min-height: 16px !important;
 }
 
-#sb_general td, #sb_shortgeneral td {
+#sb_general td, #sb_shortgeneral td, #sb_advancedgeneral td {
      white-space: nowrap;
 }
 
@@ -1355,7 +1358,7 @@ div.logo hr {
      border-radius: 0 2px 2px 0;
 }
 
-#sb_services a:link, #sb_internals a:link, #sb_advanced a:link {
+#sb_services a:link, #sb_internals a:link, #sb_advanced a:link, #sb_help a:link {
      word-break: break-all;
      max-width: 190px;
      overflow: hidden;
@@ -1367,20 +1370,42 @@ div.logo hr {
      padding: 1px 3px;
 }
 
-#sb_services a:hover, #sb_internals a:hover, #sb_advanced a:hover, #sb_localtunnels tr:hover, #sb_localtunnels tr:hover a,
+#sb_services a:hover, #sb_internals a:hover, #sb_advanced a:hover, #sb_localtunnels tr:hover, #sb_localtunnels tr:hover a, #sb_help a:hover,
 .news a:hover, #console a:hover, tt a:hover {
      background: #652787;
      color: #fff !important;
      border-radius: 2px;
 }
 
-#sb_services a:active, #sb_internals a:active, #sb_advanced a:active, #sb_localtunnels tr:active, .news a:active, #console a:active, tt a:active {
+#sb_services a:active, #sb_internals a:active, #sb_advanced a:active, #sb_help a:active,
+#sb_localtunnels tr:active, .news a:active, #console a:active, tt a:active {
      background: #39144f;
      color: #c9ceff !important;
 }
 
 #sb_localtunnels tr:active a {
      color: #c9ceff !important;
+}
+
+#sb_peersadvanced a {
+     padding: 0;
+     color: #c9ceff;
+}
+
+#sb_peersadvanced a:hover, #sb_peersadvanced a:focus {
+     color: #652787;
+}
+
+#sb_peersadvanced .separator td::after {
+     min-height: 0 !important;
+}
+
+#sb_peersadvanced .separator hr, #sb_peersadvanced .separator hr:last-child {
+     display: block !important;
+     margin: 3px 0 2px !important;
+     color: transparent;
+     background: transparent;
+     border-bottom: 1px dashed #2d296f;
 }
 
 .sb_notice {
@@ -1395,6 +1420,10 @@ div.logo hr {
 @media screen and (-webkit-min-device-pixel-ratio:0) {
 .sb_notice {
      margin-bottom: -6px !important;
+}
+
+.sb_netstatus, .tunnelBuildStatus {
+     margin-bottom: -4px !important;
 }
 }
 
@@ -1414,6 +1443,11 @@ div.logo hr {
 
 p:empty + .sb_notice {
      margin-top: 10px;
+}
+
+#sb_warning + p:empty + form {
+     margin-top: 11px;
+     margin-bottom: -7px;
 }
 
 /* sidebar stacked tables fix */
@@ -1570,6 +1604,182 @@ p:empty + .sb_notice {
 }
 
 /* end sidebar news */
+
+/* mini sidebar graph */
+
+#sb_bandwidthgraph {
+     width: 100%;
+     margin: -13px 0 0 -8px !important;
+     border-collapse: separate;
+     border-spacing: 0;
+     padding: 0;
+     border: 1px solid #5df;
+     box-shadow: 0 0 1px #ccf;
+}
+
+#sb_bandwidthgraph:hover {
+     border: 1px solid #f60;
+     cursor: url(/themes/console/images/cursor_zoom.png), pointer;
+}
+
+a:active #sb_bandwidthgraph {
+     border: 1px solid #f30;
+}
+
+#sb_bandwidthgraph td {
+     background: linear-gradient(to top, #f3f3ff 2px, rgba(255,255,255,0.0) 2px, rgba(255,255,255,0.0) 89%, #f3f3ff 93%), linear-gradient(to right, #f3f3ff, rgba(255,255,255,0.0) 2%, rgba(255,255,255,0.0) 98%, #f3f3ff), repeating-linear-gradient(to right, rgba(255,255,255,0.0) 10px, rgba(120,120,255,0.8) 11px, rgba(255,255,255,0.0) 11px, rgba(255,255,255,0.0) 20px), repeating-linear-gradient(to top, rgba(255,255,255,0.0) 1px, rgba(120,120,255,0.8) 2px, rgba(255,255,255,0.0) 2px, rgba(255,255,255,0.0) 10px) !important;
+     background: linear-gradient(to top, #fff 2px, rgba(255,255,255,0.0) 2px, rgba(255,255,255,0.0) 89%, #fff 93%), repeating-linear-gradient(to right, rgba(255,255,255,0.0) 10px, rgba(120,120,255,0.8) 11px, rgba(255,255,255,0.0) 11px, rgba(255,255,255,0.0) 20px), repeating-linear-gradient(to top, rgba(255,255,255,0.0) 1px, rgba(120,120,255,0.8) 2px, rgba(255,255,255,0.0) 2px, rgba(255,255,255,0.0) 10px) !important;
+     padding: 0 1px;
+     box-shadow: inset 0 0 0 1px #fff;
+     height: 40px;
+     vertical-align: top;
+}
+
+#sb_graphstats {
+     display: inline-block;
+     padding: 2px 8px;
+     font-weight: bold;
+     background: #444;
+     border: 1px solid #999;
+     border-top: none;
+     box-shadow: inset 0 0 0 1px #fff, 0 0 1px #fff;
+     opacity: 0;
+     transition: ease opacity 0.3s;
+}
+
+#sb_graphcontainer:hover #sb_graphstats {
+     opacity: 1;
+     transition: ease opacity 0.3s;
+}
+
+#sb_graphcontainer {
+     background-color: #000;
+     background-position: left -72px top -24px !important;
+     background-size: 280px 90px !important;
+     background-repeat: no-repeat !important;
+     margin: -6px 0 -4px !important;
+     height: 40px;
+     filter: invert(1) sepia(1) hue-rotate(180deg);
+}
+
+@media screen and (-webkit-min-device-pixel-ratio:0) {
+#sb_graphcontainer {
+     margin-bottom: -5px !important;
+}
+}
+
+@keyframes graphfadein {
+from {
+     opacity: 0;
+}
+
+to {
+     opacity: 1;
+}
+}
+
+#sb_graphcontainer {
+     animation: graphfadein 0.4s ease-in; /* attempt to mitigate strobe effect as image loads before filters are applied */
+}
+
+@media screen and (min-width: 1500px) {
+#sb_graphcontainer {
+     background-size: 300px 77px !important;
+     background-position: left -72px top -20px !important;
+}
+
+#sb_bandwidthgraph {
+     width: 100%;
+     margin: -15px 0 0 -8px !important;
+}
+}
+
+/* end mini sidebar graph */
+
+/* status bar */
+
+@media screen and (-webkit-min-device-pixel-ratio:0) {
+#sb_memoryBar {
+     margin-bottom: -6px !important;
+}
+}
+
+.percentBarOuter {
+     width: 194px;
+     background: #000;
+     background: repeating-linear-gradient(135deg, #001 1px, #001 5px, #003 6px, #003 11px);
+     background: repeating-linear-gradient(to right, #000 1px, #000 2px, #003 2px, #003 4px);
+     border: 1px solid #292b5f;
+     opacity: 1;
+     box-shadow: 0 0 1px 1px rgba(0,0,0,0.8);
+     margin: -3px 0 -5px -6px;
+}
+
+@media screen and (min-width: 1500px) {
+.percentBarOuter {
+     width: 210px;
+}
+}
+
+.percentBarOuter:hover .percentBarText {
+     opacity: 1;
+     transition: ease opacity 0.2s;
+}
+
+.percentBarInner {
+     height: 14px;
+     background: #0e5f00;
+     background: linear-gradient(to bottom,  #33a 0%, #226 50%, #003 50%, #000 100%);
+     box-shadow: inset 0 0 0 1px #000;
+}
+
+.percentBarText {
+     width: 100%;
+     font-weight: bold;
+     text-align: center;
+     vertical-align: middle;
+     float: left;
+     opacity: 0;
+     transition: ease opacity 0.2s;
+}
+
+/* update bar */
+
+.sb_updatestatus {
+     background: #000;
+     margin: -6px -4px -2px;
+     padding: 2px 0 4px;
+     border-bottom: 1px solid #443da0;
+     color: #c9ceff;
+}
+
+.sb_info .percentBarOuter {
+     margin: 5px -2px -4px 0;
+     box-shadow: none !important;
+     background: repeating-linear-gradient(135deg, #001 1px, #001 5px, #003 6px, #003 11px);
+     animation: downloadbar 3s infinite alternate;
+}
+.sb_info .percentBarText {
+     opacity: 1;
+     padding-top: 2px;
+     color: #c9ceff;
+}
+
+.sb_info .percentBarInner {
+     height: 16px;
+}
+
+@keyframes downloadbar {
+from {
+     background: repeating-linear-gradient(135deg, #001 1px, #001 5px, #003 6px, #003 11px);
+}
+
+to {
+     background: repeating-linear-gradient(135deg, #003 1px, #003 6px, #001 7px, #001 11px);
+}
+}
+
+/* end status bar */
 /* end sidebar */
 
 /* console error messages */
@@ -1773,11 +1983,11 @@ div.sorry hr {
 }
 
 #news #newsDisplay a, #graphopts a {
-     border: 1px solid #005;
+     border: 1px solid #001;
      margin: 0 -2px;
      padding: 1px 10px !important;
      background: #002;
-     background: rgba(0,0,64,0.4);
+     background: rgba(0,0,48,0.4);
      border-radius: 15px;
      filter: drop-shadow(0 0 1px rgba(0,0,64,0.8));
 }
@@ -1937,9 +2147,11 @@ div.confignav {
 }
 
 .tab2 {
-     background: #040033;
-     color: #c9ceff;
      padding: 5px 14px 7px;
+     color: #c9ceff;
+     box-shadow: inset 3px 3px 2px #000;
+     background: #040033;
+     background: linear-gradient(to bottom, #040033 50%, #020011 50%);
 }
 
 /* end topnav */
@@ -2110,6 +2322,9 @@ div.widepanel h3 {
      padding: 2px;
 }
 
+.graphspanel a {
+     font-size: 0;
+}
 .graphspanel p {
      text-align: center;
      text-transform: capitalize;
@@ -2136,7 +2351,7 @@ div.widepanel h3 {
 }
 
 #graphopts a, #graphopts a:visited {
-     color: #54508f;
+     color: #54508f !important;
 }
 
 #graphopts a:hover, #graphopts a:visited:hover, #graphopts a:focus {
@@ -2145,6 +2360,10 @@ div.widepanel h3 {
 
 #graphopts a:active {
      color: #2d277f !important;
+}
+
+#graphopts a:empty {
+     display: none;
 }
 
 h3#graphinfo {
@@ -2229,6 +2448,10 @@ h3#graphdisplay a {
      min-width: 60px;
 }
 
+#graph_single {
+     background-size: auto 100px !important;
+}
+
 /* end graphs */
 
 table {
@@ -2293,7 +2516,7 @@ td img[src$="c=a1"], td img[src$="c=a2"] {
 }
 
 tt {
-     font: bold 8pt "Droid Sans Mono", "Andale Mono", "DejaVu Sans Mono", "Lucida Console", monospace;
+     font: bold 8.5pt "Droid Sans Mono", "Andale Mono", "DejaVu Sans Mono", "Lucida Console", monospace;
      color: #393;
 }
 
@@ -2313,9 +2536,12 @@ a:active tt {
      color: #9FE9F9;
 }
 
+.main ul {
+     list-style-type: square;
+}
+
 div.main li {
      text-align: left;
-     list-style: square;
      margin: 2px 0 2px 30px;
      padding: 2px 20px 2px 0;
      word-wrap: break-word;
@@ -2359,7 +2585,7 @@ code {
      color: #393;
 }
 
-a:link, h2 a:link {
+a:link, h2 a:link, #news #newsDisplay a:visited, #graphopts a:visited {
      color: #7972d1;
      text-decoration: none;
      font-weight: bold;
@@ -2508,7 +2734,7 @@ h4 {
 }
 
 h1, h2, h3:not([id*="help"]), h4.app, h4.app2, .routersummary h3, .confignav {
-     background: linear-gradient(to bottom, #191729 0%, #000 50%) !important;
+     background: linear-gradient(to bottom, #191729, #000 75%) !important;
 }
 
 h2, h3, h4, .confignav {
@@ -2547,7 +2773,7 @@ h2, h3, h4, .confignav {
      padding: 0;
      color: #c9ceff;
      font-size: 7pt;
-     width: 360px;
+     width: 380px;
      text-align: right;
      float: right;
      vertical-align: middle;
@@ -2562,6 +2788,10 @@ h2, h3, h4, .confignav {
 .langbox img:hover, .langbox a:focus img {
      opacity: 1;
      transform: scale(1.1);
+}
+
+.langbox img:active {
+     transform: none !important;
 }
 
 .twocol {
@@ -3085,6 +3315,11 @@ a[name="chelp"]:hover, a[name="help"]:hover, a[name="chelp"]:active, a[name="hel
      margin-left: 0;
 }
 
+.homelinkedit td:nth-child(2) img {
+     height: 20px;
+     width: 20px;
+}
+
 #config_homepage .delete {
      float: left;
 }
@@ -3156,11 +3391,13 @@ div.themechoice {
 
 .themechoice object, .themechoice img {
      padding: 3px 3px 4px;
+     opacity: 0.75;
 }
 
 .themechoice object img {
      padding: 3px 3px 0;
      margin-bottom: 0;
+     opacity: 0.75;
 }
 
 .themechoice .optbox {
@@ -3186,6 +3423,11 @@ div.themechoice {
      font-weight: bold;
 }
 
+.themechoice .optbox:checked + object, .themechoice .optbox:checked + img {
+     transform: scale(0.9);
+     opacity: 1;
+}
+
 .themechoice .optbox:focus + object ~ div.themelabel {
      color: #652787;
      box-shadow: inset 0 0 10px 3px #000;
@@ -3200,13 +3442,9 @@ div.themechoice {
      padding: 5px 10px 8px 5px;
 }
 
-#themeoptions br {
-     display: none;
-}
-
 #themeoptions label {
      white-space: nowrap;
-     margin: 4px 10px 4px 0 !important;
+     margin: 1px 10px 1px 0 !important;
      display: inline-block;
 }
 
@@ -3223,7 +3461,7 @@ p#helptranslate {
 }
 
 #themeoptions input {
-     margin-left: 5px;
+     margin-left: 5px 1px;
 }
 
 #themeoptions input[type="checkbox"] {
@@ -3304,7 +3542,8 @@ td#themeselect {
 }
 
 .langselect img {
-     border: 1px solid #241f69;
+     width: 40px;
+     height: 40px;
      margin-bottom: 0;
      margin-left: -72px;
      margin-top: 7px !important;
@@ -3314,13 +3553,12 @@ td#themeselect {
 .langselect input[name="lang"]:checked + img {
      width: 19px;
      height: 13px;
-     border: 1px solid #652787;
      margin-top: 6px !important;
      margin-left: -73px;
 }
 
 .langselect input[name="lang"]:hover + img {
-     box-shadow: 0 0 1px 1px #652787;
+     filter: drop-shadow(0 0 1px #652787);
 }
 
 .langselect input[name="lang"]:hover + img + div.ui_lang {
@@ -3354,18 +3592,50 @@ td#themeselect {
      color: #652787;
 }
 
+/* large flags */
+
+.langselect img {
+     width: 40px;
+     height: 40px;
+     border: none !important;
+     margin-top: -6px !important;
+     margin-left: -82px;
+     position: absolute;
+     box-shadow: none;
+     opacity: 0.75;
+     filter: drop-shadow(0 0 1px #000);
+}
+
+.langselect input[name="lang"]:checked + img, .langselect input[name="lang"]:checked + #config_ui img[src="/flags.jsp?c=a1"] {
+     width: 32px !important;
+     height: 32px !important;
+     border: none !important;
+     margin-left: -78px;
+     margin-top: -2px !important;
+     margin-bottom: 0;
+     box-shadow: none !important;
+     opacity: 1;
+}
+
+.langselect input:hover + img {
+     box-shadow: none !important;
+     transition: none !important;
+     filter: drop-shadow(0 0 2px #652787);
+}
+
 @media screen and (-webkit-min-device-pixel-ratio:0) {
 .langselect img {
-     margin-left: -8px !important;
-     margin-top: -16px !important;
+     margin-left: -19px !important;
+     margin-top: -31px !important;
 }
 
-.langselect input[name="lang"]:checked + img {
-     margin-left: -10px !important;
-     margin-top: -18px !important;
+.langselect input[name="lang"]:checked + img, .langselect input[name="lang"]:checked + #config_ui img[src="/flags.jsp?c=a1"] {
+     margin-left: -15px !important;
+     margin-top: -27px !important;
 }
 }
 
+/* end large flags */
 /* end flag as radio icons */
 
 .ui_lang { /* lang text label */
@@ -3476,7 +3746,7 @@ table#consolepass input[type="password"] {
 #consolepass input[name="name"], #externali2cp input[name="user"] {
      background: #000 url(/themes/console/images/buttons/user.png) 5px center no-repeat;
      background: url(/themes/console/images/buttons/user.png) 5px center no-repeat, linear-gradient(to bottom, #000, #000019);
-     padding: 4px 5px 4px 26px !important;
+     padding: 5px 5px 5px 26px !important;
      background-size: 16px 16px, 100% 100% !important;
 }
 
@@ -3487,7 +3757,7 @@ table#consolepass input[type="password"] {
 #consolepass input[name="nofilter_pw"], #externali2cp input[name="nofilter_pw"] {
      background: #000 url(/themes/console/images/buttons/password.png) 3px center no-repeat;
      background: url(/themes/console/images/buttons/password.png) 3px center no-repeat, linear-gradient(to bottom, #000, #000019);
-     padding: 4px 5px 4px 22px !important;
+     padding: 5px 5px 5px 22px !important;
      background-size: 16px 16px, 100% 100% !important;
 }
 #consolepass input[name="nofilter_pw"]:focus, #externali2cp input[name="nofilter_pw"]:focus {
@@ -3589,16 +3859,14 @@ ul#banlist {
      background: #000;
      padding: 10px 10px 10px 0;
      margin: -1px 0 13px;
-     -moz-column-count: auto;
-     -moz-column-width: 260px;
+     -moz-columns: 300px auto;
      -moz-column-gap: 8px;
      -moz-column-rule: 1px dotted #443da0;
-     -webkit-column-count: auto;
-     -webkit-column-width: 260px;
+     -webkit-columns: 300px auto;
      -webkit-column-gap: 8px;
      -webkit-column-rule: 1px dotted #443da0;
-     column-count: auto;
-     column-width: 260px;
+     columns: 300px auto;
+     column-width: 300px;
      column-gap: 8px;
      column-rule: 1px dotted #443da0;
 }
@@ -3612,8 +3880,7 @@ ul#banlist {
      border-bottom: 1px dotted #443da0;
      margin: 0 10px 3px;
      padding-top: 3px;
-     min-width: 250px;
-     width: 88%;
+     min-width: 300px;
      padding-bottom: 5px;
      break-inside: avoid;
      page-break-inside: avoid;
@@ -3801,6 +4068,10 @@ h3#pconfig {
      white-space: nowrap;
 }
 
+#webappconfig th:nth-child(2), #webappconfig th:nth-child(3) {
+     text-align: center;
+}
+
 #webappconfig th:last-child {
      text-align: left;
      padding-left: 5px;
@@ -3811,6 +4082,10 @@ h3#pconfig {
      display: inline-block;
      min-height: 28px;
      vertical-align: middle;
+}
+
+.configtable#webappconfig tr:last-child, .configtable#tunnelconfig tr:last-child {
+     border-top: 1px inset #120f35 !important;
 }
 
 #pluginconfig td:nth-child(2) {
@@ -3993,6 +4268,10 @@ form > table {
 
 table#tunnelconfig td:first-child {
      font-weight: bold;
+}
+
+#tunnelconfig td:nth-child(n+2) {
+     text-align: left;
 }
 
 .formaction#tunnelconfigsave {
@@ -4229,7 +4508,15 @@ table#externali2cp {
 
 /* /help */
 
-.main#help h3 {
+#help p, #help li, #help td {
+     line-height: 150% !important;
+}
+
+#help li {
+     padding-right: 5px !important;
+}
+
+#help h3 {
     padding: 7px 10px;
     font-size: 10pt;
 }
@@ -4250,6 +4537,7 @@ div#volunteer {
 }
 
 #legal h2, #sidebarhelp h2, #volunteer h2, #reachabilityhelp h2, #configurationhelp h2, #faq h2 {
+     margin: -1px -21px 10px !important;
      padding: 10px;
      text-transform: uppercase;
      font-size: 11pt;
@@ -4257,8 +4545,6 @@ div#volunteer {
      letter-spacing: 0.08em;
      word-spacing: 0.1em;
      border-radius: 0;
-     margin: -1px -21px 10px !important;
-     background: linear-gradient(to right, #000000, #010010 70%, #010013 90%);
 }
 
 #legal h2 + p {
@@ -4266,6 +4552,7 @@ div#volunteer {
 }
 
 #sidebarhelp h3, #faq h3 {
+     margin: 0 -21px 10px !important;
      padding: 10px;
      text-transform: uppercase;
      font-size: 10.5pt;
@@ -4273,8 +4560,6 @@ div#volunteer {
      letter-spacing: 0.08em;
      word-spacing: 0.1em;
      border-radius: 0;
-     margin: 0 -21px 10px !important;
-     background: linear-gradient(to right, #000000, #010010 70%, #010013 90%);
      border: 1px solid #443da0;
 }
 
@@ -4337,17 +4622,21 @@ ul#upnphelp li:last-child, #legal ul li:last-child {
      padding-bottom: 0;
 }
 
-.main#help td.infohelp, .main#help td.infowarn {
+#help td.infohelp, #help td.infowarn {
      background-size: 24px 24px !important;
      padding-left: 46px !important;
 }
 
-.main#help #configinfo .infowarn {
+#help #configinfo .infowarn {
      border: none;
      border-bottom: 1px inset #010008;
      box-shadow: none;
      background-size: 20px 20px !important;
      padding: 7px 10px 7px 40px !important;
+}
+
+#help li {
+     text-align: justify;
 }
 
 /* mini faq */
@@ -4627,7 +4916,7 @@ th > img[src^="/imagegen"] { /* scale down header images */
 }
 
 .netdb_leases .tunnel_peer tt, .netdb_leases .tunnel_peer tt a {
-     font-size: 8pt !important;
+     font-size: 8.5pt !important;
      font-weight: bold !important;
 }
 
@@ -4772,7 +5061,7 @@ font[color="#000099"] { /* info */
 
 #logs li {
      list-style: none;
-     font: 8pt "Droid Sans Mono", "Noto Mono", "Lucida Console", "DejaVu Sans Mono", monospace;
+     font: 8.5pt "Droid Sans Mono", "Noto Mono", "Lucida Console", "DejaVu Sans Mono", monospace;
      line-height: 130%;
      text-align: left;
      display: inline-block;
@@ -4885,7 +5174,7 @@ font[color="#000099"] { /* info */
 }
 
 a[href^="configpeer?peer"]:not(old) {
-     font-size: 0;
+     font-size: 0 !important;
      filter: drop-shadow(0 0 1px #777);
 }
 
@@ -4893,7 +5182,7 @@ a[href^="configpeer?peer"]::after {
      content: url(/themes/console/images/buttons/edit.png);
      vertical-align: top;
      margin: 0 0 0 4px !important;
-     line-height: 0;
+     line-height: 0 !important;
 }
 
 a[href^="configpeer?peer"]:hover {
@@ -5495,7 +5784,7 @@ table#jardump {
 
 .footnote {
      text-align: right;
-     font-size: 7pt;
+     font-size: 8pt;
      margin-bottom: 5px !important;
 }
 
@@ -5517,12 +5806,16 @@ table#jardump {
 
 /* begin home page */
 
+#home .welcome h2 {
+     margin-top: 12px !important;
+}
+
 #homepanel {
      margin: 0 -8px;
 }
 
 h4.app, h4.app2 {
-     background: linear-gradient(to bottom, #191729 0%, #000 50%) !important;
+     background: linear-gradient(to bottom, #191729, #000 75%) !important;
      border: 1px solid #443da0;
      font-size: 10.5pt;
      font-variant: small-caps;
@@ -5724,7 +6017,7 @@ div.app:hover .app img {
      border: none;
      width: 150px;
      background: #001 url(images/titles.png) center center;
-     background: linear-gradient(to bottom, #121225 50%, #000011 50%, #00000d 50%);
+     background: linear-gradient(to bottom, #121225 50%, #00000d 50%);
      border-radius: 0 0 2px 2px;
      border-top: 1px solid #443da0;
      white-space: nowrap;
@@ -6153,7 +6446,7 @@ p.sybil_info + a[name] + .sybil_routerinfo, p.hashdist + a[name] + .sybil_router
      border-top: 1px solid #443da0;
 }
 
-#netconfig th, #externali2cp th, #plugininstall th, .configtable th, th.th_title {
+#netconfig th, #externali2cp th, #plugininstall th, #plugininstall2 th, .configtable th, th.th_title {
     text-align: left;
     padding: 5px 10px !important;
     text-transform: uppercase;
@@ -6233,7 +6526,7 @@ td.optionsave {
      background: #000;
 }
 
-#floodfillconfig form, #plugininstall form, #updateplugins form, .configtable form {
+#floodfillconfig form, #plugininstall form, #plugininstall2 form, #updateplugins form, .configtable form {
      margin-bottom: 0;
 }
 
@@ -6706,7 +6999,7 @@ form[action="events"] {
      background-size: 28px 28px;
 }
 
-#manualreseed tr:nth-child(5) td:nth-last-child(2), #plugininstall tr:nth-child(5) td:nth-last-child(2) {
+#manualreseed tr:nth-child(5) td:nth-last-child(2), #plugininstall2 tr:nth-child(2) td:nth-last-child(2) {
      background: #000 url(/themes/console/images/info/from_file.png) 12px center no-repeat;
      padding: 15px 15px 15px 50px;
      background-size: 28px 28px;
@@ -6718,6 +7011,10 @@ form[action="events"] {
      width: auto !important;
      vertical-align: middle;
      display: inline;
+}
+
+.sb_netstatus, .sb_netstatus a {
+      vertical-align: baseline;
 }
 
 .routersummary .error, .routersummary .warn, .routersummary .testing, .routersummary .hidden,
@@ -6761,7 +7058,7 @@ form[action="events"] {
 
 .routersummary .error::before, .routersummary .warn::before, .routersummary .testing::before, .routersummary .hidden::before,
 .routersummary .running::before, .routersummary .firewalled::before, .routersummary .vmcomm::before, .routersummary .clockskew::before {
-     padding: 0 2px;
+     padding: 0 1px 0 0;
      vertical-align: middle;
      display: inline-block;
      filter: drop-shadow(0 0 1px rgba(220,220,220,0.7));
@@ -6806,15 +7103,15 @@ form[action="events"] {
 
 /* end network status */
 
-#sb_services, #sb_internals, #sb_advanced {
+#sb_services, #sb_internals, #sb_advanced, #sb_help {
      margin-top: -3px !important;
      margin-bottom: -5px !important;
 }
 
 /* /tunnels */
 
-tt a {
-     letter-spacing: 0.07em;
+img + tt {
+     letter-spacing: 0.15em;
 }
 
 .tunnel_cap {
@@ -7314,7 +7611,7 @@ table#i2pupdates td:first-child {
      white-space: normal;
 }
 
-.main#help h3, #faq h3 {
+#help h3, #faq h3 {
      font-size: 10pt !important;
 }
 }
@@ -7334,8 +7631,8 @@ table#i2pupdates td:first-child {
 }
 
 @media screen and (max-width: 1500px) {
-#sb_general td::after, #sb_shortgeneral td::after, #sb_bandwidth td::after,
-#sb_peers td::after, #sb_tunnels td::after, #sb_queue td::after {
+#sb_general td::after, #sb_shortgeneral td::after, #sb_advancedgeneral td::after, #sb_bandwidth td::after,
+#sb_peers td::after, #sb_peersadvanced td::after, #sb_tunnels td::after, #sb_queue td::after {
    min-height: 14px;
 }
 
@@ -7358,7 +7655,7 @@ table#i2pupdates td:first-child {
      padding-right: 5px !important;
 }
 
-.topness, .footnote, #newsStatus, #newsDisplay {
+.topness, #newsStatus, #newsDisplay {
      font-size: 9pt !important;
 }
 
@@ -7366,7 +7663,7 @@ table#i2pupdates td:first-child {
      margin-bottom: 5px;
 }
 
-.main#help h3, #faq h3 {
+#help h3, #faq h3 {
      font-size: 10.5pt !important;
 }
 
@@ -7376,10 +7673,12 @@ table#i2pupdates td:first-child {
 }
 
 @media screen and (min-width: 1400px) {
-.main#help #changelog pre:not(old) {
+#help #changelog pre:not(old) {
+/*
      columns: 550px auto;
      column-gap: 40px;
      column-rule: 1px dotted #443da0;
+*/
      margin-left: 0;
      padding-left: 10px;
      width: calc(100% - 22px) !important;
@@ -7431,7 +7730,8 @@ h1 {
      width: 216px !important;
 }
 
-#sb_general td::after, #sb_shortgeneral td::after, #sb_bandwidth td::after, #sb_peers td::after, #sb_tunnels td::after, #sb_queue td::after {
+#sb_general td::after, #sb_shortgeneral td::after, #sb_advancedgeneral td::after,
+#sb_bandwidth td::after, #sb_peers td::after, #sb_peersadvanced td::after, #sb_tunnels td::after, #sb_queue td::after {
    min-height: 18px;
 }
 
@@ -7511,11 +7811,11 @@ div.joblog h3 {
      margin-top: 8px !important;
 }
 
-#sb_services a:link, #sb_internals a:link, #sb_advanced a:link {
+#sb_services a:link, #sb_internals a:link, #sb_advanced a:link, #sb_help a:link {
      max-width: 207px;
 }
 
-#sb_general, #sb_shortgeneral, #sb_bandwidth, #sb_peers, #sb_tunnels, #sb_queue {
+#sb_general, #sb_shortgeneral, #sb_advancedgeneral, #sb_bandwidth, #sb_peers, #sb_peersadvanced, #sb_tunnels, #sb_queue {
      margin-top: -4px !important;
      margin-bottom: -4px !important;
 }
@@ -7616,13 +7916,13 @@ ul#banlist {
 
 @media screen and (-webkit-min-device-pixel-ratio:0) and (min-width: 1500px) {
 .langselect img, .langselect input[name="lang"]:checked + img {
-     margin-left: -10px !important;
-     margin-top: -16px !important;
+     margin-left: -20px !important;
+     margin-top: -30px !important;
 }
 
 .langselect input[name="lang"]:checked + img {
-     margin-left: -11px !important;
-     margin-top: -18px !important;
+     margin-left: -16px !important;
+     margin-top: -26px !important;
 }
 }
 
@@ -7747,3 +8047,115 @@ _:-ms-lang(x), table + .statusnotes {
 
 /* end IE/Edge tweaks */
 
+/* TO DO: Merge with main classes */
+
+.optionlist {
+     columns: 500px auto;
+     padding-bottom: 1px;
+}
+
+.optionlist label {
+     min-width: 300px;
+     break-inside: avoid;
+     page-break-inside: avoid !important;
+     -webkit-column-break-inside: avoid;
+}
+
+th.options, table#externali2cp th {
+     padding: 7px 10px !important;
+}
+
+.options input[type="checkbox"], #i2pupdates .options .optbox {
+     margin: 0 3px 0 0;
+}
+
+#i2pupdates textarea {
+      min-height: 76px !important;
+      height: 76px !important;
+      margin: 6px 0 6px 10px !important;
+      padding: 3px 5px;
+}
+
+#reseedconfig textarea {
+      min-height: 76px !important;
+      height: 76px !important;
+      margin: 6px 10px 6px 0 !important;
+      padding: 3px 5px;
+}
+
+#manualreseed {
+     margin-bottom: 10px !important;
+}
+
+#resetreseed {
+     padding: 5px 5px 0 0;
+}
+
+/* /configui */
+
+#passwordheading {
+     margin-top: 0 !important;
+}
+
+#langsettings {
+     margin-bottom: 10px !important;
+}
+
+/* end /configui */
+
+#pluginconfigtext + form {
+     float: right;
+     margin: -42px 6px 0 0;
+}
+
+#externaltcp .nowrap:first-child {
+     margin: 5px 0 -18px !important;
+     display: inline-block;
+}
+
+#cputype {
+     display: inline-block;
+     margin: -2px 2px -2px 0;
+     padding: 2px 5px;
+     font-weight: bold;
+     text-transform: uppercase;
+     border-radius: 2px;
+     background: #005;
+}
+
+#wrapperlogs pre {
+     height: 300px;
+     resize: vertical;
+}
+
+/* graphs */
+
+#graphs td:first-child {
+     font-weight: normal;
+     text-align: left;
+     padding: 5px 0 0;
+}
+
+@media screen and (min-width: 1060px) {
+#graphs td:first-child {
+     padding: 5px 0;
+}
+}
+
+#graphs td b {
+     min-width: 150px;
+     text-align: right;
+     display: inline-block;
+     margin-right: 5px;
+}
+
+#graphs .nowrap {
+     line-height: 300%;
+     display: inline-block;
+}
+
+/* end graphs */
+
+.buckets br + br {
+     line-height: 5px;
+}

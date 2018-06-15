@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Properties;
 
+import net.i2p.I2PAppContext;
 import net.i2p.app.ClientApp;
 import net.i2p.app.ClientAppManager;
 import net.i2p.app.ClientAppState;
@@ -29,6 +30,7 @@ public class ConfigServiceHandler extends FormHandler {
 
     private static final String LISTENER_AVAILABLE = "3.2.0";
     private static final String PROPERTIES_AVAILABLE = "3.2.0";
+    private static final String LOCATION_AVAILABLE = "3.3.7";
 
     /**
      *  Register two shutdown hooks, one to rekey and/or tell the wrapper we are stopping,
@@ -202,10 +204,7 @@ public class ConfigServiceHandler extends FormHandler {
     public boolean shouldShowSystray() {
         return !
             (SystemVersion.isLinuxService() ||
-             (SystemVersion.isWindows() && _context.hasWrapper() && WrapperManager.isLaunchedAsService()) ||
-             // headless=true is forced in i2prouter script to prevent useless dock icon;
-             // must fix this first
-             SystemVersion.isMac());
+             (SystemVersion.isWindows() && _context.hasWrapper() && WrapperManager.isLaunchedAsService()));
     }
 
     /**
@@ -214,10 +213,17 @@ public class ConfigServiceHandler extends FormHandler {
      *  @since 0.9.26
      */
     public boolean isSystrayEnabled() {
-        // default false for now, except on non-service windows
+        // default false for now, except on OSX and non-service windows
         String sdtg = _context.getProperty(RouterConsoleRunner.PROP_DTG_ENABLED);
         return Boolean.parseBoolean(sdtg) ||
-               (sdtg == null && SystemVersion.isWindows());
+               (sdtg == null && (SystemVersion.isWindows() || SystemVersion.isMac()));
+    }
+
+    /**
+     *  @since 0.9.33
+     */
+    public String getConsoleURL() {
+        return _context.portMapper().getConsoleURL();
     }
 
     @Override
@@ -267,7 +273,7 @@ public class ConfigServiceHandler extends FormHandler {
             } catch (Throwable t) {
                 addFormError("Warning: unable to contact the service manager - " + t.getMessage());
             }
-            File wlog = LogsHelper.wrapperLogFile(_context);
+            File wlog = wrapperLogFile(_context);
             addFormNotice(_t("Threads dumped to {0}", wlog.getAbsolutePath()));
         } else if (_t("View console on startup").equals(_action)) {
             browseOnStartup(true);
@@ -285,6 +291,37 @@ public class ConfigServiceHandler extends FormHandler {
         } else {
             //addFormNotice("Blah blah blah.  whatever.  I'm not going to " + _action);
         }
+    }
+    
+    /**
+     *  Does not necessarily exist.
+     *
+     *  @return non-null, doesn't necessarily exist
+     *  @since 0.9.1, public since 0.9.27, moved from LogsHelper in 0.9.33
+     */
+    public static File wrapperLogFile(I2PAppContext ctx) {
+        File f = null;
+        if (ctx.hasWrapper()) {
+            String wv = System.getProperty("wrapper.version");
+            if (wv != null && VersionComparator.comp(wv, LOCATION_AVAILABLE) >= 0) {
+                try {
+                   f = WrapperManager.getWrapperLogFile();
+                } catch (Throwable t) {}
+            }
+        }
+        if (f == null || !f.exists()) {
+            // RouterLaunch puts the location here if no wrapper
+            String path = System.getProperty("wrapper.logfile");
+            if (path != null) {
+                f = new File(path);
+            } else {
+                // look in new and old places
+                f = new File(System.getProperty("java.io.tmpdir"), "wrapper.log");
+                if (!f.exists())
+                    f = new File(ctx.getBaseDir(), "wrapper.log");
+            }
+        }
+        return f;
     }
     
     private void installService() {
@@ -318,9 +355,9 @@ public class ConfigServiceHandler extends FormHandler {
         }
         // releases <= 0.6.5 deleted the entry completely
         if (shouldLaunchBrowser && !found) {
-            int port = _context.portMapper().getPort(PortMapper.SVC_CONSOLE, RouterConsoleRunner.DEFAULT_LISTEN_PORT);
+            String url = _context.portMapper().getConsoleURL();
             ClientAppConfig ca = new ClientAppConfig(UrlLauncher.class.getName(), "consoleBrowser",
-                                                     "http://127.0.0.1:" + port + '/', 5, false);
+                                                     url, 5, false);
             clients.add(ca);
         }
         ClientAppConfig.writeClientAppConfig(_context, clients);

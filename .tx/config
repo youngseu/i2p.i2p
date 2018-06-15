@@ -9,6 +9,8 @@ trans.es = apps/i2ptunnel/locale/messages_es.po
 trans.fi = apps/i2ptunnel/locale/messages_fi.po
 trans.fr = apps/i2ptunnel/locale/messages_fr.po
 trans.hu = apps/i2ptunnel/locale/messages_hu.po
+;; Java converts id to in
+trans.id = apps/i2ptunnel/locale/messages_in.po
 trans.it = apps/i2ptunnel/locale/messages_it.po
 trans.ja = apps/i2ptunnel/locale/messages_ja.po
 trans.ko = apps/i2ptunnel/locale/messages_ko.po
@@ -69,6 +71,8 @@ trans.et_EE = apps/routerconsole/locale/messages_et.po
 trans.fi = apps/routerconsole/locale/messages_fi.po
 trans.fr = apps/routerconsole/locale/messages_fr.po
 trans.hu = apps/routerconsole/locale/messages_hu.po
+;; Java converts id to in
+trans.id = apps/routerconsole/locale/messages_in.po
 trans.it = apps/routerconsole/locale/messages_it.po
 trans.ja = apps/routerconsole/locale/messages_ja.po
 trans.ko = apps/routerconsole/locale/messages_ko.po
@@ -135,6 +139,8 @@ trans.fi = apps/routerconsole/locale-countries/messages_fi.po
 trans.fr = apps/routerconsole/locale-countries/messages_fr.po
 trans.gl = apps/routerconsole/locale-countries/messages_gl.po
 trans.hu = apps/routerconsole/locale-countries/messages_hu.po
+;; Java converts id to in
+trans.id = apps/routerconsole/locale-countries/messages_in.po
 trans.it = apps/routerconsole/locale-countries/messages_it.po
 trans.ja = apps/routerconsole/locale-countries/messages_ja.po
 trans.ko = apps/routerconsole/locale-countries/messages_ko.po
@@ -165,6 +171,8 @@ trans.es = apps/i2psnark/locale/messages_es.po
 trans.fi = apps/i2psnark/locale/messages_fi.po
 trans.fr = apps/i2psnark/locale/messages_fr.po
 trans.hu = apps/i2psnark/locale/messages_hu.po
+;; Java converts id to in
+trans.id = apps/i2psnark/locale/messages_in.po
 trans.it = apps/i2psnark/locale/messages_it.po
 trans.ja = apps/i2psnark/locale/messages_ja.po
 trans.ko = apps/i2psnark/locale/messages_ko.po
@@ -195,6 +203,8 @@ trans.fi = apps/susidns/locale/messages_fi.po
 trans.fr = apps/susidns/locale/messages_fr.po
 trans.gl = apps/susidns/locale/messages_gl.po
 trans.hu = apps/susidns/locale/messages_hu.po
+;; Java converts id to in
+trans.id = apps/susidns/locale/messages_in.po
 trans.it = apps/susidns/locale/messages_it.po
 trans.ja = apps/susidns/locale/messages_ja.po
 trans.ko = apps/susidns/locale/messages_ko.po
@@ -298,6 +308,7 @@ trans.it = debian/po/it.po
 trans.hu = debian/po/hu.po
 trans.ja = debian/po/ja.po
 trans.ko = debian/po/ko.po
+trans.nb = debian/po/nb.po
 trans.nl = debian/po/nl.po
 trans.pl = debian/po/pl.po
 trans.pt = debian/po/pt.po
@@ -337,6 +348,22 @@ trans.uk_UA = installer/resources/locale/po/messages_uk.po
 trans.zh_CN = installer/resources/locale/po/messages_zh.po
 
 [I2P.getopt]
+;;
+;; Java properties files (when not read with our DataHelper methods) must be ISO-8859-1 encoded.
+;; See https://docs.oracle.com/javase/6/docs/api/java/util/Properties.html
+;; Several getopt translations from Transifex are ISO-8859-1 encoded.
+;; So that all our source files are consistently UTF-8 encoded,
+;; you may optionally convert them to ASCII with Unicode escapes after downloading.
+;; Convert files with:
+;;   native2ascii -encoding iso-8859-1 foo.properties foo.properties.new
+;; Then review that it looks right:
+;;   native2ascii -reverse -encoding UTF-8 foo.properties.new
+;; Then copy it over:
+;;   mv foo.properties.new foo.properties
+;; The following files from Transifex are known to be ISO-8859-1 encoded,
+;; and should be escaped using native2ascii after downloading:
+;;   gl, pt, pt_BR, sq, sv, tr
+;;
 source_file = core/java/src/gnu/getopt/MessagesBundle.properties
 source_lang = en
 type = PROPERTIES
@@ -345,30 +372,28 @@ trans.de = core/java/src/gnu/getopt/MessagesBundle_de.properties
 trans.es = core/java/src/gnu/getopt/MessagesBundle_es.properties
 trans.fi = core/java/src/gnu/getopt/MessagesBundle_fi.properties
 trans.fr = core/java/src/gnu/getopt/MessagesBundle_fr.properties
-;; currently corrupt, non-UTF-8
-;;trans.gl = core/java/src/gnu/getopt/MessagesBundle_gl.properties
+trans.gl = core/java/src/gnu/getopt/MessagesBundle_gl.properties
 trans.hu = core/java/src/gnu/getopt/MessagesBundle_hu.properties
 ;; Java converts id to in
 trans.id = core/java/src/gnu/getopt/MessagesBundle_in.properties
 trans.it = core/java/src/gnu/getopt/MessagesBundle_it.properties
 trans.ja = core/java/src/gnu/getopt/MessagesBundle_ja.properties
 trans.ko = core/java/src/gnu/getopt/MessagesBundle_ko.properties
-trans.nl = core/java/src/gnu/getopt/MessagesBundle_nl.properties
 trans.nb = core/java/src/gnu/getopt/MessagesBundle_nb.properties
+trans.nl = core/java/src/gnu/getopt/MessagesBundle_nl.properties
 trans.pl = core/java/src/gnu/getopt/MessagesBundle_pl.properties
-;; currently corrupt, non-UTF-8
-;;trans.pt = core/java/src/gnu/getopt/MessagesBundle_pt.properties
-;; currently corrupt, non-UTF-8
-;;trans.pt_BR = core/java/src/gnu/getopt/MessagesBundle_pt_BR.properties
+trans.pt = core/java/src/gnu/getopt/MessagesBundle_pt.properties
+trans.pt_BR = core/java/src/gnu/getopt/MessagesBundle_pt_BR.properties
 trans.ro = core/java/src/gnu/getopt/MessagesBundle_ro.properties
 trans.ru_RU = core/java/src/gnu/getopt/MessagesBundle_ru.properties
 trans.sk = core/java/src/gnu/getopt/MessagesBundle_sk.properties
-;; currently corrupt, non-UTF-8
-;;trans.sq = core/java/src/gnu/getopt/MessagesBundle_sq.properties
-;; currently corrupt, non-UTF-8
-;;trans.tr_TR = core/java/src/gnu/getopt/MessagesBundle_tr.properties
+trans.sq = core/java/src/gnu/getopt/MessagesBundle_sq.properties
+trans.sr = core/java/src/gnu/getopt/MessagesBundle_sr.properties
+trans.sv_SE = core/java/src/gnu/getopt/MessagesBundle_sv.properties
+trans.tr_TR = core/java/src/gnu/getopt/MessagesBundle_tr.properties
 trans.uk_UA = core/java/src/gnu/getopt/MessagesBundle_uk.properties
 trans.zh_CN = core/java/src/gnu/getopt/MessagesBundle_zh.properties
+trans.zh_TW = core/java/src/gnu/getopt/MessagesBundle_zh_TW.properties
 
 [I2P.streaming]
 source_file = apps/ministreaming/locale/messages_en.po
@@ -405,6 +430,7 @@ trans.de = installer/resources/locale-man/man_de.po
 trans.es = installer/resources/locale-man/man_es.po
 trans.fi = installer/resources/locale-man/man_fi.po
 trans.fr = installer/resources/locale-man/man_fr.po
+trans.id = installer/resources/locale-man/man_id.po
 trans.it = installer/resources/locale-man/man_it.po
 trans.ko = installer/resources/locale-man/man_ko.po
 trans.nl = installer/resources/locale-man/man_nl.po
@@ -414,6 +440,30 @@ trans.pt_BR = installer/resources/locale-man/man_pt_BR.po
 trans.ru_RU = installer/resources/locale-man/man_ru.po
 trans.sv_SE = installer/resources/locale-man/man_sv.po
 trans.zh_CN = installer/resources/locale-man/man_zh.po
+
+[I2P.eepsite]
+;;
+;; For any new translations, add links in index.html
+;; and copy new flags in build.xml preppkg-base target
+;;
+type = HTML
+source_file = installer/resources/eepsite/docroot/help/index.html
+source_lang = en
+trans.de = installer/resources/eepsite/docroot/help/index_de.html
+trans.es = installer/resources/eepsite/docroot/help/index_es.html
+trans.fr = installer/resources/eepsite/docroot/help/index_fr.html
+trans.nl = installer/resources/eepsite/docroot/help/index_nl.html
+trans.ru_RU = installer/resources/eepsite/docroot/help/index_ru.html
+trans.sv_SE = installer/resources/eepsite/docroot/help/index_sv.html
+trans.zh_CN = installer/resources/eepsite/docroot/help/index_zh.html
+
+[I2P.ztest]
+;;
+;; TESTING ONLY
+;;
+type = HTML
+source_file = installer/resources/readme/readme.html
+source_lang = en
 
 [main]
 host = https://www.transifex.com

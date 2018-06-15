@@ -12,13 +12,13 @@
 
 <%@include file="summary.jsi" %>
 
-<jsp:useBean class="net.i2p.router.web.ConfigNetHelper" id="nethelper" scope="request" />
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigNetHelper" id="nethelper" scope="request" />
 <jsp:setProperty name="nethelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
 <h1><%=intl._t("I2P Bandwidth Configuration")%></h1>
 <div class="main" id="config_bandwidth">
  <%@include file="confignav.jsi" %>
 
- <jsp:useBean class="net.i2p.router.web.ConfigNetHandler" id="formhandler" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.ConfigNetHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
  <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>">
@@ -30,21 +30,23 @@
  <tr><td class="infohelp" colspan="2">
  <b><%=intl._t("I2P will work best if you configure your rates to match the speed of your internet connection.")%></b>
  </td></tr>
-   <tr><td><input style="text-align: right; width: 5em;" name="inboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="inboundRate" />" >
+<%-- display burst, set standard, handler will fix up --%>
+   <tr><td><input style="text-align: right; width: 5em;" name="inboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="inboundBurstRate" />" >
           <%=intl._t("KBps In")%>
-        </td><td>(<jsp:getProperty name="nethelper" property="inboundRateBits" />)</td>
-<% /********
+        </td><td>(<jsp:getProperty name="nethelper" property="inboundBurstRateBits" />)</td>
+<%--
 <!-- let's keep this simple...
  bursting up to
     <input name="inboundburstrate" type="text" size="5" value="<jsp:getProperty name="nethelper" property="inboundBurstRate" />" /> KBps for
     <jsp:getProperty name="nethelper" property="inboundBurstFactorBox" /><br>
 -->
-*********/ %>
+--%>
     </tr><tr>
-        <td><input style="text-align: right; width: 5em;" name="outboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="outboundRate" />" >
+<%-- display burst, set standard, handler will fix up --%>
+        <td><input style="text-align: right; width: 5em;" name="outboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="outboundBurstRate" />" >
          <%=intl._t("KBps Out")%>
-        </td><td>(<jsp:getProperty name="nethelper" property="outboundRateBits" />)</td>
-<% /********
+        </td><td>(<jsp:getProperty name="nethelper" property="outboundBurstRateBits" />)</td>
+<%--
 <!-- let's keep this simple...
  bursting up to
     <input name="outboundburstrate" type="text" size="2" value="<jsp:getProperty name="nethelper" property="outboundBurstRate" />" /> KBps for
@@ -52,13 +54,13 @@
  <i>KBps = kilobytes per second = 1024 bytes per second = 8192 bits per second.<br>
     A negative rate sets the default.</i><br>
 -->
-*********/ %>
+--%>
     </tr><tr>
         <td><jsp:getProperty name="nethelper" property="sharePercentageBox" /> <%=intl._t("Share")%></td>
         <td>(<jsp:getProperty name="nethelper" property="shareRateBits" />)
 </td></tr>
 <tr><td class="infohelp" colspan="2">
-<% int share = nethelper.getShareBandwidth();
+<% int share = Math.round(nethelper.getShareBandwidth() * 1.024f);
     if (share < 12) {
         out.print("<b>");
         out.print(intl._t("NOTE"));

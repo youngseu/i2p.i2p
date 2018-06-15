@@ -23,65 +23,59 @@
  */
 package i2p.susi.webmail.encoding;
 
+import java.io.IOException;
+import java.io.InputStream;
+
+import i2p.susi.util.Buffer;
 import i2p.susi.util.ReadBuffer;
 
 import net.i2p.data.DataHelper;
 
 /**
+ * Decode only. See encode().
  * @author susi
  */
-public class EightBit implements Encoding {
+public class EightBit extends Encoding {
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#getName()
-	 */
 	public String getName() {
 		return "8bit";
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#encode(byte[])
+	/**
+	 * TODO would be nice to implement this, as it is supported on the project server,
+	 * but content must be CRLF terminated with a max of 998 chars per line.
+	 * And you can't have leading dots either, we'd have to prevent or double-dot it.
+	 * That would be expensive to check, using either a double read or
+	 * pulling it all into memory.
+	 * So it's prohibitive for attachments. We could do it for the message body,
+	 * since it's in memory already, but that's not much of a win.
+	 * ref: https://stackoverflow.com/questions/29510178/how-to-handle-1000-character-lines-in-8bit-mime
+	 *
+	 * @throws EncodingException always
 	 */
-	public String encode(byte[] in) {
-		// TODO Auto-generated method stub
-		return null;
+	public String encode(byte[] in) throws EncodingException {
+		throw new EncodingException("unsupported");
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#encode(java.lang.String)
-	 */
-	public String encode(String str) {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(byte[])
-	 */
-	public ReadBuffer decode(byte[] in) throws DecodingException {
-		return decode( in, 0, in.length );
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(byte[], int, int)
-	 */
-	public ReadBuffer decode(byte[] in, int offset, int length)
-		throws DecodingException {
+	@Override
+	public Buffer decode(byte[] in, int offset, int length) {
 		return new ReadBuffer(in, offset, length);
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(java.lang.String)
+	/**
+	 * @return in unchanged
 	 */
-	public ReadBuffer decode(String str) throws DecodingException {
-		return decode( DataHelper.getUTF8(str) );
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(i2p.susi.webmail.util.ReadBuffer)
-	 */
-	public ReadBuffer decode(ReadBuffer in) throws DecodingException {
+	@Override
+	public Buffer decode(Buffer in) {
 		return in;
 	}
 
+	/**
+	 * Copy in to out, unchanged
+	 * @since 0.9.34
+	 */
+	public void decode(InputStream in, Buffer out) throws IOException {
+		DataHelper.copy(in, out.getOutputStream());
+		// read complete, write complete
+	}
 }

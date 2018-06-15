@@ -5,7 +5,7 @@
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("graphs")%>
- <jsp:useBean class="net.i2p.router.web.GraphHelper" id="graphHelper" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.GraphHelper" id="graphHelper" scope="request" />
  <jsp:setProperty name="graphHelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
 <% /* GraphHelper sets the defaults in setContextId, so setting the properties must be after the context */ %>
  <jsp:setProperty name="graphHelper" property="*" />
@@ -22,8 +22,10 @@
     String stat = request.getParameter("stat");
     if (stat == null) {
         // probably because restart or shutdown was clicked
-        response.setStatus(302);
+        response.setStatus(307);
         response.setHeader("Location", "/graphs");
+        // force commitment
+        response.getOutputStream().close();
         return;
     }
 %>

@@ -3,9 +3,11 @@ package net.i2p.i2ptunnel.ui;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.TreeMap;
 
 import net.i2p.I2PAppContext;
@@ -14,6 +16,7 @@ import net.i2p.client.I2PClient;
 import net.i2p.crypto.SigType;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
+import net.i2p.data.Hash;
 import net.i2p.data.PrivateKeyFile;
 import net.i2p.i2ptunnel.I2PTunnelClientBase;
 import net.i2p.i2ptunnel.I2PTunnelHTTPClient;
@@ -24,13 +27,16 @@ import net.i2p.i2ptunnel.I2PTunnelServer;
 import net.i2p.i2ptunnel.SSLClientUtil;
 import net.i2p.i2ptunnel.TunnelController;
 import net.i2p.i2ptunnel.TunnelControllerGroup;
-import net.i2p.i2ptunnel.web.Messages;
+import net.i2p.util.ConvertToHash;
 import net.i2p.util.FileUtil;
 import net.i2p.util.Log;
 import net.i2p.util.SecureFile;
 
 /**
  * General helper functions used by all UIs.
+ *
+ * This class is also used by Android.
+ * Maintain as a stable API and take care not to break Android.
  *
  * @since 0.9.19
  */
@@ -94,11 +100,34 @@ public class GeneralHelper {
             // Down in I2PTunnelClientBase it's very hard to save the config.
             //
             if (Boolean.parseBoolean(props.getProperty(OPT + I2PTunnelClientBase.PROP_USE_SSL))) {
+                // add the local interface and all targets to the cert
+                String intfc = props.getProperty(TunnelController.PROP_INTFC);
+                Set<String> altNames = new HashSet<String>(4);
+                if (intfc != null && !intfc.equals("0.0.0.0") && !intfc.equals("::") &&
+                    !intfc.equals("0:0:0:0:0:0:0:0"))
+                    altNames.add(intfc);
+                String tgts = props.getProperty(TunnelController.PROP_DEST);
+                if (tgts != null) {
+                    altNames.add(intfc);
+                    String[] hosts = DataHelper.split(tgts, "[ ,]");
+                    for (String h : hosts) {
+                        int colon = h.indexOf(':');
+                        if (colon >= 0)
+                            h = h.substring(0, colon);
+                        altNames.add(h);
+                        if (!h.endsWith(".b32.i2p")) {
+                            Hash hash = ConvertToHash.getHash(h);
+                            if (hash != null)
+                                altNames.add(hash.toBase32());
+                        }
+                    }
+                }
                 try {
-                    boolean created = SSLClientUtil.verifyKeyStore(props, OPT);
+                    boolean created = SSLClientUtil.verifyKeyStore(props, OPT, altNames);
                     if (created) {
                         // config now contains new keystore props
-                        msgs.add("Created new self-signed certificate for tunnel " + getTunnelName(tcg, tunnel));
+                        String name = props.getProperty(TunnelController.PROP_NAME, "");
+                        msgs.add("Created new self-signed certificate for tunnel " + name);
                     }        
                 } catch (IOException ioe) {       
                     msgs.add("Failed to create new self-signed certificate for tunnel " +
@@ -225,9 +254,16 @@ public class GeneralHelper {
         return (tun != null && tun.getType() != null) ? tun.getType() : "";
     }
 
+    /**
+     *  @return null if unset
+     */
     public String getTunnelName(int tunnel) {
         return getTunnelName(_group, tunnel);
     }
+
+    /**
+     *  @return null if unset
+     */
     public static String getTunnelName(TunnelControllerGroup tcg, int tunnel) {
         TunnelController tun = getController(tcg, tunnel);
         return tun != null ? tun.getName() : null;
@@ -429,20 +465,44 @@ public class GeneralHelper {
         return getProperty(tunnel, "i2p.streaming.maxWindowSize", 128) == 16;
     }
 
+    /** Inbound or both in/out */
     public int getTunnelDepth(int tunnel, int defaultLength) {
         return getProperty(tunnel, "inbound.length", defaultLength);
     }
 
+    /** Inbound or both in/out */
     public int getTunnelQuantity(int tunnel, int defaultQuantity) {
         return getProperty(tunnel, "inbound.quantity", defaultQuantity);
     }
 
+    /** Inbound or both in/out */
     public int getTunnelBackupQuantity(int tunnel, int defaultBackupQuantity) {
         return getProperty(tunnel, "inbound.backupQuantity", defaultBackupQuantity);
     }
 
+    /** Inbound or both in/out */
     public int getTunnelVariance(int tunnel, int defaultVariance) {
         return getProperty(tunnel, "inbound.lengthVariance", defaultVariance);
+    }
+
+    /** @since 0.9.33 */
+    public int getTunnelDepthOut(int tunnel, int defaultLength) {
+        return getProperty(tunnel, "outbound.length", defaultLength);
+    }
+
+    /** @since 0.9.33 */
+    public int getTunnelQuantityOut(int tunnel, int defaultQuantity) {
+        return getProperty(tunnel, "outbound.quantity", defaultQuantity);
+    }
+
+    /** @since 0.9.33 */
+    public int getTunnelBackupQuantityOut(int tunnel, int defaultBackupQuantity) {
+        return getProperty(tunnel, "outbound.backupQuantity", defaultBackupQuantity);
+    }
+
+    /** @since 0.9.33 */
+    public int getTunnelVarianceOut(int tunnel, int defaultVariance) {
+        return getProperty(tunnel, "outbound.lengthVariance", defaultVariance);
     }
 
     public boolean getReduceOnIdle(int tunnel, boolean def) {
@@ -480,6 +540,8 @@ public class GeneralHelper {
 
     /**
      *  @param newTunnelType used if tunnel &lt; 0
+     *  @return the current type if we have a destination already,
+     *          else the default for that type of tunnel
      */
     public int getSigType(int tunnel, String newTunnelType) {
         SigType type;
@@ -599,8 +661,13 @@ public class GeneralHelper {
         return getBooleanProperty(tunnel, I2PTunnelHTTPClient.PROP_ACCEPT);
     }
 
+    /**
+     *  As of 0.9.35, default true, and overridden to true unless
+     *  PROP_SSL_SET is set
+     */
     public boolean getAllowInternalSSL(int tunnel) {
-        return getBooleanProperty(tunnel, I2PTunnelHTTPClient.PROP_INTERNAL_SSL);
+        return getBooleanProperty(tunnel, I2PTunnelHTTPClient.PROP_INTERNAL_SSL, true) ||
+               !getBooleanProperty(tunnel, I2PTunnelHTTPClient.PROP_SSL_SET, true);
     }
 
     public boolean getMultihome(int tunnel) {
@@ -638,31 +705,31 @@ public class GeneralHelper {
 
     /** all of these are @since 0.8.3 */
     public int getLimitMinute(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_CONNS_MIN, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_CONNS_MIN, TunnelController.DEFAULT_MAX_CONNS_MIN);
     }
 
     public int getLimitHour(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_CONNS_HOUR, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_CONNS_HOUR, TunnelController.DEFAULT_MAX_CONNS_HOUR);
     }
 
     public int getLimitDay(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_CONNS_DAY, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_CONNS_DAY, TunnelController.DEFAULT_MAX_CONNS_DAY);
     }
 
     public int getTotalMinute(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_TOTAL_CONNS_MIN, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_TOTAL_CONNS_MIN, TunnelController.DEFAULT_MAX_TOTAL_CONNS_MIN);
     }
 
     public int getTotalHour(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_TOTAL_CONNS_HOUR, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_TOTAL_CONNS_HOUR, 0);
     }
 
     public int getTotalDay(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_TOTAL_CONNS_DAY, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_TOTAL_CONNS_DAY, 0);
     }
 
     public int getMaxStreams(int tunnel) {
-        return getProperty(tunnel, TunnelConfig.PROP_MAX_STREAMS, 0);
+        return getProperty(tunnel, TunnelController.PROP_MAX_STREAMS, TunnelController.DEFAULT_MAX_STREAMS);
     }
 
     /**
@@ -670,11 +737,11 @@ public class GeneralHelper {
      * @since 0.9.9
      */
     public int getPostMax(int tunnel) {
-        return getProperty(tunnel, I2PTunnelHTTPServer.OPT_POST_MAX, 0);
+        return getProperty(tunnel, I2PTunnelHTTPServer.OPT_POST_MAX, I2PTunnelHTTPServer.DEFAULT_POST_MAX);
     }
 
     public int getPostTotalMax(int tunnel) {
-        return getProperty(tunnel, I2PTunnelHTTPServer.OPT_POST_TOTAL_MAX, 0);
+        return getProperty(tunnel, I2PTunnelHTTPServer.OPT_POST_TOTAL_MAX, I2PTunnelHTTPServer.DEFAULT_POST_TOTAL_MAX);
     }
 
     public int getPostCheckTime(int tunnel) {

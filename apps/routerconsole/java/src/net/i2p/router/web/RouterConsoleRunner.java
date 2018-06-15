@@ -2,7 +2,7 @@ package net.i2p.router.web;
 
 import java.awt.GraphicsEnvironment;
 import java.io.File;
-import java.io.FilenameFilter;
+import java.io.FileFilter;
 import java.io.IOException;
 import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
@@ -35,6 +35,7 @@ import net.i2p.router.app.RouterApp;
 import net.i2p.router.news.NewsManager;
 import net.i2p.router.update.ConsoleUpdateManager;
 import net.i2p.util.Addresses;
+import net.i2p.util.FileSuffixFilter;
 import net.i2p.util.FileUtil;
 import net.i2p.util.I2PAppThread;
 import net.i2p.util.PortMapper;
@@ -126,10 +127,8 @@ public class RouterConsoleRunner implements RouterApp {
     public static final String PREFIX = "webapps.";
     public static final String ENABLED = ".startOnLoad";
     private static final String PROP_KEYSTORE_PASSWORD = "routerconsole.keystorePassword";
-    private static final String DEFAULT_KEYSTORE_PASSWORD = "changeit";
     private static final String PROP_KEY_PASSWORD = "routerconsole.keyPassword";
-    public static final int DEFAULT_LISTEN_PORT = 7657;
-    private static final String DEFAULT_LISTEN_HOST = "127.0.0.1";
+    public static final int DEFAULT_LISTEN_PORT = PortMapper.DEFAULT_CONSOLE_PORT;
     private static final String DEFAULT_WEBAPPS_DIR = "./webapps/";
     private static final String USAGE = "Bad RouterConsoleRunner arguments, check clientApp.0.args in your clients.config file! " +
                                         "Usage: [[port host[,host]] [-s sslPort [host[,host]]] [webAppsDir]]";
@@ -142,6 +141,8 @@ public class RouterConsoleRunner implements RouterApp {
     private static final String THREAD_NAME = "RouterConsole Jetty";
     public static final String PROP_DTG_ENABLED = "desktopgui.enabled";
     static final String PROP_ALLOWED_HOSTS = "routerconsole.allowedHosts";
+    /** @since 0.9.34 */
+    static final FileFilter WAR_FILTER = new WarFilenameFilter();
 
     /**
      *  <pre>
@@ -200,7 +201,7 @@ public class RouterConsoleRunner implements RouterApp {
             }
         }
         if (_listenHost == null)
-           _listenHost = DEFAULT_LISTEN_HOST;
+           _listenHost = PortMapper.DEFAULT_HOST;
         if (_sslListenHost == null)
            _sslListenHost = _listenHost;
         if (_webAppsDir == null)
@@ -288,6 +289,11 @@ public class RouterConsoleRunner implements RouterApp {
         return _server;
     }
 
+    /** @since 0.8.13, moved from LogsHelper in 0.9.33 */
+    public static String jettyVersion() {
+        return Server.getVersion();
+    }
+
     private void startTrayApp() {
         // if no permissions, don't even try
         // isLaunchedAsService() always returns true on Linux
@@ -298,10 +304,10 @@ public class RouterConsoleRunner implements RouterApp {
             return;
         }
         try {
-            // default false for now, except on non-service windows
+            // default false for now, except on OSX and non-service windows
             String sdtg = _context.getProperty(PROP_DTG_ENABLED);
             boolean desktopguiEnabled = Boolean.parseBoolean(sdtg) ||
-                                        (sdtg == null && SystemVersion.isWindows());
+                                        (sdtg == null && (SystemVersion.isWindows() || SystemVersion.isMac()));
             if (desktopguiEnabled) {
                 System.setProperty("java.awt.headless", "false");
                 net.i2p.desktopgui.Main dtg = new net.i2p.desktopgui.Main(_context, _mgr, null);    
@@ -324,8 +330,8 @@ public class RouterConsoleRunner implements RouterApp {
         boolean noPack200 = (PluginStarter.pluginsEnabled(_context) || !NewsHelper.isUpdateDisabled(_context)) &&
                             !FileUtil.isPack200Supported();
         boolean openARM = SystemVersion.isARM() && SystemVersion.isOpenJDK();
-        boolean isJava9 = SystemVersion.isJava9();
-        if (noJava7 || noPack200 || openARM || isJava9) {
+        boolean isJava11 = SystemVersion.isJava11();
+        if (noJava7 || noPack200 || openARM || isJava11) {
             String s = "Java version: " + System.getProperty("java.version") +
                        " OS: " + System.getProperty("os.name") + ' ' +
                        System.getProperty("os.arch") + ' ' +
@@ -348,8 +354,8 @@ public class RouterConsoleRunner implements RouterApp {
                 log.logAlways(net.i2p.util.Log.WARN, s);
                 System.out.println("Warning: " + s);
             }
-            if (isJava9) {
-                s = "Java 9 support is beta, and not recommended for general use";
+            if (isJava11) {
+                s = "Java 10/11 support is beta, and not recommended for general use";
                 log.logAlways(net.i2p.util.Log.WARN, s);
                 System.out.println("Warning: " + s);
             }
@@ -362,15 +368,19 @@ public class RouterConsoleRunner implements RouterApp {
      *<pre>
      *	Server
      *		HandlerCollection
-     *			HostCheckHandler
+     *			HostCheckHandler (extends GzipHandler)
      *				ContextHandlerCollection
-     *					WebAppContext (i.e. ContextHandler)
+     *					LocaleWebAppHandler (routerconsole)
      *						SessionHandler
      *						SecurityHandler
      *						ServletHandler
      *							servlets...
-     *					WebAppContext
-     *					...
+     *					WebAppContext (i2psnark)
+     *					WebAppContext (i2ptunnel)
+     *					WebAppContext (imagegen)
+     *					WebAppContext (susidns)
+     *					WebAppContext (susimail)
+     *					WebAppContext (for each plugin with a .war)
      *			DefaultHandler
      *			RequestLogHandler (opt)
      *</pre>
@@ -512,17 +522,15 @@ public class RouterConsoleRunner implements RouterApp {
                     try {
                         // Test before we add the connector, because Jetty 6 won't start if any of the
                         // connectors are bad
-                        InetAddress test = InetAddress.getByName(host);
-                        if ((!hasIPV6) && (!(test instanceof Inet4Address)))
+                        if ((!hasIPV6) && Addresses.isIPv6Address(host))
                             throw new IOException("IPv6 addresses unsupported");
-                        if ((!hasIPV4) && (test instanceof Inet4Address))
+                        if ((!hasIPV4) && Addresses.isIPv4Address(host))
                             throw new IOException("IPv4 addresses unsupported");
                         ServerSocket testSock = null;
                         try {
                             // On Windows, this was passing and Jetty was still failing,
                             // possibly due to %scope_id ???
                             // https://issues.apache.org/jira/browse/ZOOKEEPER-667
-                            //testSock = new ServerSocket(0, 0, test);
                             // so do exactly what Jetty does in SelectChannelConnector.open()
                             testSock = new ServerSocket();
                             InetSocketAddress isa = new InetSocketAddress(host, 0);
@@ -570,10 +578,26 @@ public class RouterConsoleRunner implements RouterApp {
             }
             if (sslPort > 0) {
                 File keyStore = new File(_context.getConfigDir(), "keystore/console.ks");
-                if (verifyKeyStore(keyStore)) {
+                // Put the list of hosts together early, so we can put it in the selfsigned cert.
+                StringTokenizer tok = new StringTokenizer(_sslListenHost, " ,");
+                Set<String> altNames = new HashSet<String>(4);
+                while (tok.hasMoreTokens()) {
+                    String s = tok.nextToken().trim();
+                    if (!s.equals("0.0.0.0") && !s.equals("::") &&
+                        !s.equals("0:0:0:0:0:0:0:0"))
+                        altNames.add(s);
+                }
+                String allowed = _context.getProperty(PROP_ALLOWED_HOSTS);
+                if (allowed != null) {
+                    tok = new StringTokenizer(allowed, " ,");
+                    while (tok.hasMoreTokens()) {
+                        altNames.add(tok.nextToken().trim());
+                    }
+                }
+                if (verifyKeyStore(keyStore, altNames)) {
                     // the keystore path and password
                     SslContextFactory sslFactory = new SslContextFactory(keyStore.getAbsolutePath());
-                    sslFactory.setKeyStorePassword(_context.getProperty(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD));
+                    sslFactory.setKeyStorePassword(_context.getProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD));
                     // the X.509 cert password (if not present, verifyKeyStore() returned false)
                     sslFactory.setKeyManagerPassword(_context.getProperty(PROP_KEY_PASSWORD, "thisWontWork"));
                     sslFactory.addExcludeProtocols(I2PSSLSocketFactory.EXCLUDE_PROTOCOLS.toArray(
@@ -581,22 +605,20 @@ public class RouterConsoleRunner implements RouterApp {
                     sslFactory.addExcludeCipherSuites(I2PSSLSocketFactory.EXCLUDE_CIPHERS.toArray(
                                                       new String[I2PSSLSocketFactory.EXCLUDE_CIPHERS.size()]));
                     List<String> hosts = new ArrayList<String>(2);
-                    StringTokenizer tok = new StringTokenizer(_sslListenHost, " ,");
+                    tok = new StringTokenizer(_sslListenHost, " ,");
                     while (tok.hasMoreTokens()) {
                         String host = tok.nextToken().trim();
                         // doing it this way means we don't have to escape an IPv6 host with []
                         try {
                             // Test before we add the connector, because Jetty 6 won't start if any of the
                             // connectors are bad
-                            InetAddress test = InetAddress.getByName(host);
-                            if ((!hasIPV6) && (!(test instanceof Inet4Address)))
+                            if ((!hasIPV6) && Addresses.isIPv6Address(host))
                                 throw new IOException("IPv6 addresses unsupported");
-                            if ((!hasIPV4) && (test instanceof Inet4Address))
+                            if ((!hasIPV4) && Addresses.isIPv4Address(host))
                                 throw new IOException("IPv4 addresses unsupported");
                             ServerSocket testSock = null;
                             try {
                                 // see comments above
-                                //testSock = new ServerSocket(0, 0, test);
                                 testSock = new ServerSocket();
                                 InetSocketAddress isa = new InetSocketAddress(host, 0);
                                 testSock.bind(isa);
@@ -732,7 +754,7 @@ public class RouterConsoleRunner implements RouterApp {
                 }
             }
             if (error) {
-                String port = (_listenPort != null) ? _listenPort : ((_sslListenPort != null) ? _sslListenPort : "7657");
+                String port = (_listenPort != null) ? _listenPort : ((_sslListenPort != null) ? _sslListenPort : Integer.toString(DEFAULT_LISTEN_PORT));
                 System.err.println("WARNING: Error starting one or more listeners of the Router Console server.\n" +
                                "If your console is still accessible at http://127.0.0.1:" + port + "/,\n" +
                                "this may be a problem only with binding to the IPV6 address ::1.\n" +
@@ -748,10 +770,11 @@ public class RouterConsoleRunner implements RouterApp {
         List<String> notStarted = new ArrayList<String>();
         if (_server.isRunning()) {
             File dir = new File(_webAppsDir);
-            String fileNames[] = dir.list(WarFilenameFilter.instance());
-            if (fileNames != null) {
-                for (int i = 0; i < fileNames.length; i++) {
-                    String appName = fileNames[i].substring(0, fileNames[i].lastIndexOf(".war"));
+            File files[] = dir.listFiles(WAR_FILTER);
+            if (files != null) {
+                for (int i = 0; i < files.length; i++) {
+                    String appName = files[i].getName();
+                    appName = appName.substring(0, appName.lastIndexOf(".war"));
                     String enabled = props.getProperty(PREFIX + appName + ENABLED);
                     if (appName.equals("addressbook")) {
                         // addressbook.war is now empty, thread is started by SusiDNS
@@ -761,7 +784,7 @@ public class RouterConsoleRunner implements RouterApp {
                         }
                     } else if (! "false".equals(enabled)) {
                         try {
-                            String path = new File(dir, fileNames[i]).getCanonicalPath();
+                            String path = files[i].getCanonicalPath();
                             WebAppStarter.startWebApp(_context, chColl, appName, path);
                             if (enabled == null) {
                                 // do this so configclients.jsp knows about all apps from reading the config
@@ -835,37 +858,37 @@ public class RouterConsoleRunner implements RouterApp {
      * @return success if it exists and we have a password, or it was created successfully.
      * @since 0.8.3
      */
-    private boolean verifyKeyStore(File ks) {
+    private boolean verifyKeyStore(File ks, Set<String> altNames) {
         if (ks.exists()) {
+            String ksPW = _context.getProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
+            KeyStoreUtil.logCertExpiration(ks, ksPW, 180*24*60*60*1000L);
             boolean rv = _context.getProperty(PROP_KEY_PASSWORD) != null;
             if (!rv)
-                System.err.println("Console SSL error, must set " + PROP_KEY_PASSWORD + " in " + (new File(_context.getConfigDir(), "router.config")).getAbsolutePath());
+                System.err.println("Console SSL error, must set " + PROP_KEY_PASSWORD + " in " +
+                                   (new File(_context.getConfigDir(), "router.config")).getAbsolutePath());
             return rv;
         }
-        return createKeyStore(ks);
+        return createKeyStore(ks, altNames);
     }
 
 
     /**
-     * Call out to keytool to create a new keystore with a keypair in it.
-     * Trying to do this programatically is a nightmare, requiring either BouncyCastle
-     * libs or using proprietary Sun libs, and it's a huge mess.
+     * Create a new keystore with a keypair in it.
      *
      * @return success
      * @since 0.8.3
      */
-    private boolean createKeyStore(File ks) {
+    private boolean createKeyStore(File ks, Set<String> altNames) {
         // make a random 48 character password (30 * 8 / 5)
         String keyPassword = KeyStoreUtil.randomString();
-        // and one for the cname
-        String cname = KeyStoreUtil.randomString() + ".console.i2p.net";
-        boolean success = KeyStoreUtil.createKeys(ks, "console", cname, "Console", keyPassword);
+        String cname = "localhost";
+        boolean success = KeyStoreUtil.createKeys(ks, "console", cname, altNames, "Console", keyPassword);
         if (success) {
             success = ks.exists();
             if (success) {
                 try {
                     Map<String, String> changes = new HashMap<String, String>();
-                    changes.put(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+                    changes.put(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
                     changes.put(PROP_KEY_PASSWORD, keyPassword);
                     _context.router().saveConfig(changes, null);
                 } catch (Exception e) {}  // class cast exception
@@ -875,12 +898,13 @@ public class RouterConsoleRunner implements RouterApp {
                 dir = new SecureDirectory(dir, "console");
                 dir.mkdir();
                 File certFile = new File(dir, "console.local.crt");
-                KeyStoreUtil.exportCert(ks, DEFAULT_KEYSTORE_PASSWORD, "console", certFile);
+                KeyStoreUtil.exportCert(ks, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD, "console", certFile);
             }
         }
         if (success) {
             System.err.println("Created self-signed certificate for " + cname + " in keystore: " + ks.getAbsolutePath() + "\n" +
-                               "The certificate name was generated randomly, and is not associated with your " +
+                               "The certificate was generated randomly.\n" +
+                               "Unless you have changed the default settings, the certificate is not associated with your " +
                                "IP address, host name, router identity, or destination keys.");
         } else {
             System.err.println("Failed to create console SSL keystore.\n" +
@@ -1091,7 +1115,7 @@ public class RouterConsoleRunner implements RouterApp {
                     continue;
                 if (WebAppStarter.isWebAppRunning(app)) {
                     try {
-                        WebAppStarter.stopWebApp(app);
+                        WebAppStarter.stopWebApp(_context, app);
                     } catch (Throwable t) { t.printStackTrace(); }
                 }
             }
@@ -1099,11 +1123,13 @@ public class RouterConsoleRunner implements RouterApp {
 
     }
 
-    static class WarFilenameFilter implements FilenameFilter {
-        private static final WarFilenameFilter _filter = new WarFilenameFilter();
-        public static WarFilenameFilter instance() { return _filter; }
-        public boolean accept(File dir, String name) {
-            return (name != null) && (name.endsWith(".war") && !name.equals(ROUTERCONSOLE + ".war"));
+    private static class WarFilenameFilter extends FileSuffixFilter {
+        private static final String RCWAR = ROUTERCONSOLE + ".war";
+
+        public WarFilenameFilter() { super(".war"); }
+
+        public boolean accept(File file) {
+            return super.accept(file) && !file.getName().equals(RCWAR);
         }
     }
 

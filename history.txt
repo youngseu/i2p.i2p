@@ -1,3 +1,706 @@
+2018-06-13 zzz
+ * NTCP: Fix clearing of write interest ops on
+   inbound establishment (ticket #2237)
+
+2018-06-09 zzz
+ * eepsite: Fix up help page in prep for translation (ticket #2214)
+ * i2psnark: Fix torrent ignoring priority settings when
+   autostart is enabled (ticket #2229)
+
+2018-06-02 zzz
+ * Console: Sort tunnels within pools by expiration (ticket #2232)
+ * NTCP:
+   - Refactor EstablishState in prep for NTCP2
+   - Initial NTCP2 RI and payload code, disabled for now
+   - Fix state lock, should not have been static
+
+2018-06-01 zzz
+ * SusiDNS: Fix deleting notes (ticket #1433)
+
+2018-05-31 zzz
+ * Console:
+   - Fix CSS preventing ordered lists (ticket #2075)
+   - Change Java 10 warning to Java 11,
+ * SusiDNS: Add notes form (ticket #1433)
+
+2018-05-30 zzz
+ * Debian build fixes, remove things from source package
+ * NTCP: Cleanup, prep for NTCP2, increase max RI size
+ * SusiMail:
+   - Button and CSS fixes
+   - Don't require confirmation to delete from Trash,
+   - Clear reallydelete flag when clicking cancel or change folder
+   - Fix dup ConnectWaiter run, lack of failure message
+   - Fix persistent loading/fetching/refresh messages
+
+2018-05-28 zzz
+ * Console: Tagged string fixes (ticket #2017)
+ * SusiMail: (ticket #2087)
+   - Send deletions after connect so emails don't come back after a move
+   - Fix fetches in check mail
+   - CSS fixes
+
+2018-05-26 zzz
+ * /confignet: Reorganize (ticket #2217)
+ * /configsidebar: Tag sections for translation; sort unselected sections by translated name
+ * i2psnark:
+   - Hide "0 Bps" if no peers (ticket #2152)
+   - Hide peers button if no peers (ticket #2152)
+   - Hide column 1 icon for peers (ticket #1996)
+ * i2ptunnel: Retry accept after server socket closed (ticket #2003)
+ * Jetty: Skip files with [] in default servlet listing
+ * ministreaming: Add classpath to jar (ticket #2228)
+ * Router: Fix wrapper.config path in OOM message when installed as
+   Debian package, but not running as a service (ticket #2223)
+ * Summary Bar: Change header from "I2P Updates" to "Update Status" (ticket #2137)
+ * Utils: Disable DNSoverHTTPS by default (ticket #2201)
+
+2018-05-25 zzz
+ * Console: Fix changes to wrong tunnel on /configtunnels (ticket #2227)
+ * i2ptunnel: Fix dup tunnels clicking generate on new tunnel (ticket #2225)
+
+2018-05-06 meeh
+ * launchers:
+   - rewritten some logic
+   - made CompleteDeployment which extracts i2pbase.zip
+   - made a SBT task that creates i2pbase.zip
+   - after the hassle I had even getting an JRE7, short: OSX assumes JRE8+
+   - started on a class SystemTrayManager which also holds router state info for menu item filter
+   - "ant osxLauncher" produces now a valid app bundle under launchers/output
+ * Updated ant and made osxLauncher work again (first time triggers SBT dl if not already installed.)
+ * monotone ignore file update
+
+2018-05-05 zzz
+ * i2ptunnel:
+   - Link to SSL wizard (ticket #2159)
+   - Enable SSL to i2p hosts by default
+ * Streaming: Don't send HTTP response on an HTTPS connection
+
+2018-05-01 meeh
+ * launchers:
+   - Added deployment profile for Mac OS X launcher.
+   - Sourced out common code to a common library SBT project.
+   - Decided ~/Library/I2P should be base path on Mac OS X when using regular bundle (Non-BB).
+
+2018-04-29 zzz
+ * Console: Fix NPE on /configsidebar (ticket #2220)
+
+2018-04-28 zzz
+ * i2ptunnel:
+   - Fix startup deadlock in TCG
+   - Initial work on SSL wizard
+
+2018-04-27 zzz
+ * Tunnels: Fix and consolidate allow-zero-hop logic,
+   prevent zero-hop client tunnels when no active peers
+
+2018-04-24 meeh
+ * Mac OS X launcher is still WIP, but:
+   - Building the I2P.app bundle is mostly done
+     - It copies certificates, locale and manuals
+     - It copies jar and war files to the bundle
+ * Added new entries to mtn-ignore so we avoid any PEBCAK with commiting build directories
+ * Added an SBT AutoPlugin named IconHelper to generate valid ICNS images for Mac OS X
+
+2018-04-23 zzz
+ * Clock: Fix early NPE via DoH
+ * EepGet: Handle HTTP response line with no status text
+
+2018-04-23 meeh
+ * Added launchers for Browser Bundle and Mac OS X
+
+2018-04-22 zzz
+ * SusiMail: Include attachments when forwarding (ticket #2087)
+
+2018-04-21 zzz
+ * SusiMail: Remove Bcc-to-self feature, replace with
+   copy-to-sent config (ticket #2087)
+
+2018-04-19 zzz
+ * SusiMail:
+   - Fix reply/forward filling in compose form
+   - Better formatting of addresses in forwarded mail
+
+2018-04-18 zzz
+ * SusiMail: Fix unhandled decoding exception
+
+2018-04-17 zzz
+ * Console: Fix sidebar status when updating plugin (ticket #2137)
+ * Reseed, NTP: Use DNSoverHTTPS (ticket #2201)
+ * SusiMail: Fix error message on login page
+
+2018-04-16 zzz
+ * Console: Add links to bandwidth graphs on /tunnels
+ * SusiMail: Move logging to router logs (ticket #2191)
+
+2018-04-14 zzz
+ * Console: Add built-by to /logs (ticket #2204)
+ * CPUID: Fix TBM detection (ticket #2211)
+ * Debian updates (ticket #2027, PR #15)
+ * i2ptunnel: Build restructuring
+ * Jetty: Fix quote in header line tripping XSS filter (ticket #2215)
+ * SusiMail: Add folders, drafts, background sending (ticket #2087)
+
+2018-04-11 zzz
+ * Debian updates for 0.9.34
+ * Jetty 9.2.24-v201801015
+ * Tomcat 8.5.30
+
+* 2018-04-10 0.9.34 released
+
+2018-04-10 zzz
+ * Console: Change Java 9 log warning to Java 10
+ * i2psnark: Fix logic error in warning
+ * Tunnels: Fix fallback stat name
+
+2018-04-05 zzz
+ * EepGet: Increase max header length
+ * SSLEepGet: Set default CLI proxy type back to none
+ * GeoIP update
+
+2018-04-04 zzz
+ * Reseed: Move ReseedBundler from console to router (ticket #2203)
+
+2018-04-03 zzz
+ * Stats: Enable per-tunnel bw stats by default (tickets #2106, #2145)
+
+2018-04-02 zzz
+ * KeyStore: Fix ConncurrentModificationException (ticket #2196)
+
+2018-03-24 zzz
+ * i2psnark: Change default sort order for some columns (ticket #2152)
+ * i2ptunnel: Fix display of 'tunnels not initialized' message
+
+2018-03-19 zzz
+ * i2ptunnel: Rewrite or pass through Accept: header
+
+2018-03-15 zzz
+ * i2psnark: Start even if data directory not found (ticket #2166)
+
+2018-03-14 zzz
+ * Console:
+   - Hide links to webapps and eepsite if not running (ticket #2161)
+   - Hide link to /configplugins if disabled
+   - Add error handler to webapps (ticket #2155)
+ * i2ptunnel: Hide links to webapps that are not runnning (ticket #2161)
+ * SusiDNS: Translate svg image text (ticket #1749)
+ * SusiMail: Shorten URLs
+
+2018-03-12 zzz
+ * SusiMail: Fix up compose.js (ticket #2176)
+
+2018-03-11 zzz
+ * Crypto: Add utils for renewing a cert in a keystore
+ * Router: More peer selection fixes for hidden mode
+
+2018-03-10 zzz
+ * Console: Fix compression logic
+ * i2ptunnel: Strip server Date header
+ * NetDB: Wake up FloodfillMonitor when setting changes
+ * Router: Fix rekey after hidden config change
+
+2018-03-09 zzz
+ * Console:
+   - Enable compression (ticket #2157)
+   - Close output stream on redirect
+   - Add Accept-Ranges header
+
+2018-03-08 zzz
+ * Crypto: Generate non-CA cert for family
+ * Router:
+   - Improved tunnel peer selection of closest hop for routers
+     that are hidden, IPv6-only, or have disabled transports
+   - Don't select IPv6-only routers for IBGW or OBEP
+   - Don't try to build tunnel if adjacent peers aren't compatible
+   - Remove ancient version check in peer selectors
+   - Check for transport compatibility before direct store of RI;
+     send through tunnel if incompatible
+   - Fix repeated store of RI when IPv6-only
+
+2018-03-07 zzz
+ * Router:
+   - Validate tunnel ID in requests
+   - Remove ancient version check in BuildRequestor
+   - Disable floodfill for IPv6-only and disabled transports
+
+2018-03-05 zzz
+ * Util: Consolidate FileFilters
+
+2018-03-04 zzz
+ * Console:
+   - Show SAM cert on /certs
+   - Fix more forms inside tables
+ * i2ptunnel: Fix multipart config for /register
+ * KeyStore: Log expiration of self-signed certs
+
+2018-03-03 zzz
+ * Utils:
+   - Skip IPs of down interfaces on Windows
+   - Improve identification of temporary IPv6 addresses
+
+2018-02-28 zzz
+ * Logs: Fix lost log messages at router shutdown
+ * Tools: CLI improvements for Addresses and UPnP
+ * Transport: Rescan addresses and UPnP after network reconnection
+ * UPnP: IGD IP validation
+
+2018-02-27 zzz
+ * UPnP:
+   - Improve diagnostics
+   - Fix event listening, prep for using events
+   - Recognize IGD2 schemas (ticket #2175)
+   - Don't use IGD on same host
+   - Preliminary work for IPv6
+
+2018-02-25 zzz
+ * Crypto: Add support for more alt names in certs (tickets #2159, #2160)
+
+2018-02-24 zzz
+ * Console: Mark request handled when rejecting in HostCheckHandler
+ * i2psnark standalone: Add DNS rebinding protection
+ * XSSFilter: Catch cascaded ISE
+
+2018-02-23 zzz
+ * Getopt: Add new translations, fix tests
+ * i2psnark: Number formatting tweaks (ticket #1913)
+ * SusiMail: Check mail fixes (ticket #2174)
+
+2018-02-22 zzz
+ * Util: Support setSoTimeout() for InternalSockets
+
+2018-02-21 zzz
+ * Console: Hide options on /configupdate if a package (ticket #2172)
+ * SusiMail: Add Date header to sent messages
+
+2018-02-20 zzz
+ * Console:
+   - Redirect to HTTPS if available (ticket #2160)
+   - Change all 302s to 303 or 307
+   - Change sendError() to setStatus() for 3xx responses
+ * Crypto: Backdate selfsigned cert to allow for clock skew
+ * Eepget: Handle 308
+
+2018-02-19 zzz
+ * Console:
+   - Change trac links (ticket #2014)
+   - Change selfsigned cert cname to localhost (ticket #2160)
+ * Crypto: Add IP addresses to selfsigned cert SAN (ticket #2160)
+ * Streaming: Don't exceed configured tag settings
+ * Time: More sanity checks on NTP responses
+
+2018-02-18 zzz
+ * i2ptunnel: Retry accept after router soft restart (ticket #2003)
+
+2018-02-17 zzz
+ * Console: Number formatting tweaks (ticket #1913)
+ * i2psnark: folder.js cleanup (ticket #2168, PR #14)
+ * i2ptunnel: Close sockets in finally{}
+ * SusiMail: Fix mail save truncation
+
+2018-02-16 zzz
+ * i2psnark: Fix NPE on torrent not found (ticket #2167)
+ * i2ptunnel: Change POST throttle response to 429
+ * Streaming: Configurable response when over conn limits (ticket #2145)
+
+2018-02-12 zzz
+ * i2ptunnel: Close sockets
+ * Proxy: Update clearnet user-agent (ticket #2163)
+ * SusiMail:
+   - Background email checking (ticket #2087)
+   - Set Cache-Control header for attachments
+   - Fix rotated attached images
+
+2018-02-11 zzz
+ * Util: Number formatting tweaks (ticket #1913)
+
+2018-02-09 zzz
+ * SusiMail:
+   - Don't collapse spaces in email display (ticket #2156)
+   - Constant URL for attachments
+   - Fixes when no subject is present
+   - Filename encoding fixes
+   - Handle lower case in Q-P decode
+   - Don't show the no-charset warning
+   - Thread loading mail from disk
+   - More error handling fixes
+
+2018-02-08 zzz
+ * SusiMail:
+   - Error handling fixes
+   - More tolerant parsing of Date headers
+   - Set a date if we don't get a Date header
+   - Fix parsing long Base64 encoded headers
+   - Fix page count after changing page size
+   - Make attribute name parsing case-insensitive
+   - Import mail method for debugging
+
+2018-02-07 zzz
+ * SusiMail: Use input streams for reading mail (ticket #2119)
+   - Rewrite Base64, HeaderLine, and QuotedPrintable decoders
+   - Rewrite ReadBuffer class and utilities for streams
+   - ReadBuffer becomes Buffer interface with multiple implementations
+   - Rewrite Mail and MailPart to parse the headers only once
+   - Rewrite MailPart parser to use streams
+   - MailPart decoder rewrite to decode stream-to-stream
+
+2018-02-01 zzz
+ * Console: Fix number formatting (tickets #1912, #1913, #2126)
+ * i2psnark: URL escape fixes
+ * i2ptunnel: Reset connection if out of threads
+ * NetDB: Increase min floodfill version
+ * SusiMail: Don't duplicate Re: and Fwd: in subject
+
+* 2018-01-30 0.9.33 released
+
+2018-01-26 zzz
+ * i2ptunnel: Fix dup tunnels on create
+ * Update translations from Transifex
+
+2018-01-25 zzz
+ * GeoIP 2018-01-05
+ * SusiMail: Close POP3 socket on error
+
+2018-01-24 zzz
+ * i2psnark: Prevent commenting without comment name (ticket #2138)
+ * SusiMail: Fix header corruption (ticket #2139)
+
+2018-01-19 zzz
+ * i2ptunnel: Prevent changing sigtype after dest creation (ticket #2128)
+
+2018-01-18 zzz
+ * Build: New poupdate-source target
+ * Util: Consolidate console URL generation in PortMapper
+
+2018-01-17 zzz
+ * i2ptunnel:
+   - Set defaults for limits
+   - Change include style for edit jsps
+
+2018-01-16 zzz
+ * i2ptunnel: Fix NPE stopping TCG
+
+2018-01-14 zzz
+ * Keyring (ticket #2108):
+   - Separate local and remote dests on /configkeyring
+   - Prohibit local changes on /configkeyring
+   - Remove local keys on tunnel shutdown or encryption disable
+   - Ensure subsession encryption setting matches primary session
+
+2018-01-13 zzz
+ * SessionKeyManager: Clean up sessions with excess tagsets
+
+2018-01-10 zzz
+ * Addressbook: Remove finalizers (ticket #2115)
+ * /confignet: Display IP even if firewalled (ticket #2133)
+ * i2psnark:
+   - Fix double-escaping of '&' (ticket #2127)
+   - Fix infinite loop stopping update torrent (ticket #2125)
+ * jrobin: Disable DeallocationHelper for Java 9
+ * /netdb: Note encrypted leasesets
+
+2018-01-09 zzz
+ * SusiMail: Rewrite/fix subject line encoding
+
+2018-01-06 zzz
+ * Console: Show and set burst bandwidth (ticket #2123)
+ * i2ptunnel:
+   - Advanced config in/out tunnels separately
+   - Better error message on invalid URLs (eepget too) (ticket #2130)
+   - Escape chars unescaped by browsers (ticket #2130)
+
+2018-01-04 zzz
+ * i2psnark: Fix overflow in ratio sorter (ticket #2129)
+
+2017-12-23 zzz
+ * SusiMail:
+   - Fix filenames for inline attachments
+   - Support RFC 5987/6266 for attachment and save-as filenames
+   - Add alt tags for images
+   - Fix long encoded lines in headers
+   - Fix replacing underscores in Base 64 decoded headers
+
+2017-12-22 zzz
+ * SusiMail:
+   - Fix bug sending CC recipients as a 2nd To line
+   - Separate recipients by commas
+   - Workaround on receive side for CC bug
+   - Display To and CC lists on show page
+   - Case-insensitive handling of all mail headers
+   - Escape leading '-' in q-p encoding
+
+2017-12-16 zzz
+ * SusiMail:
+   - Sorting cleanups and fixes, only sort when required
+   - Show result after server check (ticket #2087)
+
+2017-12-15 zzz
+ * SusiMail: Don't store state in session object (ticket #1373)
+
+2017-12-14 zzz
+ * SusiMail (ticket #1373):
+   - Put more parameters in forms and use P-R-G to
+     put several parameters into the URLs
+   - Redesign sort parameter handling
+   - Fix state tracking issues with delete
+
+2017-12-13 zzz
+ * i2ptunnel: Add internal sockets for SMTP and POP3 (ticket #2118)
+ * Util: InternalSocket improvements
+
+2017-12-11 zzz
+ * Jetty: Fix request log showing zero length for static content
+ * Startup: Raise open files ulimit (ticket #1967)
+
+2017-12-10 zzz
+ * Router: Change RI locking to a read/write lock (ticket #2096)
+
+2017-12-08 zzz
+ * SU3File: Flush and sync on extract (ticket #1941)
+ * SusiMail:
+   - Reference mails by UIDL, not index on page, put UIDL in
+     attachment links, remove session object UIDL (ticket #1373)
+   - Fix download of attachments without a Content-Transfer-Encoding
+   - Fix error return for attachment not found
+   - Fix handling of requests for unknown messages
+   - Set encoding for text attachments
+   - Add more safe mime types for downloading
+   - Add tooltips for icon-only buttons
+
+2017-12-07 zzz
+ * Console: Don't list aliased tunnels separately on
+   /tunnels and /configtunnels
+ * i2psnark: Better locking on BitField byte array
+ * SusiMail: Recheck max size if SMTP server reports less than default
+ * Util: Deprecate BigPipedInputStream
+
+2017-12-05 zzz
+ * Console: Fix multipart config for /configplugins
+ * SusiMail:
+   - Don't store attachments of composed email in-memory (ticket #1668)
+   - Fix bug corrupting sent text and text attachments
+     larger than about 1000 chars
+   - Fix bug corrupting some sent text and text attachments
+     containing '.'
+   - Fix handling of unimplemented encoders
+   - Add test code for encoders
+   - Error message improvements
+   - Adjust multipart size limits
+   - Better handling of errors when multipart limits are exceeded
+   - Test for total size limit
+
+2017-12-04 zzz
+ * Servlet: Refactor RequestWrapper to use Servlet 3.0 API (ticket #2109)
+
+2017-12-03 zzz
+ * i2ptunnel:
+   - Don't lose messages on refresh (ticket #2107)
+   - New clear messages button
+   - Hide message box if none
+
+2017-12-02 zzz
+ * i2ptunnel: Propagate resets from streaming to Socket
+   and vice versa (ticket #2071)
+ * Streaming: Send reset when receiving more data after locally closed,
+   rather than acking (ticket #2071)
+ * Tests: Fix up deprecation warnings
+
+2017-12-01 zzz
+ * Build: Split net.i2p.router.web into two packages
+ * Console: Move /configkeyring HTML to console, fix deletion,
+   don't truncate hashes, better form errors, tag for translation (ticket #2108)
+ * LeaseSet: Better error messages when decode fails (ticket #2108)
+ * Streaming: Double the RTO on congestion (ticket #1939)
+
+2017-11-27 zzz
+ * Debian: Exclude gradle, IntelliJ, Docker, .tx, gcj files from source tarballs
+
+2017-11-27 str4d
+ * Build: Add Gradle build scripts for compiling the codebase and generating
+   IDE project files.
+
+2017-11-26 zzz
+ * Build: Add xenial build option
+ * Console: Safer processing of changes on /configadvanced
+ * Context: Hopefully fix rare NPE on Android (ticket #2092)
+
+2017-11-25 zzz
+ * Console:
+   - Show full logger.config path on /configlogging
+   - Don't say 'Plugin downloaded' when installing from file
+ * Debian:
+   - Replace glassfish-javaee with libtaglibs-standard-* (ticket #2093)
+   - Remove libecj-java dependency (ticket #2094)
+
+2017-11-23 zzz
+ * i2ptunnel: Add timeout to header reads for CONNECT, HTTP, and SOCKS clients
+ * Wrapper 3.5.34
+
+2017-11-22 zzz
+ * i2psnark: Fix nbsp in logs on config change (ticket #2082)
+ * Streaming: Fix bug causing loopback hangs and
+   preventing desired ack behavior (ticket #1939)
+ * Tomcat 8.5.23
+
+2017-11-21 zzz
+ * EepGet: Refuse attempted redirect to HTTPS, won't work
+ * Reseed: Add support for reseeding via outproxy or Orchid (ticket #1841)
+
+2017-11-20 zzz
+ * HTTP Proxy: Better HTTP status message when no outproxy configured
+ * i2prouter: Fix echo -n on OSX
+ * Reseed: Add outproxy and Orchid proxy support (ticket #1841)
+
+2017-11-19 zzz
+ * Debian:
+   - Fix builds for x32 (ticket #2076)
+   - Incorporate patches 2 and 3 into build scripts
+ * DTG: On OSX, set dock icon, and enable by default
+
+2017-11-18 zzz
+ * Reseed:
+   - Add SOCKS proxy support (ticket #1130)
+   - Show proxy info, if applicable, in logs
+   - Show status in summary bar for manual reseed (previously hidden if more than 30 routers)
+   - Show status in summary bar after successul completion
+   - Show reseed button in summary bar if less than 50 known RIs (previously 30)
+   - Show current status on /configreseed if already running
+   - Consolidate proxy settings detection in ReseedRunner constructor
+   - Enhance help text on /configreseed (tickets #423, #1130)
+
+2017-11-17 zzz
+ * Addressbook: Fix adding alternates after importing an empty book (ticket #2072)
+ * Reseed: Add HTTPS proxy support (ticket #423)
+ * SOCKS: Move code from i2ptunnel to core, in prep for SSLEepGet use (ticket #1130)
+
+2017-11-16 zzz
+ * Console: Hide Reseed HTTP proxy options if no HTTP URLs (ticket #2007)
+ * i2psnark: Fix bad completion status after recheck (ticket #2046)
+ * Jetty 9.2.22
+
+2017-11-07 zzz
+ * Utils: Constant-time password check
+
+* 2017-11-07 0.9.32 released
+
+2017-11-03 zzz
+ * Update translations, add Indonesian as selection
+ * GeoIP update
+
+2017-11-03 str4d
+ * Console:
+   - /graphs:
+     - Reorganised config form
+     - Fixed "hide legends" option
+   - Sidebar: limit event logs to last 7 days, to avoid page freezes
+   - Fix scrolling latency issue light theme in Chrome/blink and older Firefox
+     versions (ticket #2024)
+   - Various cosmetic tweaks, fixes and enhancements
+ * I2PSnark:
+   - Reduce scrolling and hover latency
+   - Add sort direction hover indicators to .snarkTorrents header icons
+     (dark/midnight)
+   - Various cosmetic tweaks, fixes and enhancements
+ * Susimail/SusiDNS:
+   - Various cosmetic tweaks, fixes and enhancements
+
+2017-11-02 str4d
+ * Console:
+   - Sidebar:
+     - Fix erratic display of sidebar graph
+     - Add id to memory bar so we can target it for Chrome/blink display issue
+ * I2PSnark:
+   - Roll back target="_top" in config page to prevent embedded view from
+     breaking out of iframe
+   - Add target="_blank" to relevant links to avoid display in iframe in
+     embedded mode
+   - Enhance presentation of tracker links in TorrentInfo view
+
+2017-10-31 str4d
+ * I2PSnark: Use reflection to access ConfigUIHelper in standalone build
+
+2017-10-25 str4d
+ * Console:
+   - /graphs:
+     - Add option to hide legends
+     - Adjust size of up/down bw graph to match other graphs (ticket #1996)
+     - Modify image font color to better blend with themes
+     - Tweak spacing of elements for non-Debian installs
+   - Sidebar:
+     - Adjust vertical spacing of general section
+     - Rename 'General' section to 'Router Info' and move ident info to h3
+       tooltip (ticket #1996)
+     - Replace 'Short Router Info' with a new 'Advanced Router Info' section in
+       default advanced sidebar (adds memory usage and clock skew)
+     - Add optional embedded bandwidth graph (experimental)
+     - Add optional memory usage bar
+     - Add optional Advanced Peers section (adds failing and banned peers)
+     - Add Help link to 'I2P Internals' section
+     - Add help page anchored links and troubleshooting to 'Help & FAQ' section
+     - Add download progress bar for router and plugin updates
+     - Add 'Advanced Minimal' sidebar configuration
+     - Add Jobs and Events links to Advanced section
+     - Add additional reachability states for clockskew and vmcomm (with icons)
+   - Homepage: Add 'Customize Sidebar' link to signpost the feature now that
+     there are more optional sections available (ticket #1996)
+   - /configui:
+     - Add option to embed Susimail and I2PSnark in console
+     - Use larger flags for language selection
+   - /help:
+     - Update sidebar help section (en)
+     - Remove redundant CSS class from all help section files (li.tidylist)
+   - /tunnels:
+     - Indicate that no participating tunnels will be built when shared bw is too low
+     - Replace <a name> with id attribute for anchor links
+   - light:
+     - Lighten/tint buttons and dropdowns to better blend with reworked theme,
+       vary text color for different button states
+     - Increase vertical spacing for status/buttons in news section
+     - Fix minor rendering issue with h1's (remove bottom border-radius)
+     - Fix some mismatched heading coloring issues
+     - Fix alignment issue on /configservice in Arabic/Chinese (ticket #2024)
+     - Ensure spacing of sidebar elements is consistent in Chinese
+   - dark: Overhaul theme
+   - classic: Add fallback CSS to ensure browsers without CSS3 support can
+     display icons on buttons (tested with Netsurf)
+ * Proxy: Remove truncation of URLs in the error messages and handle with CSS to
+   avoid UI breakage
+ * I2PTunnel: Add hostname / destination (b32) information to server section on
+   index page (for parity with client tunnels section)
+ * I2PSnark
+   - Fix broken collapsible panels issue for browsers that don't support the
+     feature by conditionally loading override CSS to expand panels by default
+     and disable hover/active states for panel headings (tickets #2002, #2026)
+   - Add UI option to configuration section to enable collapsible panels, and
+     disable the option if a non-compliant browser is detected
+   - Fix multiple instances of snark refreshing to the homepage (ticket #2028)
+     (patch supplied by mindless)
+   - Tentative fix for caching of images so ajax refresh doesn't reload all
+     image resources
+   - Standardize 'Save Configuration' action to return to top of the page
+     (so we can see message log entry)
+   - Add button hoverstate for tracker details, torrent details and file icons
+   - light
+     - Sync buttons in embedded mode with console theme
+     - Fix non-functioning message log close icon
+   - dark: Overhaul theme and sync with console theme in embedded mode
+   - classic: refresh CSS
+ * SusiDNS:
+   - Reinstate filter removal on addressbook navigation links (ticket #1996)
+   - Reduce vertical padding for filter buttons section
+   - Migrate search section to div and reposition page elements to better
+     integrate with host list and minimize whitespace
+ * Susimail:
+   - Overhaul dark theme
+   - Sync theme to console theme by default, override if user sets theme
+     (unless universal themeing is enabled)
+
+2017-10-24 zzz
+ * NTCP: Convert configured NTCP hostname to IP address
+   before publishing (proposal #141)
+
+2017-10-21 zzz
+ * UDP: Reduce log level on IP change (ticket #2053)
+
 2017-10-11 zzz
  * Console: Validate host header (thx Kevin Froman)
  * Router: Honor IPv6 setting when converting configured hostnames
@@ -1390,7 +2093,7 @@ Prop from i2p.i2p.zzz.gmp6-prop:
 2016-02-22 zzz
  * Console: Improve news CSS (ticket #1710)
  * Crypto: Blacklist certificates by SHA1 hash, not by serial/CN/OU
- * I2CP: Improve client error message when internal router connection fails 
+ * I2CP: Improve client error message when internal router connection fails
  * Graphs: Increase font size
  * Transports: Increase default max inbound bandwidth,
    increase minimum in/out bandwidths
@@ -2388,7 +3091,7 @@ Prop from i2p.i2p.zzz.test2:
    - Decrease overload threshold
 
 2015-03-13 dg
- * Router: create router.integratedPeers (floodfills) stat, and 
+ * Router: create router.integratedPeers (floodfills) stat, and
    allow graphing of it.
 
 2015-03-08 zzz
@@ -2403,7 +3106,7 @@ Prop from i2p.i2p.zzz.test2:
    database from 2015-02-04.
 
 2015-02-15 dg
- * FloodfillMonitorJob: 
+ * FloodfillMonitorJob:
    - Use lifetime average value for job lag
    - Change the job lag limit to less than 25ms
    - Consider and set the limit of backlogged tunnels to less than 5
@@ -3711,7 +4414,7 @@ Prop from i2p.i2p.zzz.outproxy:
  * Update: All updates via torrent
 
 2014-01-25 zab
- * Move OutNetMessage buffer preparation to the Writer threads 
+ * Move OutNetMessage buffer preparation to the Writer threads
    (Ticket #1183)
  * Up version to -1
 
@@ -5139,7 +5842,7 @@ i2psnark: Fix ConnectionAcceptor not restarting after tunnel
 2012-10-24 zzz
  * I2PSnark:
    - Fix several partial piece (temp file) leaks
-   - Don't lose all DHT peers if we stop quickly	
+   - Don't lose all DHT peers if we stop quickly
    - Explore a kbucket if it's less than 3/4 full
 
 2012-10-24 str4d
@@ -5584,7 +6287,7 @@ i2psnark: Fix ConnectionAcceptor not restarting after tunnel
  * SSU MTU (ticket #682):
    - Use local MTU detection
    - i2np.udp.mtu now sets max MTU, not initial MTU
-   - Put local MTU in netDb 
+   - Put local MTU in netDb
    - Fix receive MTU calculations
    - Track remote MTU based on actual received packet size
    - Display local MTU on peers page

@@ -35,7 +35,6 @@ class SSLClientListenerRunner extends ClientListenerRunner {
     private SSLServerSocketFactory _factory;
 
     private static final String PROP_KEYSTORE_PASSWORD = "i2cp.keystorePassword";
-    private static final String DEFAULT_KEYSTORE_PASSWORD = "changeit";
     private static final String PROP_KEY_PASSWORD = "i2cp.keyPassword";
     private static final String KEY_ALIAS = "i2cp";
     private static final String ASCII_KEYFILE = "i2cp.local.crt";
@@ -83,22 +82,21 @@ class SSLClientListenerRunner extends ClientListenerRunner {
     private boolean createKeyStore(File ks) {
         // make a random 48 character password (30 * 8 / 5)
         String keyPassword = KeyStoreUtil.randomString();
-        // and one for the cname
-        String cname = KeyStoreUtil.randomString() + ".i2cp.i2p.net";
+        String cname = "localhost";
 
         boolean success = KeyStoreUtil.createKeys(ks, KEY_ALIAS, cname, "I2CP", keyPassword);
         if (success) {
             success = ks.exists();
             if (success) {
                 Map<String, String> changes = new HashMap<String, String>();
-                changes.put(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+                changes.put(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
                 changes.put(PROP_KEY_PASSWORD, keyPassword);
                 _context.router().saveConfig(changes, null);
             }
         }
         if (success) {
             _log.logAlways(Log.INFO, "Created self-signed certificate for " + cname + " in keystore: " + ks.getAbsolutePath() + "\n" +
-                           "The certificate name was generated randomly, and is not associated with your " +
+                           "The certificate was generated randomly, and is not associated with your " +
                            "IP address, host name, router identity, or destination keys.");
         } else {
             _log.error("Failed to create I2CP SSL keystore.\n" +
@@ -116,7 +114,7 @@ class SSLClientListenerRunner extends ClientListenerRunner {
     private void exportCert(File ks) {
         File sdir = new SecureDirectory(_context.getConfigDir(), "certificates/i2cp");
         if (sdir.exists() || sdir.mkdirs()) {
-            String ksPass = _context.getProperty(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+            String ksPass = _context.getProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
             File out = new File(sdir, ASCII_KEYFILE);
             boolean success = KeyStoreUtil.exportCert(ks, ksPass, KEY_ALIAS, out);
             if (!success)
@@ -131,7 +129,7 @@ class SSLClientListenerRunner extends ClientListenerRunner {
      * @return success
      */
     private boolean initializeFactory(File ks) {
-        String ksPass = _context.getProperty(PROP_KEYSTORE_PASSWORD, DEFAULT_KEYSTORE_PASSWORD);
+        String ksPass = _context.getProperty(PROP_KEYSTORE_PASSWORD, KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD);
         String keyPass = _context.getProperty(PROP_KEY_PASSWORD);
         if (keyPass == null) {
             _log.error("No key password, set " + PROP_KEY_PASSWORD +
@@ -144,6 +142,7 @@ class SSLClientListenerRunner extends ClientListenerRunner {
             KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
             fis = new FileInputStream(ks);
             keyStore.load(fis, ksPass.toCharArray());
+            KeyStoreUtil.logCertExpiration(keyStore, ks.getAbsolutePath(), 180*24*60*60*1000L);
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(keyStore, keyPass.toCharArray());
             sslc.init(kmf.getKeyManagers(), null, _context.random());

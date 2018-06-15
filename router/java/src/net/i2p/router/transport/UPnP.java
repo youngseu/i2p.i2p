@@ -37,6 +37,8 @@ import org.cybergarage.upnp.StateVariable;
 import org.cybergarage.upnp.UPnPStatus;
 import org.cybergarage.upnp.device.DeviceChangeListener;
 import org.cybergarage.upnp.event.EventListener;
+import org.cybergarage.upnp.ssdp.SSDPPacket;
+import org.cybergarage.util.Debug;
 import org.freenetproject.DetectedIP;
 import org.freenetproject.ForwardPort;
 import org.freenetproject.ForwardPortCallback;
@@ -69,6 +71,8 @@ import org.freenetproject.ForwardPortStatus;
  * TODO: Support multiple IGDs ?
  * TODO: Advertise the node like the MDNS plugin does
  * TODO: Implement EventListener and react on ip-change
+ *
+ * Public for CommandLine main()
  */ 
 public class UPnP extends ControlPoint implements DeviceChangeListener, EventListener {
 	private final Log _log;
@@ -80,11 +84,18 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	private static final String WANCON_DEVICE = "urn:schemas-upnp-org:device:WANConnectionDevice:1";
 	private static final String WAN_IP_CONNECTION = "urn:schemas-upnp-org:service:WANIPConnection:1";
 	private static final String WAN_PPP_CONNECTION = "urn:schemas-upnp-org:service:WANPPPConnection:1";
+	/** IGD 2 flavors, since 0.9.34 */
+	private static final String ROUTER_DEVICE_2 = "urn:schemas-upnp-org:device:InternetGatewayDevice:2";
+	private static final String WAN_DEVICE_2 = "urn:schemas-upnp-org:device:WANDevice:2";
+	private static final String WANCON_DEVICE_2 = "urn:schemas-upnp-org:device:WANConnectionDevice:2";
+	private static final String WAN_IP_CONNECTION_2 = "urn:schemas-upnp-org:service:WANIPConnection:2";
+	private static final String WAN_IPV6_CONNECTION = "urn:schemas-upnp-org:service:WANIPv6FirewallControl:1";
 
 	private Device _router;
 	private Service _service;
 	// UDN -> friendly name
-        private final Map<String, String> _otherUDNs;
+	private final Map<String, String> _otherUDNs;
+	private final Map<String, String> _eventVars;
 	private boolean isDisabled = false; // We disable the plugin if more than one IGD is found
 	private volatile boolean _serviceLacksAPM;
 	private final Object lock = new Object();
@@ -100,6 +111,8 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 
 	private static final String PROP_ADVANCED = "routerconsole.advanced";
 	private static final String PROP_IGNORE = "i2np.upnp.ignore";
+	/** set to true to talk to UPnP on the same host as us, probably for testing */
+	private static final boolean ALLOW_SAME_HOST = false;
 	
 	public UPnP(I2PAppContext context) {
 		super();
@@ -107,14 +120,17 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 		_log = _context.logManager().getLog(UPnP.class);
 		portsToForward = new HashSet<ForwardPort>();
 		portsForwarded = new HashSet<ForwardPort>();
-                _otherUDNs = new HashMap<String, String>(4);
-		addDeviceChangeListener(this);
+		_otherUDNs = new HashMap<String, String>(4);
+		_eventVars = new HashMap<String, String>(4);
 	}
 	
 	public synchronized boolean runPlugin() {
+		addDeviceChangeListener(this);
+		addEventListener(this);
 		synchronized(lock) {
 			portsToForward.clear();
 			portsForwarded.clear();
+			_eventVars.clear();
 		}
 		return super.start();
 	}
@@ -123,8 +139,11 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	 *  WARNING - Blocking up to 2 seconds
 	 */
 	public synchronized void terminate() {
+		removeDeviceChangeListener(this);
+		removeEventListener(this);
 		synchronized(lock) {
 			portsToForward.clear();
+			_eventVars.clear();
 		}
 		// this gets spun off in a thread...
 		unregisterPortMappings();
@@ -144,6 +163,14 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 		}
 	}
 	
+	/**
+	 *  As we only support a single active IGD, and we don't currently have any way
+	 *  to get any IPv6 addresses, this will return at most one IPv4 address.
+	 *
+	 *  Blocking!!!
+	 *
+	 *  @return array of length 1 containing an IPv4 address, or null
+	 */
 	public DetectedIP[] getAddress() {
 		_log.info("UP&P.getAddress() is called \\o/");
 		if(isDisabled) {
@@ -196,8 +223,12 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
                 String name = dev.getFriendlyName();
 		if (name == null)
 			name = "???";
-		boolean isIGD = ROUTER_DEVICE.equals(dev.getDeviceType()) && dev.isRootDevice();
-		name += isIGD ? " IGD" : (" " + dev.getDeviceType());
+		String type = dev.getDeviceType();
+		boolean isIGD = (ROUTER_DEVICE.equals(type) || ROUTER_DEVICE_2.equals(type)) && dev.isRootDevice();
+		name += isIGD ? " IGD" : (' ' + type);
+		String ip = getIP(dev);
+		if (ip != null)
+			name += ' ' + ip;
 		synchronized (lock) {
 			if(isDisabled) {
 				if (_log.shouldLog(Log.WARN))
@@ -206,7 +237,7 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 				return;
 			}
 		}
-		if(!ROUTER_DEVICE.equals(dev.getDeviceType()) || !dev.isRootDevice()) {
+		if(!isIGD) {
 			if (_log.shouldLog(Log.WARN))
 				_log.warn("UP&P non-IGD device found, ignoring " + name + ' ' + dev.getDeviceType());
 			synchronized (lock) {
@@ -235,6 +266,22 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 				}
 			}
 		}
+		Set<String> myAddresses = Addresses.getAddresses(true, false);  // yes local, no IPv6
+		if (!ignore && !ALLOW_SAME_HOST && ip != null && myAddresses.contains(ip)) {
+			ignore = true;
+			_log.logAlways(Log.WARN, "Ignoring UPnP on same host: " + name + " UDN: " + udn);
+		}
+
+		// IP check
+		SSDPPacket pkt = dev.getSSDPPacket();
+		if (!ignore && pkt != null) {
+			String pktIP = pkt.getRemoteAddress();
+			if (!stringEquals(ip, pktIP)) {
+				ignore = true;
+				_log.logAlways(Log.WARN, "Ignoring UPnP with IP mismatch: " + name + " UDN: " + udn);
+			}
+		}
+
 		synchronized(lock) {
 			if (ignore) {
 				_otherUDNs.put(udn, name);
@@ -280,24 +327,33 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	private void discoverService() {
 		synchronized (lock) {
 			for (Device current : _router.getDeviceList()) {
-				if (!current.getDeviceType().equals(WAN_DEVICE))
+				String type = current.getDeviceType();
+				if (!(WAN_DEVICE.equals(type) || WAN_DEVICE_2.equals(type)))
 					continue;
 
 				DeviceList l = current.getDeviceList();
 				for (int i=0;i<current.getDeviceList().size();i++) {
 					Device current2 = l.getDevice(i);
-					if (!current2.getDeviceType().equals(WANCON_DEVICE))
+					type = current2.getDeviceType();
+					if (!(WANCON_DEVICE.equals(type) || WANCON_DEVICE_2.equals(type)))
 						continue;
 					
-					_service = current2.getService(WAN_PPP_CONNECTION);
-					if(_service == null) {
-						if (_log.shouldLog(Log.INFO))
-							_log.info(_router.getFriendlyName()+ " doesn't seems to be using PPP; we won't be able to extract bandwidth-related informations out of it.");
+					_service = current2.getService(WAN_IP_CONNECTION_2);
+					if (_service == null) {
 						_service = current2.getService(WAN_IP_CONNECTION);
-						if(_service == null)
-							_log.error(_router.getFriendlyName()+ " doesn't export WAN_IP_CONNECTION either: we won't be able to use it!");
+						if (_service == null) {
+							_service = current2.getService(WAN_PPP_CONNECTION);
+							if (_service == null) {
+								if (_log.shouldWarn())
+									_log.warn(_router.getFriendlyName() + " doesn't have any recognized connection type; we won't be able to use it!");
+							}
+						}
 					}
-					
+					if (_log.shouldWarn()) {
+						Service svc2 = current2.getService(WAN_IPV6_CONNECTION);
+						if (svc2 != null)
+							_log.warn(_router.getFriendlyName() + " supports WANIPv6Connection, but we don't");
+					}
 					_serviceLacksAPM = false;
 					return;
 				}
@@ -351,7 +407,8 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 			if (_router == null) return;
 			// I2P this wasn't working
 			//if(_router.equals(dev)) {
-		        if(ROUTER_DEVICE.equals(dev.getDeviceType()) &&
+			String type = dev.getDeviceType();
+		        if ((ROUTER_DEVICE.equals(type) || ROUTER_DEVICE_2.equals(type)) &&
 			   dev.isRootDevice() &&
 			   stringEquals(_router.getFriendlyName(), dev.getFriendlyName()) &&
 			   stringEquals(_router.getUDN(), udn)) {
@@ -363,6 +420,7 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 				_otherUDNs.clear();
 				_router = null;
 				_service = null;
+				_eventVars.clear();
 				_serviceLacksAPM = false;
 				if (!portsForwarded.isEmpty()) {
 					fpc = forwardCallback;
@@ -383,11 +441,31 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	
 	/**
 	 *  EventListener callback -
-	 *  unused for now - how many devices support events?
+	 *  unused for now - supported in miniupnpd as of 1.1
 	 */
 	public void eventNotifyReceived(String uuid, long seq, String varName, String value) {
-		if (_log.shouldLog(Log.WARN))
-			_log.warn("Event: " + uuid + ' ' + seq + ' ' + varName + '=' + value);
+		if (uuid == null || varName == null || value == null)
+			return;
+		if (varName.length() > 128 || value.length() > 128)
+			return;
+		String old = null;
+		synchronized(lock) {
+			if (_service == null || !uuid.equals(_service.getSID()))
+				return;
+			if (_eventVars.size() >= 20 && !_eventVars.containsKey(varName))
+				return;
+			old = _eventVars.put(varName, value);
+		}
+		// The following four variables are "evented":
+		// PossibleConnectionTypes: {Unconfigured IP_Routed IP_Bridged}
+		// ConnectionStatus: {Unconfigured Connecting Connected PendingDisconnect Disconnecting Disconnected}
+		// ExternalIPAddress: string
+		// PortMappingNumberOfEntries: int
+		if (!value.equals(old)) {
+			if (_log.shouldDebug())
+				_log.debug("Event: " + varName + " changed from " + old + " to " + value);
+		}
+		// call callback...
 	}
 
 	/** compare two strings, either of which could be null */
@@ -407,7 +485,7 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	}
 
 	/**
-	 * @return the external address the NAT thinks we have.  Blocking.
+	 * @return the external IPv4 address the NAT thinks we have.  Blocking.
 	 * null if we can't find it.
 	 */
 	private String getNATAddress() {
@@ -562,7 +640,48 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 			return DataHelper.escapeHTML(rv);
 		}
 	}
-	
+
+        private static final long UINT_MAX = (1L << 32) - 1;
+
+	/**
+	 *  @since 0.9.34
+	 */
+	private String toLong(String action, String arg, Service serv) {
+		String rv = toString(action, arg, serv);
+		if (rv != null && rv.length() > 0) {
+			try {
+				long l = Long.parseLong(rv);
+				rv = DataHelper.formatSize2Decimal(l);
+                                // spec says roll over to 0 but mine doesn't
+                                if (l == UINT_MAX)
+                                    rv = "&gt; " + rv;
+			} catch (NumberFormatException nfe) {}
+		}
+		return rv;
+	}
+
+	/**
+	 *  @since 0.9.34
+	 */
+	private String toTime(String action, String arg, Service serv) {
+		String rv = toString(action, arg, serv);
+		if (rv != null && rv.length() > 0) {
+			try {
+				long l = Long.parseLong(rv);
+				rv = DataHelper.formatDuration2(l * 1000);
+			} catch (NumberFormatException nfe) {}
+		}
+		return rv;
+	}
+
+	/**
+	 *  @since 0.9.34
+	 */
+	private String toBoolean(String action, String arg, Service serv) {
+		String rv = toString(action, arg, serv);
+		return Boolean.toString("1".equals(rv));
+	}
+
 	// TODO: extend it! RTFM
 	private void listSubServices(Device dev, StringBuilder sb) {
 		ServiceList sl = dev.getServiceList();
@@ -575,69 +694,71 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 			sb.append("<li>").append(_t("Service")).append(": ");
 			// NOTE: Group all toString() of common actions together
 			// to avoid excess fetches, since toString() caches.
-			if("urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1".equals(serv.getServiceType())){
+			String type = serv.getServiceType();
+			if("urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1".equals(type)){
 				sb.append(_t("WAN Common Interface Configuration"));
 				sb.append("<ul><li>").append(_t("Status")).append(": ")
 				  .append(toString("GetCommonLinkProperties", "NewPhysicalLinkStatus", serv));
 				sb.append("<li>").append(_t("Type")).append(": ")
 				  .append(toString("GetCommonLinkProperties", "NewWANAccessType", serv));
 				sb.append("<li>").append(_t("Upstream")).append(": ")
-				  .append(toString("GetCommonLinkProperties", "NewLayer1UpstreamMaxBitRate", serv));
+				  .append(toLong("GetCommonLinkProperties", "NewLayer1UpstreamMaxBitRate", serv)).append("bps");
 				sb.append("<li>").append(_t("Downstream")).append(": ")
-				  .append(toString("GetCommonLinkProperties", "NewLayer1DownstreamMaxBitRate", serv))
-				  .append("</li>");
-			}else if("urn:schemas-upnp-org:service:WANPPPConnection:1".equals(serv.getServiceType())){
+				  .append(toLong("GetCommonLinkProperties", "NewLayer1DownstreamMaxBitRate", serv)).append("bps");
+				if (_context.getBooleanProperty(PROP_ADVANCED)) {
+					// don't bother translating
+					sb.append("<li>").append("Sent: ")
+					  .append(toLong("GetTotalBytesSent", "NewTotalBytesSent", serv)).append('B');
+					sb.append("<li>").append("Received: ")
+					  .append(toLong("GetTotalBytesReceived", "NewTotalBytesReceived", serv)).append('B');
+					sb.append("<li>").append("Sent packets: ")
+					  .append(toLong("GetTotalPacketsSent", "NewTotalPacketsSent", serv));
+					sb.append("<li>").append("Received packets: ")
+					  .append(toLong("GetTotalPacketsReceived", "NewTotalPacketsReceived", serv));
+				}
+			}else if(WAN_PPP_CONNECTION.equals(type)){
 				sb.append(_t("WAN PPP Connection"));
 				sb.append("<ul><li>").append(_t("Status")).append(": ")
 				  .append(toString("GetStatusInfo", "NewConnectionStatus", serv));
-				String up = toString("GetStatusInfo", "NewUptime", serv);
-				if (up != null) {
-					try {
-						long uptime = Long.parseLong(up);
-						uptime *= 1000;
-						sb.append("<li>").append(_t("Uptime")).append(": ")
-						  .append(DataHelper.formatDuration2(uptime));
-					} catch (NumberFormatException nfe) {}
-				}
+				sb.append("<li>").append(_t("Uptime")).append(": ")
+				   .append(toTime("GetStatusInfo", "NewUptime", serv));
 				sb.append("<li>").append(_t("Type")).append(": ")
 				  .append(toString("GetConnectionTypeInfo", "NewConnectionType", serv));
 				sb.append("<li>").append(_t("Upstream")).append(": ")
-				  .append(toString("GetLinkLayerMaxBitRates", "NewUpstreamMaxBitRate", serv));
+				  .append(toLong("GetLinkLayerMaxBitRates", "NewUpstreamMaxBitRate", serv)).append("bps");
 				sb.append("<li>").append(_t("Downstream")).append(": ")
-				  .append(toString("GetLinkLayerMaxBitRates", "NewDownstreamMaxBitRate", serv) + "<br>");
+				  .append(toLong("GetLinkLayerMaxBitRates", "NewDownstreamMaxBitRate", serv)).append("bps");
 				sb.append("<li>").append(_t("External IP")).append(": ")
-				  .append(toString("GetExternalIPAddress", "NewExternalIPAddress", serv))
-				  .append("</li>");
-			}else if("urn:schemas-upnp-org:service:Layer3Forwarding:1".equals(serv.getServiceType())){
+				  .append(toString("GetExternalIPAddress", "NewExternalIPAddress", serv));
+			}else if("urn:schemas-upnp-org:service:Layer3Forwarding:1".equals(type)){
 				sb.append(_t("Layer 3 Forwarding"));
 				sb.append("<ul><li>").append(_t("Default Connection Service")).append(": ")
-				  .append(toString("GetDefaultConnectionService", "NewDefaultConnectionService", serv))
-				  .append("</li>");
-			}else if(WAN_IP_CONNECTION.equals(serv.getServiceType())){
+				  .append(toString("GetDefaultConnectionService", "NewDefaultConnectionService", serv));
+			} else if(WAN_IP_CONNECTION.equals(type) || WAN_IP_CONNECTION_2.equals(type)) {
 				sb.append(_t("WAN IP Connection"));
 				sb.append("<ul><li>").append(_t("Status")).append(": ")
 				  .append(toString("GetStatusInfo", "NewConnectionStatus", serv));
-				String up = toString("GetStatusInfo", "NewUptime", serv);
-				if (up != null) {
-					try {
-						long uptime = Long.parseLong(up);
-						uptime *= 1000;
-						sb.append("<li>").append(_t("Uptime")).append(": ")
-						  .append(DataHelper.formatDuration2(uptime));
-					} catch (NumberFormatException nfe) {}
-				}
+				sb.append("<li>").append(_t("Uptime")).append(": ")
+				   .append(toTime("GetStatusInfo", "NewUptime", serv));
+				String error = toString("GetStatusInfo", "NewLastConnectionError", serv);
+				if (error != null && error.length() > 0 && !error.equals("ERROR_NONE"))
+					sb.append("<li>").append("Last Error").append(": ").append(error);
 				sb.append("<li>").append(_t("Type")).append(": ")
 				  .append(toString("GetConnectionTypeInfo", "NewConnectionType", serv));
 				sb.append("<li>").append(_t("External IP")).append(": ")
-				  .append(toString("GetExternalIPAddress", "NewExternalIPAddress", serv))
-				  .append("</li>");
-			}else if("urn:schemas-upnp-org:service:WANEthernetLinkConfig:1".equals(serv.getServiceType())){
+				  .append(toString("GetExternalIPAddress", "NewExternalIPAddress", serv));
+			} else if(WAN_IPV6_CONNECTION.equals(type)) {
+				sb.append("WAN IPv6 Connection");
+				sb.append("<ul><li>").append("Firewall Enabled").append(": ")
+				  .append(toBoolean("GetFirewallStatus", "FirewallEnabled", serv));
+				sb.append("<li>").append("Pinhole Allowed").append(": ")
+				   .append(toBoolean("GetFirewallStatus", "InboundPinholeAllowed", serv));
+			}else if("urn:schemas-upnp-org:service:WANEthernetLinkConfig:1".equals(type)){
 				sb.append(_t("WAN Ethernet Link Configuration"));
 				sb.append("<ul><li>").append(_t("Status")).append(": ")
-				  .append(toString("GetEthernetLinkStatus", "NewEthernetLinkStatus", serv))
-				  .append("</li>");
+				  .append(toString("GetEthernetLinkStatus", "NewEthernetLinkStatus", serv));
 			} else {
-				sb.append(DataHelper.escapeHTML(serv.getServiceType())).append("<ul>");
+				sb.append(DataHelper.escapeHTML(type)).append("<ul>");
 			}
 			if (_context.getBooleanProperty(PROP_ADVANCED)) {
 				sb.append("<li>Actions");
@@ -657,8 +778,15 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 		else
 			sb.append("<li>").append(_t("Subdevice")).append(": ");
 		sb.append(DataHelper.escapeHTML(dev.getFriendlyName()));
-                if (prefix == null)
-			sb.append("</p>");
+                if (prefix == null) {
+			String ip = getIP(dev);
+			if (ip != null)
+				sb.append("<br>IP: ").append(ip);
+			String udn = dev.getUDN();
+			if (udn != null)
+				sb.append("<br>UDN: ").append(DataHelper.escapeHTML(udn));
+		}
+		sb.append("</p>");
 		listSubServices(dev, sb);
 		
 		DeviceList dl = dev.getDeviceList();
@@ -703,7 +831,12 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 			return sb.toString();
 		}
 		
-		listSubDev(null, _router, sb);
+		Device router;
+		synchronized(lock) {
+			router = _router;
+		}
+		if (router != null)
+			listSubDev(null, router, sb);
 		String addr = getNATAddress();
 		sb.append("<p>");
 		if (addr != null)
@@ -713,9 +846,9 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 		int downstreamMaxBitRate = getDownstreamMaxBitRate();
 		int upstreamMaxBitRate = getUpstreamMaxBitRate();
 		if(downstreamMaxBitRate > 0)
-			sb.append("<br>").append(_t("UPnP reports the maximum downstream bit rate is {0}bits/sec", DataHelper.formatSize2(downstreamMaxBitRate)));
+			sb.append("<br>").append(_t("UPnP reports the maximum downstream bit rate is {0}bits/sec", DataHelper.formatSize2Decimal(downstreamMaxBitRate)));
 		if(upstreamMaxBitRate > 0)
-			sb.append("<br>").append(_t("UPnP reports the maximum upstream bit rate is {0}bits/sec", DataHelper.formatSize2(upstreamMaxBitRate)));
+			sb.append("<br>").append(_t("UPnP reports the maximum upstream bit rate is {0}bits/sec", DataHelper.formatSize2Decimal(upstreamMaxBitRate)));
 		synchronized(lock) {
 			for(ForwardPort port : portsToForward) {
 				sb.append("<br>");
@@ -818,6 +951,32 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	}
 
 	/**
+	*  @return IP or null
+	 * @since 0.9.34
+	 */
+	private static String getIP(Device dev) {
+		// see ControlRequest.setRequestHost()
+		String rv = null;
+		String him = dev.getURLBase();
+		if (him != null && him.length() > 0) {
+			try {
+				URI url = new URI(him);
+				rv = url.getHost();
+			} catch (URISyntaxException use) {}
+		}
+		if (rv == null) {
+			him = dev.getLocation();
+			if (him != null && him.length() > 0) {
+				try {
+					URI url = new URI(him);
+					rv = url.getHost();
+				} catch (URISyntaxException use) {}
+			}
+		}
+		return rv;
+	}
+
+	/**
 	 * Bug fix:
 	 * If the SSDP notify or search response sockets listen on more than one interface,
 	 * cybergarage can get our IP address wrong, and then we send the wrong one
@@ -834,24 +993,7 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 	 */
 	private String getOurAddress(String deflt) {
 		String rv = deflt;
-		String hisIP = null;
-		// see ControlRequest.setRequestHost()
-		String him = _router.getURLBase();
-		if (him != null && him.length() > 0) {
-			try {
-				URI url = new URI(him);
-				hisIP = url.getHost();
-			} catch (URISyntaxException use) {}
-		}
-		if (hisIP == null) {
-			him = _router.getLocation();
-			if (him != null && him.length() > 0) {
-				try {
-					URI url = new URI(him);
-					hisIP = url.getHost();
-				} catch (URISyntaxException use) {}
-			}
-		}
+		String hisIP = getIP(_router);
 		if (hisIP == null)
 			return rv;
 		try {
@@ -1082,34 +1224,44 @@ public class UPnP extends ControlPoint implements DeviceChangeListener, EventLis
 		Properties props = new Properties();
                 props.setProperty(PROP_ADVANCED, "true");
 		I2PAppContext ctx = new I2PAppContext(props);
-		UPnP upnp = new UPnP(ctx);
-		ControlPoint cp = new ControlPoint();
+		UPnP cp = new UPnP(ctx);
+		org.cybergarage.upnp.UPnP.setEnable(org.cybergarage.upnp.UPnP.USE_ONLY_IPV4_ADDR);
+		Debug.initialize(ctx);
+		cp.setHTTPPort(49152 + ctx.random().nextInt(5000));
+		cp.setSSDPPort(54152 + ctx.random().nextInt(5000));
 		long start = System.currentTimeMillis();
 		cp.start();
 		long s2 = System.currentTimeMillis();
-		System.out.println("Start took " + (s2 - start));
-		System.out.println("Searching for UPnP devices");
+		System.err.println("Start took " + (s2 - start) + "ms");
+		System.err.println("Searching for UPnP devices");
 		start = System.currentTimeMillis();
 		cp.search();
 		s2 = System.currentTimeMillis();
-		System.out.println("Search kickoff took " + (s2 - start));
-		System.out.println("Waiting 10 seconds for responses");
+		System.err.println("Search kickoff took " + (s2 - start) + "ms");
+		System.err.println("Waiting 10 seconds for responses");
 		Thread.sleep(10000);
-		//while(true) {
+
 			DeviceList list = cp.getDeviceList();
-			System.out.println("Found " + list.size() + " devices!");
+			if (list.isEmpty()) {
+				System.err.println("No UPnP devices found");
+				System.exit(1);
+			}
+			System.err.println("Found " + list.size() + " devices.");
+			System.err.println("Redirect the following output to an html file and view in a browser.");
 			StringBuilder sb = new StringBuilder();
 			Iterator<Device> it = list.iterator();
 			int i = 0;
 			while(it.hasNext()) {
 				Device device = it.next();
-				upnp.listSubDev(device.toString(), device, sb);
-				System.out.println("Here is the listing for device " + (++i) +
-				                   ": " + device.getFriendlyName() + " :");
+				cp.listSubDev(device.toString(), device, sb);
+				System.out.println("<h3>Device " + (++i) +
+				                   ": " + DataHelper.escapeHTML(device.getFriendlyName()) + "</h3>");
+				System.out.println("<p>UDN: " + DataHelper.escapeHTML(device.getUDN()));
+				System.out.println("<br>IP: " + getIP(device));
 				System.out.println(sb.toString());
 				sb.setLength(0);
 			}
-		//}
+
 		System.exit(0);
 	}
 

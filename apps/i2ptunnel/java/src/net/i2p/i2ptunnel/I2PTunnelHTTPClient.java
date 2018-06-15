@@ -84,6 +84,13 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final String _proxyNonce;
 
     public static final String AUTH_REALM = "I2P HTTP Proxy";
+    private static final String UA_I2P = "User-Agent: " +
+                                         "MYOB/6.66 (AN/ON)" +
+                                         "\r\n";
+    // ESR version of Firefox, same as Tor Browser
+    private static final String UA_CLEARNET = "User-Agent: " +
+                                              "Mozilla/5.0 (Windows NT 6.1; rv:52.0) Gecko/20100101 Firefox/52.0" +
+                                              "\r\n";
 
     /**
      *  These are backups if the xxx.ht error page is missing.
@@ -91,7 +98,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_REQUEST_DENIED =
             "HTTP/1.1 403 Access Denied\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -102,7 +109,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static byte[] ERR_TIMEOUT =
     ("HTTP/1.1 504 Gateway Timeout\r\n"+
     "Content-Type: text/html; charset=iso-8859-1\r\n"+
-    "Cache-control: no-cache\r\n\r\n"+
+    "Cache-Control: no-cache\r\n\r\n"+
     "<html><body><H1>I2P ERROR: TIMEOUT</H1>"+
     "That Destination was reachable, but timed out getting a "+
     "response.  This is likely a temporary error, so you should simply "+
@@ -114,7 +121,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_NO_OUTPROXY =
             "HTTP/1.1 503 Service Unavailable\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -125,7 +132,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_AHELPER_CONFLICT =
             "HTTP/1.1 409 Conflict\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -142,7 +149,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_AHELPER_NOTFOUND =
             "HTTP/1.1 404 Not Found\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -154,7 +161,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_AHELPER_NEW =
             "HTTP/1.1 409 New Address\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -167,7 +174,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_BAD_PROTOCOL =
             "HTTP/1.1 403 Bad Protocol\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -178,7 +185,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_BAD_URI =
             "HTTP/1.1 403 Bad URI\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -189,7 +196,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_LOCALHOST =
             "HTTP/1.1 403 Access Denied\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -199,7 +206,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     private final static String ERR_INTERNAL_SSL =
             "HTTP/1.1 403 SSL Rejected\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
             "Proxy-Connection: close\r\n"+
             "\r\n" +
@@ -364,8 +371,10 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
     public static final String PROP_SSL_OUTPROXIES = "i2ptunnel.httpclient.SSLOutproxies";
     /** @since 0.9.14 */
     public static final String PROP_ACCEPT = "i2ptunnel.httpclient.sendAccept";
-    /** @since 0.9.14 */
+    /** @since 0.9.14, overridden to true as of 0.9.35 unlesss PROP_SSL_SET is set */
     public static final String PROP_INTERNAL_SSL = "i2ptunnel.httpclient.allowInternalSSL";
+    /** @since 0.9.35 */
+    public static final String PROP_SSL_SET = "sslManuallySet";
 
     /**
      *
@@ -391,8 +400,9 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
         String currentProxy = null;
         long requestId = __requestId.incrementAndGet();
         boolean shout = false;
-
+        I2PSocket i2ps = null;
         try {
+            s.setSoTimeout(INITIAL_SO_TIMEOUT);
             out = s.getOutputStream();
             InputReader reader = new InputReader(s.getInputStream());
             String line, method = null, protocol = null, host = null, destination = null;
@@ -479,9 +489,43 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                     // Now use the Java URI parser
                     // This will be the incoming URI but will then get modified
                     // to be the outgoing URI (with http:// if going to outproxy, otherwise without)
-                    URI requestURI;
+                    URI requestURI = null;
                     try {
-                        origRequestURI = requestURI = new URI(request);
+                        try {
+                            requestURI = new URI(request);
+                        } catch(URISyntaxException use) {
+                            // fixup []| in path/query not escaped by browsers, see ticket #2130
+                            boolean error = true;
+                            // find 3rd /
+                            int idx = 0;
+                            for (int i = 0; i < 2; i++) {
+                                idx = request.indexOf('/', idx);
+                                if (idx < 0)
+                                    break;
+                                idx++;
+                            }
+                            if (idx > 0) {
+                                String schemeHostPort = request.substring(0, idx);
+                                String rest = request.substring(idx);
+                                rest = rest.replace("[", "%5B");
+                                rest = rest.replace("]", "%5D");
+                                rest = rest.replace("|", "%7C");
+                                String testRequest = schemeHostPort + rest;
+                                if (!testRequest.equals(request)) {
+                                    try {
+                                        requestURI = new URI(testRequest);
+                                        request = testRequest;
+                                        error = false;
+                                    } catch(URISyntaxException use2) {
+                                        // didn't work, give up
+                                    }
+                                }
+                            }
+                            // guess it wasn't []|
+                            if (error)
+                                throw use;
+                        }
+                        origRequestURI = requestURI;
                         if(requestURI.getRawUserInfo() != null || requestURI.getRawFragment() != null) {
                             // these should never be sent to the proxy in the request line
                             if(_log.shouldLog(Log.WARN)) {
@@ -502,12 +546,17 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                         }
                         try {
                             out.write(getErrorPage("baduri", ERR_BAD_URI).getBytes("UTF-8"));
+                            String msg = use.getLocalizedMessage();
+                            if (msg != null) {
+                                out.write(DataHelper.getASCII("<p>\n"));
+                                out.write(DataHelper.getUTF8(DataHelper.escapeHTML(msg)));
+                                out.write(DataHelper.getASCII("</p>\n"));
+                            }
+                            out.write(DataHelper.getASCII("</div>\n"));
                             writeFooter(out);
                             reader.drain();
                         } catch (IOException ioe) {
                             // ignore
-                        } finally {
-                            closeSocket(s);
                         }
                         return;
                     }
@@ -645,11 +694,8 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                                                            "</p>").getBytes("UTF-8"));
                                                 writeFooter(out);
                                                 reader.drain();
-                                                // XXX: should closeSocket(s) be in a finally block?
                                             } catch (IOException ioe) {
                                                 // ignore
-                                            } finally {
-                                                closeSocket(s);
                                             }
                                             return;
                                         }
@@ -722,42 +768,30 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                                         Hash h1 = ConvertToHash.getHash(requestURI.getHost());
                                         Hash h2 = ConvertToHash.getHash(ahelperKey);
                                         if (h1 != null && h2 != null) {
-                                            // Do we need to replace http://127.0.0.1:7657
-                                            // Get the registered host and port from the PortMapper.
-                                            final String unset = "*unset*";
-                                            final String httpHost = _context.portMapper().getActualHost(PortMapper.SVC_CONSOLE, unset);
-                                            final String httpsHost = _context.portMapper().getActualHost(PortMapper.SVC_HTTPS_CONSOLE, unset);
-                                            final int httpPort = _context.portMapper().getPort(PortMapper.SVC_CONSOLE, 7657);
-                                            final int httpsPort = _context.portMapper().getPort(PortMapper.SVC_HTTPS_CONSOLE, -1);
-                                            final boolean httpsOnly = httpsPort > 0 && httpHost.equals(unset) && !httpsHost.equals(unset);
-                                            final int cport = httpsOnly ? httpsPort : httpPort;
-                                            String chost = httpsOnly ? httpsHost : httpHost;
-                                            if (chost.equals(unset))
-                                                chost = "127.0.0.1";
-                                            String chostport;
-                                            if (httpsOnly || cport != 7657 || !chost.equals("127.0.0.1"))
-                                                chostport = (httpsOnly ? "https://" : "http://") + chost + ':' + cport;
-                                            else
-                                                chostport = "http://127.0.0.1:7657";
+                                            String conURL = _context.portMapper().getConsoleURL();
                                             out.write(("\n<table class=\"conflict\"><tr><th align=\"center\">" +
                                                        "<a href=\"" + trustedURL + "\">").getBytes("UTF-8"));
                                             out.write(_t("Destination for {0} in address book", requestURI.getHost()).getBytes("UTF-8"));
                                             out.write(("</a></th>\n<th align=\"center\">" +
                                                        "<a href=\"" + conflictURL + "\">").getBytes("UTF-8"));
                                             out.write(_t("Conflicting address helper destination").getBytes("UTF-8"));
-                                            out.write(("</a></th></tr>\n<tr><td align=\"center\">" +
+                                            out.write(("</a></th></tr>\n").getBytes("UTF-8"));
+                                            if (_context.portMapper().isRegistered(PortMapper.SVC_IMAGEGEN)) {
+                                                out.write(("<tr><td align=\"center\">" +
                                                        "<a href=\"" + trustedURL + "\">" +
                                                        "<img src=\"" +
-                                                       chostport + "/imagegen/id?s=160&amp;c=" +
+                                                       conURL + "imagegen/id?s=160&amp;c=" +
                                                        h1.toBase64().replace("=", "%3d") +
-                                                      "\" width=\"160\" height=\"160\"></a>\n").getBytes("UTF-8"));
-                                            out.write(("</td>\n<td align=\"center\">" +
+                                                      "\" width=\"160\" height=\"160\"></a>\n" +
+                                                      "</td>\n<td align=\"center\">" +
                                                        "<a href=\"" + conflictURL + "\">" +
                                                        "<img src=\"" +
-                                                       chostport + "/imagegen/id?s=160&amp;c=" +
+                                                       conURL + "imagegen/id?s=160&amp;c=" +
                                                        h2.toBase64().replace("=", "%3d") +
-                                                       "\" width=\"160\" height=\"160\"></a>\n").getBytes("UTF-8"));
-                                            out.write("</td></tr></table>".getBytes("UTF-8"));
+                                                       "\" width=\"160\" height=\"160\"></a>\n" +
+                                                       "</td></tr>").getBytes("UTF-8"));
+                                            }
+                                            out.write("</table>".getBytes("UTF-8"));
                                         }
                                         out.write("</div>".getBytes("UTF-8"));
                                         writeFooter(out);
@@ -765,8 +799,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                                     reader.drain();
                                 } catch (IOException ioe) {
                                     // ignore
-                                } finally {
-                                    closeSocket(s);
                                 }
                                 return;
                             }
@@ -803,8 +835,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                             reader.drain();
                         } catch (IOException ioe) {
                             // ignore
-                        } finally {
-                            closeSocket(s);
                         }
                         return;
                     } else if(host.contains(".") || host.startsWith("[")) {
@@ -856,8 +886,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                                     reader.drain();
                                 } catch (IOException ioe) {
                                     // ignore
-                                } finally {
-                                    closeSocket(s);
                                 }
                                 return;
                             }
@@ -882,8 +910,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                             reader.drain();
                         } catch (IOException ioe) {
                             // ignore
-                        } finally {
-                            closeSocket(s);
                         }
                         return;
                     }   // end host name processing
@@ -928,6 +954,23 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                         if(!Boolean.parseBoolean(getTunnel().getClientOptions().getProperty(PROP_USER_AGENT))) {
                             line = null;
                             continue;
+                        }
+                    } else if(lowercaseLine.startsWith("accept: ")) {
+                        if (!Boolean.parseBoolean(getTunnel().getClientOptions().getProperty(PROP_ACCEPT))) {
+                            // Replace with a standard one if possible
+                            boolean html = lowercaseLine.indexOf("text/html") > 0;
+                            boolean css = lowercaseLine.indexOf("text/css") > 0;
+                            boolean img = lowercaseLine.indexOf("image") > 0;
+                            if (html && !img && !css) {
+                                // firefox, tor browser
+                                line = "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+                            } else if (img && !html && !css) {
+                                // chrome
+                                line = "Accept: image/webp,image/apng,image/*,*/*;q=0.8";
+                            } else if (css && !html && !img) {
+                                // chrome, firefox
+                                line = "Accept: text/css,*/*;q=0.1";
+                            }  // else allow as-is
                         }
                     } else if(lowercaseLine.startsWith("accept")) {
                         // strip the accept-blah headers, as they vary dramatically from
@@ -1017,9 +1060,9 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                         if(!Boolean.parseBoolean(getTunnel().getClientOptions().getProperty(PROP_USER_AGENT))) {
                             // let's not advertise to external sites that we are from I2P
                             if(usingWWWProxy || usingInternalOutproxy) {
-                                newRequest.append("User-Agent: Mozilla/5.0 (Windows NT 6.1; rv:24.0) Gecko/20100101 Firefox/24.0\r\n");
+                                newRequest.append(UA_CLEARNET);
                             } else {
-                                newRequest.append("User-Agent: MYOB/6.66 (AN/ON)\r\n");
+                                newRequest.append(UA_I2P);
                             }
                         }
                     }
@@ -1040,6 +1083,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                         }
                     }
                     newRequest.append("Connection: close\r\n\r\n");
+                    s.setSoTimeout(0);
                     break;
                 } else {
                     newRequest.append(line).append("\r\n"); // HTTP spec
@@ -1061,8 +1105,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                     writeFooter(out);
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 return;
             }
@@ -1086,8 +1128,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                     writeFooter(out);
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 return;
             }
@@ -1105,8 +1145,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                     }
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 return;
             }
@@ -1150,8 +1188,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                         writeErrorMessage(header, out, targetRequest, false, destination);
                     } catch (IOException ioe) {
                         // ignore
-                    } finally {
-                        closeSocket(s);
                     }
                     return;
                 }
@@ -1207,21 +1243,19 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                     writeErrorMessage(header, extraMessage, out, targetRequest, usingWWWProxy, destination, jumpServers);
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 return;
             }
 
+            // as of 0.9.35, allowInternalSSL defaults to true, and overridden to true unless PROP_SSL_SET is set
             if (method.toUpperCase(Locale.US).equals("CONNECT") &&
                 !usingWWWProxy &&
-                !Boolean.parseBoolean(getTunnel().getClientOptions().getProperty(PROP_INTERNAL_SSL))) {
+                getTunnel().getClientOptions().getProperty(PROP_SSL_SET) != null &&
+                !Boolean.parseBoolean(getTunnel().getClientOptions().getProperty(PROP_INTERNAL_SSL, "true"))) {
                 try {
                     writeErrorMessage(ERR_INTERNAL_SSL, out, targetRequest, false, destination);
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 if (_log.shouldLog(Log.WARN))
                     _log.warn("SSL to i2p destinations denied by configuration: " + targetRequest);
@@ -1238,8 +1272,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                     writeHelperSaveForm(out, destination, ahelperKey, targetRequest, referer);
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 return;
             }
@@ -1261,8 +1293,6 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
                         "\r\n").getBytes("UTF-8"));
                 } catch (IOException ioe) {
                     // ignore
-                } finally {
-                    closeSocket(s);
                 }
                 return;
             }
@@ -1275,7 +1305,7 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
             I2PSocketOptions sktOpts = getDefaultOptions(opts);
             if (remotePort > 0)
                 sktOpts.setPort(remotePort);
-            I2PSocket i2ps = createI2PSocket(clientDest, sktOpts);
+            i2ps = createI2PSocket(clientDest, sktOpts);
             OnTimeout onTimeout = new OnTimeout(s, s.getOutputStream(), targetRequest, usingWWWProxy, currentProxy, requestId);
             Thread t;
             if (method.toUpperCase(Locale.US).equals("CONNECT")) {
@@ -1300,22 +1330,20 @@ public class I2PTunnelHTTPClient extends I2PTunnelHTTPClientBase implements Runn
             if(_log.shouldLog(Log.INFO)) {
                 _log.info(getPrefix(requestId) + "Error trying to connect", ex);
             }
-            //l.log("Error connecting: " + ex.getMessage());
             handleClientException(ex, out, targetRequest, usingWWWProxy, currentProxy, requestId);
-            closeSocket(s);
         } catch(I2PException ex) {
             if(_log.shouldLog(Log.INFO)) {
                 _log.info("getPrefix(requestId) + Error trying to connect", ex);
             }
-            //l.log("Error connecting: " + ex.getMessage());
             handleClientException(ex, out, targetRequest, usingWWWProxy, currentProxy, requestId);
-            closeSocket(s);
         } catch(OutOfMemoryError oom) {
             IOException ex = new IOException("OOM");
             _log.error("getPrefix(requestId) + Error trying to connect", oom);
-            //l.log("Error connecting: " + ex.getMessage());
             handleClientException(ex, out, targetRequest, usingWWWProxy, currentProxy, requestId);
+        } finally {
+            // only because we are running it inline
             closeSocket(s);
+            if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
         }
     }
 

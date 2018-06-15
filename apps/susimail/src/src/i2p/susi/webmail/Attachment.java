@@ -23,14 +23,24 @@
  */
 package i2p.susi.webmail;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+
 /**
  * @author user
+ * @since public since 0.9.33, was package private
  */
-class Attachment {
+public class Attachment {
 	private final String fileName, contentType, transferEncoding;
-	private final String data;
+	private final File data;
 
-	Attachment(String name, String type, String encoding, String data) {
+	/**
+	 * @param type the content type
+	 * @param encoding the transfer encoding, non-null
+	 */
+	Attachment(String name, String type, String encoding, File data) {
 		fileName = name;
 		contentType = type;
 		transferEncoding = encoding;
@@ -44,6 +54,9 @@ class Attachment {
 		return fileName;
 	}
 
+	/**
+	 * @return non-null
+	 */
 	public String getTransferEncoding() {
 		return transferEncoding;
 	}
@@ -55,7 +68,31 @@ class Attachment {
 	/**
 	 * @return Returns the data.
 	 */
-	public String getData() {
-		return data;
+	public InputStream getData() throws IOException {
+		return new FileInputStream(data);
+	}
+
+	/**
+	 * @return absolute path to the data file
+	 * @since 0.9.35
+	 */
+	public String getPath() {
+		return data.getAbsolutePath();
+	}
+
+	/**
+	 * The unencoded size
+	 * @since 0.9.33
+	 */
+	public long getSize() {
+		return data.length();
+	}
+
+	/**
+	 * Delete the data file
+	 * @since 0.9.33
+	 */
+	public void deleteData() {
+		data.delete();
 	}
 }

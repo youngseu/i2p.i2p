@@ -8,12 +8,19 @@ package net.i2p.data.router;
  *
  */
  
+import static org.junit.Assert.*;
+
 import java.io.ByteArrayOutputStream;
 import java.util.Properties;
+
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataStructure;
 import net.i2p.data.StructureTest;
+import net.i2p.util.OrderedProperties;
 
 /**
  * Test harness for loading / storing Hash objects
@@ -21,88 +28,69 @@ import net.i2p.data.StructureTest;
  * @author jrandom
  */
 public class RouterAddressTest extends StructureTest {
+
+    @Rule
+    public ExpectedException exception = ExpectedException.none();
+
     public DataStructure createDataStructure() throws DataFormatException {
-        RouterAddress addr = new RouterAddress();
-        byte data[] = new byte[32];
-        for (int i = 0; i < data.length; i++)
-            data[i] = (byte)(i%16);
-        addr.setCost(42);
         //addr.setExpiration(new Date(1000*60*60*24)); // jan 2 1970
-        Properties options = new Properties();
+        OrderedProperties options = new OrderedProperties();
         options.setProperty("hostname", "localhost");
         options.setProperty("portnum", "1234");
-        addr.setOptions(options);
-        addr.setTransportStyle("Blah");
+        RouterAddress addr = new RouterAddress("Blah", options, 42);
         return addr; 
     }
     public DataStructure createStructureToRead() { return new RouterAddress(); }
 
+    @SuppressWarnings("deprecation")
+    @Test
     public void testSetNullOptions(){
         RouterAddress addr = new RouterAddress();
-        boolean error = false;
-        try{
-            addr.setOptions(null);
-        }catch(NullPointerException dfe){
-            error = true;
-        }
-        assertTrue(error);
+
+        exception.expect(NullPointerException.class);
+        addr.setOptions(null);
     }
 
+    @SuppressWarnings("deprecation")
+    @Test
     public void testSetOptionsAgain(){
-        RouterAddress addr = new RouterAddress();
-        Properties options = new Properties();
+        OrderedProperties options = new OrderedProperties();
         options.setProperty("hostname", "localhost");
         options.setProperty("portnum", "1234");
-        addr.setOptions(options);
+        RouterAddress addr = new RouterAddress("Blah", options, 42);
         options.setProperty("portnum", "2345");
-        boolean error = false;
-        try{
-            addr.setOptions(options);
-        }catch(IllegalStateException dfe){
-            error = true;
-        }
-        assertTrue(error);
+
+        exception.expect(IllegalStateException.class);
+        addr.setOptions(options);
     }
 
+    @Test
     public void testBadWrite() throws Exception{
         RouterAddress addr = new RouterAddress();
-        boolean error = false;
-        try{
-            addr.writeBytes(new ByteArrayOutputStream());
-        }catch(DataFormatException dfe){
-            error = true;
-        }
-        assertTrue(error);
+
+        exception.expect(DataFormatException.class);
+        exception.expectMessage("uninitialized");
+        addr.writeBytes(new ByteArrayOutputStream());
     }
 
+    @Test
     public void testNullEquals(){
-        RouterAddress addr = new RouterAddress();
-        byte data[] = new byte[32];
-        for (int i = 0; i < data.length; i++)
-            data[i] = (byte)(i%16);
-        addr.setCost(42);
         //addr.setExpiration(new Date(1000*60*60*24)); // jan 2 1970
-        Properties options = new Properties();
+        OrderedProperties options = new OrderedProperties();
         options.setProperty("hostname", "localhost");
         options.setProperty("portnum", "1234");
-        addr.setOptions(options);
-        addr.setTransportStyle("Blah");
+        RouterAddress addr = new RouterAddress("Blah", options, 42);
         assertFalse(addr.equals(null));
         assertFalse(addr.equals(""));
     }
 
+    @Test
     public void testToString(){
-        RouterAddress addr = new RouterAddress();
-        byte data[] = new byte[32];
-        for (int i = 0; i < data.length; i++)
-            data[i] = (byte)(i%16);
-        addr.setCost(42);
         //addr.setExpiration(new Date(1000*60*60*24)); // jan 2 1970
-        Properties options = new Properties();
+        OrderedProperties options = new OrderedProperties();
         options.setProperty("hostname", "localhost");
         options.setProperty("portnum", "1234");
-        addr.setOptions(options);
-        addr.setTransportStyle("Blah");
+        RouterAddress addr = new RouterAddress("Blah", options, 42);
         String ret = addr.toString();
         //assertEquals("[RouterAddress: \n\tTransportStyle: Blah\n\tCost: 42\n\tExpiration: Fri Jan 02 00:00:00 UTC 1970\n\tOptions: #: 2\n\t\t[hostname] = [localhost]\n\t\t[portnum] = [1234]]", ret);
         assertEquals("[RouterAddress: \n\tType: Blah\n\tCost: 42\n\tOptions (2):\n\t\t[hostname] = [localhost]\n\t\t[portnum] = [1234]]", ret);

@@ -23,25 +23,26 @@
  */
 package i2p.susi.webmail.encoding;
 
-import i2p.susi.util.ReadBuffer;
+import i2p.susi.util.Buffer;
+import i2p.susi.util.MemoryBuffer;
+import i2p.susi.util.StringBuilderWriter;
 
 import java.io.ByteArrayInputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-
-import net.i2p.data.DataHelper;
+import java.io.OutputStream;
+import java.io.Writer;
 
 /**
  * @author susi
  */
-public class Base64 implements Encoding {
+public class Base64 extends Encoding {
 	
-	/* (non-Javadoc)
-	 * @see i2p.susi23.util.Encoding#getName()
-	 */
 	public String getName() {
 		return "base64";
 	}
+
 	/**
 	 * @return Base64-encoded String.
 	 * @throws EncodingException 
@@ -49,30 +50,24 @@ public class Base64 implements Encoding {
 	public String encode( byte in[] ) throws EncodingException
 	{
 		try {
-			return encode( new ByteArrayInputStream( in ) );
+			Writer strBuf = new StringBuilderWriter();
+			encode(new ByteArrayInputStream(in), strBuf);
+			return strBuf.toString();
 		}catch (IOException e) {
-			throw new EncodingException( e.getMessage() );
+			throw new EncodingException("encode error",  e);
 		}
 	}
+
 	/**
-	 * @see Base64#encode(byte[])
-	 */
-	public String encode(String str) throws EncodingException {
-		try {
-			return encode( new ByteArrayInputStream( DataHelper.getUTF8(str) ) );
-		}catch (IOException e) {
-			throw new EncodingException( e.getMessage() );
-		}
-	}
-	/**
+	 * More efficient than super
 	 * 
 	 * @param in
 	 * @see Base64#encode(String)
+	 * @since public since 0.9.33 with new params
 	 */
-	private String encode( InputStream in ) throws IOException, EncodingException
+	@Override
+	public void encode(InputStream in, Writer strBuf) throws IOException
 	{
-		StringBuilder strBuf = new StringBuilder();
-		
 		int buf[] = new int[3];
 		int out[] = new int[4];
 		int l = 0;
@@ -111,8 +106,6 @@ public class Base64 implements Encoding {
 				l -= 76;
 			}
 		}
-
-		return strBuf.toString();
 	}
 
 	/**
@@ -152,7 +145,10 @@ public class Base64 implements Encoding {
 		return b;
 	}
 
-	private static byte decodeByte( byte b ) throws DecodingException {
+	private static byte decodeByte( int c ) throws IOException {
+		if (c < 0)
+			throw new EOFException();
+		byte b = (byte) (c & 0xff);
 		if( b >= 'A' && b <= 'Z' )
 			b -= 'A';
 		else if( b >= 'a' && b <= 'z' )
@@ -166,68 +162,49 @@ public class Base64 implements Encoding {
 		else if( b == '=' )
 			b = 0;
 		else
-			throw new DecodingException( "Decoding base64 failed (invalid data)." );
+			throw new DecodingException("Decoding base64 failed, invalid data: " + c);
 		// System.err.println( "decoded " + (char)a + " to " + b );
 		return b;
 	}
 
-	/**
-	 * @param text 
-	 * @return Buffer containing a decoded String.
-	 */
-	public ReadBuffer decode(String text) throws DecodingException {
-		return text != null ? decode( DataHelper.getUTF8(text) ) : null;
+	private static int readIn(InputStream in) throws IOException {
+		int c;
+		do {
+			c = in.read();
+		} while (c == '\r' || c == '\n' || c == ' ' || c == '\t');
+		return c;
 	}
 
 	/**
-	 * @see Base64#decode(String)
+	 * @since 0.9.34
 	 */
-	public ReadBuffer decode(byte[] in) throws DecodingException {
-		return decode( in, 0, in.length );
-	}
+	public void decode(InputStream in, Buffer bout) throws IOException {
+		OutputStream out = bout.getOutputStream();
+		while (true) {
+			int c = readIn(in);
+			if (c < 0)
+				break;
 
-	/**
-	 * @see Base64#decode(String)
-	 */
-	public ReadBuffer decode(byte[] in, int offset, int length) throws DecodingException {
-		byte out[] = new byte[length * 3 / 4 + 1 ];
-		int written = 0;
-		while( length > 0 ) {
-			if( in[offset] == '\r' || in[offset] == '\n' || 
-					in[offset] == ' ' || in[offset] == '\t' ) {
-				offset++;
-				length--;
-				continue;
+			// System.out.println( "decode: " + (char)in[offset] + (char)in[offset+1]+ (char)in[offset+2]+ (char)in[offset+3] );
+			byte b1 = decodeByte(c);
+			c = readIn(in);
+			byte b2 = decodeByte(c);
+			out.write(((b1 << 2) | ((b2 >> 4) & 3)) & 0xff);
+
+			c = readIn(in);
+			if (c < 0)
+				break;
+			byte b3 = 0;
+			if (c != '=') {
+				b3 = decodeByte(c);
+				out.write((((b2 & 15) << 4) | ((b3 >> 2) & 15)) & 0xff);
 			}
-			if( length >= 4 ) {
-				// System.out.println( "decode: " + (char)in[offset] + (char)in[offset+1]+ (char)in[offset+2]+ (char)in[offset+3] );
-				byte b1 = decodeByte( in[offset++] );
-				byte b2 = decodeByte( in[offset++] );
-				out[written++] = (byte) (( b1 << 2 ) | ( ( b2 >> 4 ) & 3 ) );
-				byte b3 = in[offset++];
-				if( b3 != '=' ) {
-					b3 = decodeByte( b3 );
-					out[written++] = (byte)( ( ( b2 & 15 ) << 4 ) | ( ( b3 >> 2 ) & 15 ) );
-				}
-				byte b4 = in[offset++];
-				if( b4 != '=' ) {
-					b4 = decodeByte( b4 );
-					out[written++] = (byte)( ( ( b3 & 3 ) << 6 ) | b4 & 63 );
-				}
-				length -= 4;
-			}
-			else {
-				System.err.println( "" );
-				throw new DecodingException( "Decoding base64 failed (trailing garbage)." );
-			}
+			c = readIn(in);
+			if (c < 0)
+				break;
+			if (c == '=') break; // done
+			byte b4 = decodeByte(c);
+			out.write((((b3 & 3) << 6) | (b4 & 63)) & 0xff);
 		}
-		return new ReadBuffer(out, 0, written);
-	}
-
-	/*
-	 * @see Base64#decode(String)
-	 */
-	public ReadBuffer decode(ReadBuffer in) throws DecodingException {
-		return decode( in.content, in.offset, in.length );
 	}
 }

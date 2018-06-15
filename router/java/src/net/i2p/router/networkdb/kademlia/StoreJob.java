@@ -29,6 +29,7 @@ import net.i2p.router.OutNetMessage;
 import net.i2p.router.ReplyJob;
 import net.i2p.router.RouterContext;
 import net.i2p.router.TunnelInfo;
+import net.i2p.router.tunnel.pool.ConnectChecker;
 import net.i2p.util.Log;
 import net.i2p.util.VersionComparator;
 
@@ -46,6 +47,8 @@ class StoreJob extends JobImpl {
     private final long _timeoutMs;
     private final long _expiration;
     private final PeerSelector _peerSelector;
+    private final ConnectChecker _connectChecker;
+    private final int _connectMask;
 
     private final static int PARALLELIZATION = 4; // how many sent at a time
     private final static int REDUNDANCY = 4; // we want the data sent to 6 peers
@@ -75,6 +78,17 @@ class StoreJob extends JobImpl {
         _timeoutMs = timeoutMs;
         _expiration = context.clock().now() + timeoutMs;
         _peerSelector = facade.getPeerSelector();
+        if (data.getType() == DatabaseEntry.KEY_TYPE_LEASESET) {
+            _connectChecker = null;
+            _connectMask = 0;
+        } else {
+            _connectChecker = new ConnectChecker(context);
+            RouterInfo us = context.router().getRouterInfo();
+            if (us != null)
+                _connectMask = _connectChecker.getOutboundMask(us);
+            else
+                _connectMask = ConnectChecker.ANY_V4;
+        }
     }
 
     public String getName() { return "Kademlia NetDb Store";}
@@ -173,6 +187,14 @@ class StoreJob extends JobImpl {
                         _log.info(getJobId() + ": Error selecting closest hash that wasnt a router! " + peer + " : " + ds);
                     _state.addSkipped(peer);
                     skipped++;
+                } else if (!shouldStoreTo((RouterInfo)ds)) {
+                    if (_log.shouldLog(Log.INFO))
+                        _log.info(getJobId() + ": Skipping old router " + peer);
+                    _state.addSkipped(peer);
+                    skipped++;
+/****
+   above shouldStoreTo() check is newer than these two checks, so we're covered
+
                 } else if (_state.getData().getType() == DatabaseEntry.KEY_TYPE_LEASESET &&
                            !supportsCert((RouterInfo)ds,
                                          ((LeaseSet)_state.getData()).getDestination().getCertificate())) {
@@ -187,6 +209,7 @@ class StoreJob extends JobImpl {
                         _log.info(getJobId() + ": Skipping router that doesn't support big leasesets " + peer);
                     _state.addSkipped(peer);
                     skipped++;
+****/
                 } else {
                     int peerTimeout = _facade.getPeerTimeout(peer);
 
@@ -324,7 +347,11 @@ class StoreJob extends JobImpl {
                 sendStoreThroughClient(msg, peer, expiration);
         } else {
             getContext().statManager().addRateData("netDb.storeRouterInfoSent", 1);
-            sendDirect(msg, peer, expiration);
+            // if we can't connect to peer directly, just send it out an exploratory tunnel
+            if (_connectChecker.canConnect(_connectMask, peer))
+                sendDirect(msg, peer, expiration);
+            else
+                sendStoreThroughGarlic(msg, peer, expiration);
         }
     }
 
@@ -338,9 +365,6 @@ class StoreJob extends JobImpl {
         msg.setReplyToken(token);
         msg.setReplyGateway(getContext().routerHash());
 
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug(getJobId() + ": send(dbStore) w/ token expected " + token);
-        
         _state.addPending(peer.getIdentity().getHash());
         
         SendSuccessJob onReply = new SendSuccessJob(getContext(), peer);
@@ -348,7 +372,7 @@ class StoreJob extends JobImpl {
         StoreMessageSelector selector = new StoreMessageSelector(getContext(), getJobId(), peer, token, expiration);
         
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("sending store directly to " + peer.getIdentity().getHash());
+            _log.debug(getJobId() + ": sending store directly to " + peer.getIdentity().getHash());
         OutNetMessage m = new OutNetMessage(getContext(), msg, expiration, STORE_PRIORITY, peer);
         m.setOnFailedReplyJob(onFail);
         m.setOnFailedSendJob(onFail);
@@ -379,7 +403,7 @@ class StoreJob extends JobImpl {
         msg.setReplyGateway(replyTunnel.getPeer(0));
 
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug(getJobId() + ": send(dbStore) w/ token expected " + token);
+            _log.debug(getJobId() + ": send store thru expl. tunnel to " + peer.getIdentity().getHash() + "  w/ token expected " + token);
         
         _state.addPending(to);
         
@@ -525,6 +549,7 @@ class StoreJob extends JobImpl {
      * @return true if not a key cert
      * @since 0.9.12
      */
+/****
     public static boolean supportsCert(RouterInfo ri, Certificate cert) {
         if (cert.getCertificateType() != Certificate.CERTIFICATE_TYPE_KEY)
             return true;
@@ -542,14 +567,29 @@ class StoreJob extends JobImpl {
     }
 
     private static final String MIN_BIGLEASESET_VERSION = "0.9";
+****/
 
     /**
      * Does he support more than 6 leasesets?
      * @since 0.9.12
      */
-    public static boolean supportsBigLeaseSets(RouterInfo ri) {
+/****
+    private static boolean supportsBigLeaseSets(RouterInfo ri) {
         String v = ri.getVersion();
         return VersionComparator.comp(v, MIN_BIGLEASESET_VERSION) >= 0;
+    }
+****/
+
+    /** */
+    public static final String MIN_STORE_VERSION = "0.9.28";
+
+    /**
+     * Is it too old?
+     * @since 0.9.33
+     */
+    static boolean shouldStoreTo(RouterInfo ri) {
+        String v = ri.getVersion();
+        return VersionComparator.comp(v, MIN_STORE_VERSION) >= 0;
     }
 
     /**
@@ -594,8 +634,8 @@ class StoreJob extends JobImpl {
             getContext().statManager().addRateData("netDb.ackTime", howLong, howLong);
 
             if ( (_sendThrough != null) && (_msgSize > 0) ) {
-                if (_log.shouldLog(Log.INFO))
-                    _log.info("sent a " + _msgSize + " byte netDb message through tunnel " + _sendThrough + " after " + howLong);
+                if (_log.shouldDebug())
+                    _log.debug("sent a " + _msgSize + " byte netDb message through tunnel " + _sendThrough + " after " + howLong);
                 for (int i = 0; i < _sendThrough.getLength(); i++)
                     getContext().profileManager().tunnelDataPushed(_sendThrough.getPeer(i), howLong, _msgSize);
                 _sendThrough.incrementVerifiedBytesTransferred(_msgSize);

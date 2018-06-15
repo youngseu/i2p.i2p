@@ -461,7 +461,7 @@ public class I2PTunnel extends EventDispatcherImpl implements Logging {
               "  client <port> <pubkey>[,<pubkey,...]|file:<pubkeyfile> [<sharedClient>]\n" +
               "  clientoptions [-acx] [key=value ]*\n" +
               "  close [forced|destroy] <jobnumber>|all\n" +
-              "  config [-s] <i2phost> <i2pport>\n" +
+              "  config [-s] <I2CPhost> <I2CPport>\n" +
               "  connectclient <port> [<sharedClient>] [<proxy>]\n" +
               "  genkeys <privkeyfile> [<pubkeyfile>]\n" +
               "  gentextkeys\n" +
@@ -1346,7 +1346,7 @@ public class I2PTunnel extends EventDispatcherImpl implements Logging {
             }
             if (i < args.length)
                 port = args[i];
-            l.log("New setting: " + host + ' ' + port + (ssl ? " SSL" : " non-SSL"));
+            l.log("New I2CP settings: " + host + ' ' + port + (ssl ? " SSL" : " non-SSL"));
             notifyEvent("configResult", "ok");
         } else {
             boolean ssl = Boolean.parseBoolean(_clientOptions.getProperty("i2cp.SSL"));
@@ -1354,7 +1354,7 @@ public class I2PTunnel extends EventDispatcherImpl implements Logging {
                   "  config [-s] [<i2phost>] [<i2pport>]\n" +
                   "  Sets the address and port of the I2P router.\n" +
                   "  Use -s for SSL.\n" +
-                  "Current setting: " + host + ' ' + port + (ssl ? " SSL" : " non-SSL"));
+                  "Current I2CP settings: " + host + ' ' + port + (ssl ? " SSL" : " non-SSL"));
             notifyEvent("configResult", "error");
         }
     }
@@ -1607,8 +1607,9 @@ public class I2PTunnel extends EventDispatcherImpl implements Logging {
      */
     private void runRun(String args[], Logging l) {
         if (args.length == 1) {
+            BufferedReader br = null;
             try {
-                BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(args[0]), "UTF-8"));
+                br = new BufferedReader(new InputStreamReader(new FileInputStream(args[0]), "UTF-8"));
                 String line;
                 while ((line = br.readLine()) != null) {
                     runCommand(line, l);
@@ -1619,6 +1620,8 @@ public class I2PTunnel extends EventDispatcherImpl implements Logging {
                 l.log("IO error running the file");
                 _log.error(getPrefix() + "Error running the file", ioe);
                 notifyEvent("runResult", "error");
+            } finally {
+                if (br != null) try { br.close(); } catch (IOException ioe) {}
             }
         } else {
             l.log("run <commandfile>\n" +

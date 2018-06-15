@@ -36,8 +36,10 @@ import javax.servlet.http.HttpServletResponse;
 import net.i2p.I2PAppContext;
 import net.i2p.data.ByteArray;
 import net.i2p.data.DataHelper;
+import net.i2p.servlet.util.WriterOutputStream;
 import net.i2p.util.ByteCache;
 import net.i2p.util.Log;
+import net.i2p.util.SecureFile;
 import net.i2p.util.SystemVersion;
 
 
@@ -112,7 +114,7 @@ class BasicServlet extends HttpServlet
         String rb=getInitParameter("resourceBase");
         if (rb!=null)
         {
-            File f = new File(rb);
+            File f = new SecureFile(rb);
             setResourceBase(f);
         }
         String wb = getInitParameter("warBase");
@@ -123,10 +125,10 @@ class BasicServlet extends HttpServlet
     /**
      *  Files are served from here
      */
-    protected void setResourceBase(File base) throws UnavailableException {
+    protected synchronized void setResourceBase(File base) throws UnavailableException {
         if (!base.isDirectory()) {
-            _log.log(Log.CRIT, "Configured i2psnark directory " + base + " does not exist");
-            throw new UnavailableException("Resource base does not exist: " + base);
+            _log.error("Configured i2psnark directory " + base + " does not exist");
+            //throw new UnavailableException("Resource base does not exist: " + base);
         }
         _resourceBase = base;
         if (_log.shouldLog(Log.INFO))
@@ -289,7 +291,7 @@ class BasicServlet extends HttpServlet
                             return true;
                         }
                         response.setStatus(304);
-                        response.flushBuffer();
+                        response.getOutputStream().close();
                         return false;
                     }
                 }
@@ -376,19 +378,29 @@ class BasicServlet extends HttpServlet
     protected void writeHeaders(HttpServletResponse response,HttpContent content,long count)
         throws IOException
     {   
-        if (content.getContentType()!=null && response.getContentType()==null)
-            response.setContentType(content.getContentType());
+        String rtype = response.getContentType();
+        String ctype = content.getContentType();
+        if (rtype != null) {
+            if (rtype.equals("application/javascript"))
+                response.setCharacterEncoding("ISO-8859-1");
+        } else if (ctype != null) {
+            response.setContentType(ctype);
+            if (ctype.equals("application/javascript"))
+                response.setCharacterEncoding("ISO-8859-1");
+        }
         response.setHeader("X-Content-Type-Options", "nosniff");
         long lml = content.getLastModified();
         if (lml > 0)
             response.setDateHeader("Last-Modified",lml);
 
-        if (count != -1)
-        {
-            if (count<Integer.MAX_VALUE)
+        if (count != -1) {
+            if (count <= Integer.MAX_VALUE)
                 response.setContentLength((int)count);
             else 
                 response.setHeader("Content-Length", Long.toString(count));
+            response.setHeader("Accept-Ranges", "bytes");
+        } else {
+            response.setHeader("Accept-Ranges", "none");
         }
 
         long ct = content.getCacheTime();

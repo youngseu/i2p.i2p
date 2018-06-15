@@ -89,7 +89,7 @@ public class UrlLauncher implements ClientApp {
         _context = context;
         _mgr = mgr;
         if (args == null || args.length <= 0)
-            args = new String[] {"http://127.0.0.1:7657/index.jsp"};
+            args = new String[] { context.portMapper().getConsoleURL() };
         _args = args;
         _shellCommand = new ShellCommand();
         _state = INITIALIZED;
@@ -136,13 +136,15 @@ public class UrlLauncher implements ClientApp {
         long done = System.currentTimeMillis() + MAX_WAIT_TIME;
         for (int i = 0; i < MAX_TRIES; i++) {
             try {
-                Socket test = new Socket();
-                // this will usually fail right away if it's going to fail since it's local
-                test.connect(sa, WAIT_TIME);
-                // it worked
+                Socket test = null;
                 try {
-                   test.close();
-                } catch (IOException ioe) {}
+                    test = new Socket();
+                    // this will usually fail right away if it's going to fail since it's local
+                    test.connect(sa, WAIT_TIME);
+                    // it worked
+                } finally {
+                    if (test != null) try { test.close(); } catch (IOException ioe) {}
+                }
                 // Jetty 6 seems to start the Connector before the
                 // webapp is completely ready
                 try {
@@ -353,7 +355,7 @@ public class UrlLauncher implements ClientApp {
             if (args.length > 0)
                 launcher.openUrl(args[0]);
             else
-                launcher.openUrl("http://127.0.0.1:7657/index.jsp");
+                launcher.openUrl(I2PAppContext.getGlobalContext().portMapper().getConsoleURL());
          } catch (IOException e) {}
     }
 }

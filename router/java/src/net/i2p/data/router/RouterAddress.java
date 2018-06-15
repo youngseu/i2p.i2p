@@ -17,8 +17,6 @@ import java.util.Date;
 import java.util.Map;
 import java.util.Properties;
 
-import org.apache.http.conn.util.InetAddressUtils;
-
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
 import net.i2p.data.DataStructureImpl;
@@ -146,7 +144,10 @@ public class RouterAddress extends DataStructureImpl {
      */
     @Deprecated
     public void setExpiration(Date expiration) {
-        _expiration = expiration.getDate();
+        if (expiration != null)
+            _expiration = expiration.getDate();
+        else
+            _expiration = 0;
     }
 
     /**

@@ -54,6 +54,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Locale;
+import java.net.Socket;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
@@ -70,14 +71,18 @@ import net.i2p.I2PAppContext;
 import net.i2p.crypto.CertUtil;
 import net.i2p.crypto.KeyStoreUtil;
 import net.i2p.data.DataHelper;
+import net.i2p.socks.SOCKS4Client;
+import net.i2p.socks.SOCKS5Client;
 
 /**
- * HTTPS only, non-proxied only, no retries, no min and max size options, no timeout option
+ * HTTPS only, no retries, no min and max size options, no timeout option
  * Fails on 301 or 302 (doesn't follow redirect)
  * Fails on bad certs (must have a valid cert chain)
  * Self-signed certs or CAs not in the JVM key store must be loaded to be trusted.
  *
  * Since 0.8.2, loads additional trusted CA certs from $I2P/certificates/ssl/ and ~/.i2p/certificates/ssl/
+ *
+ * Since 0.9.33, HTTP proxies (CONNECT) supported. Proxy auth not supported.
  *
  * @author zzz
  * @since 0.7.10
@@ -93,8 +98,18 @@ public class SSLEepGet extends EepGet {
     private final SSLContext _sslContext;
     /** may be null if init failed */
     private SavingTrustManager _stm;
+    private final ProxyType _proxyType;
 
     private static final String CERT_DIR = "certificates/ssl";
+    private static final String PROP_USE_DNS_OVER_HTTPS = "eepget.useDNSOverHTTPS";
+    private static final boolean DEFAULT_USE_DNS_OVER_HTTPS = false;
+
+    /**
+     *  Not all may be supported.
+     *  @since 0.9.33
+     */
+    public enum ProxyType { NONE, HTTP, HTTPS, INTERNAL, SOCKS4, SOCKS5, TRANSPARENT }
+
 
     /**
      *  A new SSLEepGet with a new SSLState
@@ -132,6 +147,90 @@ public class SSLEepGet extends EepGet {
     }
 
     /**
+     *  Use a proxy.
+     *
+     *  @param proxyHost Must be valid hostname or literal IPv4/v6.
+     *                   If type is INTERNAL, set to "localhost".
+     *  @param proxyPort Must be valid, -1 disallowed, no default.
+     *                   If type is INTERNAL, set to 4444.
+     *  @since 0.9.33
+     */
+    public SSLEepGet(I2PAppContext ctx, ProxyType type, String proxyHost, int proxyPort,
+                     OutputStream outputStream, String url) {
+        this(ctx, type, proxyHost, proxyPort, outputStream, url, null);
+    }
+
+    /**
+     *  Use a proxy.
+     *
+     *  @param proxyHost Must be valid hostname or literal IPv4/v6.
+     *                   If type is INTERNAL, set to "localhost".
+     *  @param proxyPort Must be valid, -1 disallowed, no default.
+     *                   If type is INTERNAL, set to 4444.
+     *  @param state an SSLState retrieved from a previous SSLEepGet with getSSLState(), or null.
+     *               This makes repeated fetches from the same host MUCH faster,
+     *               and prevents repeated key store loads even for different hosts.
+     *  @since 0.9.33
+     */
+    public SSLEepGet(I2PAppContext ctx, ProxyType type, String proxyHost, int proxyPort,
+                     OutputStream outputStream, String url, SSLState state) {
+        // we're using this constructor:
+        // public EepGet(I2PAppContext ctx, boolean shouldProxy, String proxyHost, int proxyPort, int numRetries, long minSize, long maxSize, String outputFile, OutputStream outputStream, String url, boolean allowCaching, String etag, String postData) {
+        super(ctx, type != ProxyType.NONE, proxyHost, proxyPort, 0, -1, -1, null, outputStream, url, true, null, null);
+        if (type != ProxyType.NONE && !_shouldProxy)
+            throw new IllegalArgumentException("Bad proxy params");
+        _proxyType = type;
+        if (state != null && state.context != null)
+            _sslContext = state.context;
+        else
+            _sslContext = initSSLContext();
+        if (_sslContext == null)
+            _log.error("Failed to initialize custom SSL context, using default context");
+    }
+
+    /**
+     *  Use a proxy.
+     *
+     *  @param proxyHost Must be valid hostname or literal IPv4/v6.
+     *                   If type is INTERNAL, set to "localhost".
+     *  @param proxyPort Must be valid, -1 disallowed, no default.
+     *                   If type is INTERNAL, set to 4444.
+     *  @since 0.9.33
+     */
+    public SSLEepGet(I2PAppContext ctx, ProxyType type, String proxyHost, int proxyPort,
+                     String outputFile, String url) {
+        this(ctx, type, proxyHost, proxyPort, outputFile, url, null);
+    }
+
+    /**
+     *  Use a proxy.
+     *
+     *  @param proxyHost Must be valid hostname or literal IPv4/v6.
+     *                   If type is INTERNAL, set to "localhost".
+     *  @param proxyPort Must be valid, -1 disallowed, no default.
+     *                   If type is INTERNAL, set to 4444.
+     *  @param state an SSLState retrieved from a previous SSLEepGet with getSSLState(), or null.
+     *               This makes repeated fetches from the same host MUCH faster,
+     *               and prevents repeated key store loads even for different hosts.
+     *  @since 0.9.33
+     */
+    public SSLEepGet(I2PAppContext ctx, ProxyType type, String proxyHost, int proxyPort,
+                     String outputFile, String url, SSLState state) {
+        // we're using this constructor:
+        // public EepGet(I2PAppContext ctx, boolean shouldProxy, String proxyHost, int proxyPort, int numRetries, long minSize, long maxSize, String outputFile, OutputStream outputStream, String url, boolean allowCaching, String etag, String postData) {
+        super(ctx, type != ProxyType.NONE, proxyHost, proxyPort, 0, -1, -1, outputFile, null, url, true, null, null);
+        if (type != ProxyType.NONE && !_shouldProxy)
+            throw new IllegalArgumentException("Bad proxy params");
+        _proxyType = type;
+        if (state != null && state.context != null)
+            _sslContext = state.context;
+        else
+            _sslContext = initSSLContext();
+        if (_sslContext == null)
+            _log.error("Failed to initialize custom SSL context, using default context");
+    }
+
+    /**
      *  outputFile, outputStream: One null, one non-null
      *
      *  @param state an SSLState retrieved from a previous SSLEepGet with getSSLState(), or null.
@@ -143,6 +242,7 @@ public class SSLEepGet extends EepGet {
         // we're using this constructor:
         // public EepGet(I2PAppContext ctx, boolean shouldProxy, String proxyHost, int proxyPort, int numRetries, long minSize, long maxSize, String outputFile, OutputStream outputStream, String url, boolean allowCaching, String etag, String postData) {
         super(ctx, false, null, -1, 0, -1, -1, outputFile, outputStream, url, true, null, null);
+        _proxyType = ProxyType.NONE;
         if (state != null && state.context != null)
             _sslContext = state.context;
         else
@@ -159,12 +259,46 @@ public class SSLEepGet extends EepGet {
     public static void main(String args[]) {
         int saveCerts = 0;
         boolean noVerify = false;
+        String proxyHost = "127.0.0.1";
+        int proxyPort = 0;
+        ProxyType ptype = ProxyType.NONE;
         boolean error = false;
-        Getopt g = new Getopt("ssleepget", args, "sz");
+        Getopt g = new Getopt("ssleepget", args, "p:y:sz");
         try {
             int c;
             while ((c = g.getopt()) != -1) {
               switch (c) {
+                case 'p':
+                    String s = g.getOptarg();
+                    int colon = s.indexOf(':');
+                    if (colon >= 0) {
+                        // Todo IPv6 [a:b:c]:4444
+                        proxyHost = s.substring(0, colon);
+                        String port = s.substring(colon + 1);
+                        proxyPort = Integer.parseInt(port);
+                    } else {
+                        proxyHost = s;
+                        // proxyPort remains default
+                    }
+                    break;
+
+                case 'y':
+                    String y = g.getOptarg().toUpperCase(Locale.US);
+                    if (y.equals("HTTP") || y.equals("HTTPS")) {
+                        ptype = ProxyType.HTTP;
+                    } else if (y.equals("SOCKS4")) {
+                        ptype = ProxyType.SOCKS4;
+                    } else if (y.equals("SOCKS5")) {
+                        ptype = ProxyType.SOCKS5;
+                    } else if (y.equals("I2P")) {
+                        ptype = ProxyType.INTERNAL;
+                        proxyHost = "localhost";
+                        proxyPort = 4444;
+                    } else {
+                        error = true;
+                    }
+                    break;
+
                 case 's':
                     saveCerts++;
                     break;
@@ -192,16 +326,19 @@ public class SSLEepGet extends EepGet {
         String url = args[g.getOptind()];
 
         String saveAs = suggestName(url);
-        OutputStream out;
-        try {
-            // resume from a previous eepget won't work right doing it this way
-            out = new FileOutputStream(saveAs);
-        } catch (IOException ioe) {
-            System.err.println("Failed to create output file " + saveAs);
-            return;
-        }
 
-        SSLEepGet get = new SSLEepGet(I2PAppContext.getGlobalContext(), out, url);
+        SSLEepGet get;
+        if (proxyHost != null) {
+            if (proxyPort == 0) {
+                if (ptype == ProxyType.HTTP)
+                    proxyPort = 8080;
+                else
+                    proxyPort = 1080;
+            }
+            get = new SSLEepGet(I2PAppContext.getGlobalContext(), ptype, proxyHost, proxyPort, saveAs, url);
+        } else {
+            get = new SSLEepGet(I2PAppContext.getGlobalContext(), saveAs, url);
+        }
         if (saveCerts > 0)
             get._saveCerts = saveCerts;
         if (noVerify)
@@ -213,7 +350,9 @@ public class SSLEepGet extends EepGet {
     }
     
     private static void usage() {
-        System.err.println("Usage: SSLEepGet [-sz] https://url\n" +
+        System.err.println("Usage: SSLEepGet [-psyz] https://url\n" +
+                           "  -p proxyHost[:proxyPort]    // default port 8080 for HTTPS and 1080 for SOCKS; default localhost:4444 for I2P\n" +
+                           "  -y HTTPS|SOCKS4|SOCKS5|I2P  // proxy type, default HTTPS if proxyHost is set\n" +
                            "  -s save unknown certs\n" +
                            "  -s -s save all certs\n" +
                            "  -z bypass hostname verification");
@@ -410,13 +549,8 @@ public class SSLEepGet extends EepGet {
 
     @Override
     protected void doFetch(SocketTimeout timeout) throws IOException {
-        _headersRead = false;
         _aborted = false;
-        try {
-            readHeaders();
-        } finally {
-            _headersRead = true;
-        }
+        readHeaders();
         if (_aborted)
             throw new IOException("Timed out reading the HTTP headers");
         
@@ -444,7 +578,7 @@ public class SSLEepGet extends EepGet {
         Thread pusher = null;
         _decompressException = null;
         if (_isGzippedResponse) {
-            PipedInputStream pi = BigPipedInputStream.getInstance();
+            PipedInputStream pi = new PipedInputStream(64*1024);
             PipedOutputStream po = new PipedOutputStream(pi);
             pusher = new I2PAppThread(new Gunzipper(pi, _out), "EepGet Decompressor");
             _out = po;
@@ -573,22 +707,70 @@ public class SSLEepGet extends EepGet {
                 port = url.getPort();
                 if (port == -1)
                     port = 443;
-                // Warning, createSocket() followed by connect(InetSocketAddress)
-                // disables SNI, at least on Java 7.
-                // So we must do createSocket(host, port) and then setSoTimeout;
-                // we can't crate a disconnected socket and then call setSoTimeout, sadly.
-                if (_sslContext != null)
-                    _proxy = _sslContext.getSocketFactory().createSocket(host, port);
-                else
-                    _proxy = SSLSocketFactory.getDefault().createSocket(host, port);
-                if (_fetchHeaderTimeout > 0) {
-                    _proxy.setSoTimeout(_fetchHeaderTimeout);
+
+                String originalHost = host;
+                boolean useDNSOverHTTPS = _context.getProperty(PROP_USE_DNS_OVER_HTTPS, DEFAULT_USE_DNS_OVER_HTTPS);
+                // This duplicates checks in DNSOverHTTPS.lookup() but do it here too so
+                // we don't even construct it if we don't need it
+                if (useDNSOverHTTPS && !host.equals("dns.google.com") && !Addresses.isIPAddress(host)) {
+                    DNSOverHTTPS doh = new DNSOverHTTPS(_context, getSSLState());
+                    String ip = doh.lookup(host);
+                    if (ip != null)
+                        host = ip;
                 }
+
+                if (_shouldProxy) {
+                    if (_log.shouldLog(Log.DEBUG))
+                        _log.debug("Connecting to " + _proxyType + " proxy");
+                    switch (_proxyType) {
+                      case HTTP:
+                        httpProxyConnect(host, port);
+                        break;
+
+                      case INTERNAL:
+                        internalHttpProxyConnect(host, port);
+                        break;
+
+                      case SOCKS4:
+                        socksProxyConnect(false, host, port);
+                        break;
+
+                      case SOCKS5:
+                        socksProxyConnect(true, host, port);
+                        break;
+
+                      case HTTPS:
+                      case TRANSPARENT:
+                      default:
+                        throw new IOException("Unsupported proxy type " + _proxyType);
+                    }
+
+                    // wrap the socket in an SSLSocket
+                    if (_sslContext != null)
+                        _proxy = _sslContext.getSocketFactory().createSocket(_proxy, host, port, true);
+                    else
+                        _proxy = ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(_proxy, host, port, true);
+                    if (_log.shouldLog(Log.DEBUG))
+                        _log.debug(_proxyType + " proxy headers read completely");
+                } else {
+                    // Warning, createSocket() followed by connect(InetSocketAddress)
+                    // disables SNI, at least on Java 7.
+                    // So we must do createSocket(host, port) and then setSoTimeout;
+                    // we can't create a disconnected socket and then call setSoTimeout, sadly.
+                    if (_sslContext != null)
+                        _proxy = _sslContext.getSocketFactory().createSocket(host, port);
+                    else
+                        _proxy = SSLSocketFactory.getDefault().createSocket(host, port);
+                    if (_fetchHeaderTimeout > 0) {
+                        _proxy.setSoTimeout(_fetchHeaderTimeout);
+                    }
+                }
+
                 SSLSocket socket = (SSLSocket) _proxy;
                 I2PSSLSocketFactory.setProtocolsAndCiphers(socket);
                 if (!_bypassVerification) {
                     try {
-                        I2PSSLSocketFactory.verifyHostname(_context, socket, host);
+                        I2PSSLSocketFactory.verifyHostname(_context, socket, originalHost);
                     } catch (SSLException ssle) {
                         if (_saveCerts > 0 && _stm != null)
                             saveCerts(host, _stm);
@@ -631,5 +813,122 @@ public class SSLEepGet extends EepGet {
         
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("Request flushed");
+    }
+
+    /**
+     *  Connect to a HTTP proxy.
+     *  Proxy address must be in _proxyHost and _proxyPort.
+     *  Side effects: Sets _proxy, _proxyIn, _proxyOut,
+     *  and other globals via readHeaders()
+     *
+     *  @param host what the proxy should connect to
+     *  @param port what the proxy should connect to
+     *  @since 0.9.33
+     */
+    private void httpProxyConnect(String host, int port) throws IOException {
+        // connect to the proxy
+        // _proxyPort validated in superconstrutor, no need to set default here
+        if (_fetchHeaderTimeout > 0) {
+            _proxy = new Socket();
+            _proxy.setSoTimeout(_fetchHeaderTimeout);
+            _proxy.connect(new InetSocketAddress(_proxyHost, _proxyPort), _fetchHeaderTimeout);
+        } else {
+            _proxy = new Socket(_proxyHost, _proxyPort);
+        }
+        httpProxyConnect(_proxy, host, port);
+    }
+
+    /**
+     *  Connect to a HTTP proxy.
+     *  Proxy address must be in _proxyHost and _proxyPort.
+     *  Side effects: Sets _proxy, _proxyIn, _proxyOut,
+     *  and other globals via readHeaders()
+     *
+     *  @param port what the proxy should connect to, probably 4444
+     *  @since 0.9.33
+     */
+    private void internalHttpProxyConnect(String host, int port) throws IOException {
+        // connect to the proxy
+        _proxy = InternalSocket.getSocket(_proxyHost, _proxyPort);
+        httpProxyConnect(_proxy, host, port);
+    }
+
+    /**
+     *  Connect to a HTTP proxy.
+     *  Proxy address must be in _proxyHost and _proxyPort.
+     *  Side effects: Sets _proxyIn, _proxyOut,
+     *  and other globals via readHeaders()
+     *
+     *  @param host what the proxy should connect to
+     *  @param port what the proxy should connect to
+     *  @since 0.9.33
+     */
+    private void httpProxyConnect(Socket proxy, String host, int port) throws IOException {
+        _proxyIn = _proxy.getInputStream();
+        _proxyOut = _proxy.getOutputStream();
+        StringBuilder buf = new StringBuilder(64);
+        buf.append("CONNECT ").append(host).append(':').append(port).append(" HTTP/1.1\r\n");
+        // TODO if we need extra headers to the proxy, add a new method and list.
+        // Standard extra headers go the server, not the proxy
+        //if (_extraPHeaders != null) {
+        //    for (String hdr : _extraPHeaders) {
+        //        buf.append(hdr).append("\r\n");
+        //}
+        if (_authState != null && _authState.authMode != AUTH_MODE.NONE) {
+            // TODO untested, is this right?
+            buf.append("Proxy-Authorization: ");
+            buf.append(_authState.getAuthHeader("CONNECT", host));
+            buf.append("\r\n");
+        }
+        buf.append("\r\n");
+        _proxyOut.write(DataHelper.getUTF8(buf.toString()));
+        _proxyOut.flush();
+
+        // read the proxy response
+        _aborted = false;
+        readHeaders();
+        if (_aborted)
+            throw new IOException("Timed out reading the proxy headers");
+        if (_responseCode == 407) {
+            // TODO
+            throw new IOException("Authorization unsupported on HTTP Proxy");
+        } else if (_responseCode != 200) {
+            // readHeaders() will throw on most errors, but here we ensure it is 200
+            throw new IOException("Invalid proxy response: " + _responseCode + ' ' + _responseText);
+        }
+        if (_redirectLocation != null)
+            throw new IOException("Proxy redirect not allowed");
+    }
+
+    /**
+     *  Connect to a SOCKS proxy.
+     *  Proxy address must be in _proxyHost and _proxyPort.
+     *  Side effects: Sets _proxy, _proxyIn, _proxyOut,
+     *  and other globals via readHeaders()
+     *
+     *  @param host what the proxy should connect to
+     *  @param port what the proxy should connect to
+     *  @since 0.9.33
+     */
+    private void socksProxyConnect(boolean isSocks5, String host, int port) throws IOException {
+        if (_fetchHeaderTimeout > 0) {
+            _proxy = new Socket();
+            _proxy.setSoTimeout(_fetchHeaderTimeout);
+            _proxy.connect(new InetSocketAddress(_proxyHost, _proxyPort), _fetchHeaderTimeout);
+        } else {
+            _proxy = new Socket(_proxyHost, _proxyPort);
+        }
+        if (_authState != null) {
+            if (!isSocks5)
+                throw new IOException("Authorization unsupported on SOCKS 4");
+            SOCKS5Client.connect(_proxy, host, port, _authState.getUsername(), _authState.getPassword());
+        } else {
+            if (isSocks5)
+                SOCKS5Client.connect(_proxy, host, port);
+            else
+                SOCKS4Client.connect(_proxy, host, port);
+        }
+        _proxyIn = _proxy.getInputStream();
+        _proxyOut = _proxy.getOutputStream();
     }
 }

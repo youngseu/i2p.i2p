@@ -10,12 +10,12 @@ import javax.servlet.http.HttpServletResponse;
 
 import net.i2p.I2PAppContext;
 import net.i2p.data.DataHelper;
+import net.i2p.util.Addresses;
 import net.i2p.util.Log;
-
-import org.apache.http.conn.util.InetAddressUtils;
+import net.i2p.util.PortMapper;
 
 import org.eclipse.jetty.server.Request;
-import org.eclipse.jetty.server.handler.HandlerWrapper;
+import org.eclipse.jetty.servlets.gzip.GzipHandler;
 
 /**
  * Block certain Host headers to prevent DNS rebinding attacks.
@@ -26,10 +26,13 @@ import org.eclipse.jetty.server.handler.HandlerWrapper;
  *
  * @since 0.9.32
  */
-public class HostCheckHandler extends HandlerWrapper
+public class HostCheckHandler extends GzipHandler
 {
     private final I2PAppContext _context;
+    private final PortMapper _portMapper;
     private final Set<String> _listenHosts;
+    private static final String PROP_REDIRECT = "routerconsole.redirectToHTTPS";
+    private static final String PROP_GZIP = "routerconsole.enableCompression";
 
     /**
      *  MUST call setListenHosts() afterwards.
@@ -37,7 +40,24 @@ public class HostCheckHandler extends HandlerWrapper
     public HostCheckHandler(I2PAppContext ctx) {
         super();
         _context = ctx;
+        _portMapper = ctx.portMapper();
         _listenHosts = new HashSet<String>(8);
+        setMinGzipSize(64*1024);
+        if (_context.getBooleanPropertyDefaultTrue(PROP_GZIP)) {
+            addIncludedMimeTypes(
+                                 // our js is very small
+                                 //"application/javascript", "application/x-javascript",
+                                 "application/xhtml+xml", "application/xml",
+                                 // ditto svg
+                                 //"image/svg+xml",
+                                 "text/css", "text/html", "text/plain"
+                                );
+        } else {
+            // poorly documented, but we must put something in,
+            // if empty all are matched,
+            // see IncludeExcludeSet
+            addIncludedMimeTypes("xyzzy");
+        }
     }
     
     /**
@@ -53,7 +73,9 @@ public class HostCheckHandler extends HandlerWrapper
     }
 
     /**
-     *  Block by Host header, pass everything else to the delegate.
+     *  Block by Host header,
+     *  redirect HTTP to HTTPS,
+     *  pass everything else to the delegate.
      */
     public void handle(String pathInContext,
                        Request baseRequest,
@@ -67,12 +89,30 @@ public class HostCheckHandler extends HandlerWrapper
             Log log = _context.logManager().getLog(HostCheckHandler.class);
             host = DataHelper.stripHTML(getHost(host));
             String s = "Console request denied.\n" +
-                       "    To allow access using the hostname \"" + host + "\", add the line \"" +
-                       RouterConsoleRunner.PROP_ALLOWED_HOSTS + '=' + host +
-                       "\" to advanced configuration and restart.";
+                       "    To allow access using the hostname \"" + host + "\",\n" +
+                       "    add the line \"" + RouterConsoleRunner.PROP_ALLOWED_HOSTS + '=' + host + "\"\n" +
+                       "    to advanced configuration and restart.";
             log.logAlways(Log.WARN, s);
             httpResponse.sendError(403, s);
+            baseRequest.setHandled(true);
             return;
+        }
+
+        // redirect HTTP to HTTPS if available, AND:
+        // either 1) PROP_REDIRECT is set to true;
+        // or 2) PROP_REDIRECT is unset and the Upgrade-Insecure-Requests request header is set
+        // https://w3c.github.io/webappsec-upgrade-insecure-requests/
+        if (!httpRequest.isSecure()) {
+            int httpsPort = _portMapper.getPort(PortMapper.SVC_HTTPS_CONSOLE);
+            if (httpsPort > 0 && httpRequest.getLocalPort() != httpsPort) {
+                String redir = _context.getProperty(PROP_REDIRECT);
+                if (Boolean.valueOf(redir) ||
+                    (redir == null && "1".equals(httpRequest.getHeader("Upgrade-Insecure-Requests")))) {
+                    sendRedirect(httpsPort, httpRequest, httpResponse);
+                    baseRequest.setHandled(true);
+                    return;
+                }
+            }
         }
 
         super.handle(pathInContext, baseRequest, httpRequest, httpResponse);
@@ -91,7 +131,11 @@ public class HostCheckHandler extends HandlerWrapper
             return true;
         // common cases
         if (host.equals("127.0.0.1:7657") ||
-            host.equals("localhost:7657"))
+            host.equals("localhost:7657") ||
+            host.equals("[::1]:7657") ||
+            host.equals("127.0.0.1:7667") ||
+            host.equals("localhost:7667") ||
+            host.equals("[::1]:7667"))
             return true;
         // all allowed?
         if (_listenHosts.isEmpty())
@@ -100,7 +144,7 @@ public class HostCheckHandler extends HandlerWrapper
         if (_listenHosts.contains(host))
             return true;
         // allow all IP addresses
-        if (InetAddressUtils.isIPv4Address(host) || InetAddressUtils.isIPv6Address(host))
+        if (Addresses.isIPAddress(host))
             return true;
         //System.out.println(host + " not found in " + s);
         return false;
@@ -123,5 +167,33 @@ public class HostCheckHandler extends HandlerWrapper
                 host = host.substring(0, colon);
         }
         return host;
+    }
+
+    /**
+     *  Redirect to HTTPS
+     *
+     *  @since 0.9.34
+     */
+    private static void sendRedirect(int httpsPort, HttpServletRequest httpRequest,
+                                     HttpServletResponse httpResponse) throws IOException {
+        StringBuilder buf = new StringBuilder(64);
+        buf.append("https://");
+        String name = httpRequest.getServerName();
+        boolean ipv6 = name.indexOf(':') >= 0 && !name.startsWith("[");
+        if (ipv6)
+            buf.append('[');
+        buf.append(name);
+        if (ipv6)
+            buf.append(']');
+        buf.append(':').append(httpsPort)
+           .append(httpRequest.getRequestURI());
+        String q = httpRequest.getQueryString();
+        if (q != null)
+            buf.append('?').append(q);
+        httpResponse.setHeader("Location", buf.toString());
+        // https://w3c.github.io/webappsec-upgrade-insecure-requests/
+        httpResponse.setHeader("Vary", "Upgrade-Insecure-Requests");
+        httpResponse.setStatus(307);
+        httpResponse.getOutputStream().close();
     }
 }
