@@ -2,6 +2,7 @@ package net.i2p.router.tunnel;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import net.i2p.data.Base64;
 import net.i2p.data.ByteArray;
@@ -11,6 +12,7 @@ import net.i2p.data.TunnelId;
 import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.data.i2np.I2NPMessageException;
 import net.i2p.data.i2np.I2NPMessageHandler;
+import net.i2p.data.i2np.UnknownI2NPMessage;
 import net.i2p.router.RouterContext;
 import net.i2p.util.ByteCache;
 import net.i2p.util.HexDump;
@@ -95,18 +97,33 @@ class FragmentHandler {
     protected final Log _log;
     private final Map<Long, FragmentedMessage> _fragmentedMessages;
     private final DefragmentedReceiver _receiver;
-    private int _completed;
-    private int _failed;
+    private final AtomicInteger _completed = new AtomicInteger();
+    private final AtomicInteger _failed = new AtomicInteger();
+    private final boolean _isInbound;
     
-    /** don't wait more than 60s to defragment the partial message */
-    static long MAX_DEFRAGMENT_TIME = 60*1000;
+    /** don't wait more than this long to completely receive a fragmented message */
+    static long MAX_DEFRAGMENT_TIME = 45*1000;
     private static final ByteCache _cache = ByteCache.getInstance(512, TrivialPreprocessor.PREPROCESSED_SIZE);
 
+    /**
+     * For unit tests only, others use 3-arg constructor
+     *
+     * @deprecated
+     */
+    @Deprecated
     public FragmentHandler(RouterContext context, DefragmentedReceiver receiver) {
+        this(context, receiver, true);
+    }
+
+    /**
+     * @param isInbound true for IBEP, false for OBEP
+     */
+    public FragmentHandler(RouterContext context, DefragmentedReceiver receiver, boolean isInbound) {
         _context = context;
         _log = context.logManager().getLog(FragmentHandler.class);
         _fragmentedMessages = new HashMap<Long, FragmentedMessage>(16);
         _receiver = receiver;
+        _isInbound = isInbound;
         // all createRateStat in TunnelDispatcher
     }
     
@@ -116,27 +133,27 @@ class FragmentHandler {
      * sending the resulting I2NPMessages where necessary.  The received 
      * fragments are all verified.
      *
+     * @return ok (false if corrupt)
      */
-    public void receiveTunnelMessage(byte preprocessed[], int offset, int length) {
+    public boolean receiveTunnelMessage(byte preprocessed[], int offset, int length) {
         boolean ok = verifyPreprocessed(preprocessed, offset, length);
         if (!ok) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Unable to verify preprocessed data (pre.length=" 
                           + preprocessed.length + " off=" +offset + " len=" + length);
             _cache.release(new ByteArray(preprocessed));
-            _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
-            return;
+            _context.statManager().addRateData("tunnel.corruptMessage", 1);
+            return false;
         }
         offset += HopProcessor.IV_LENGTH; // skip the IV
         offset += 4; // skip the hash segment
         int padding = 0;
         while (preprocessed[offset] != (byte)0x00) {
             offset++; // skip the padding
-            // AIOOBE http://forum.i2p/viewtopic.php?t=3187
             if (offset >= TrivialPreprocessor.PREPROCESSED_SIZE) {
                 _cache.release(new ByteArray(preprocessed));
-                _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
-                return;
+                // padding-only message, this is allowed by the spec
+                return false;
             }
             padding++;
         }
@@ -149,21 +166,27 @@ class FragmentHandler {
             while (offset < length) {
                 int off = receiveFragment(preprocessed, offset, length);
                 if (off < 0) {
-                    _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
-                    return;
+                    _context.statManager().addRateData("tunnel.corruptMessage", 1);
+                    if (_log.shouldWarn())
+                        _log.warn("Corrupt fragment received: off = " + off);
+                    return false;
                 }
                 offset = off;
             }
         } catch (ArrayIndexOutOfBoundsException aioobe) {
-            _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
+            _context.statManager().addRateData("tunnel.corruptMessage", 1);
+            if (_log.shouldWarn())
+                _log.warn("Corrupt fragment received: offset = " + offset, aioobe);
+            return false;
         } catch (NullPointerException npe) {
-            if (_log.shouldLog(Log.ERROR))
-                _log.error("Corrupt fragment received: offset = " + offset, npe);
-            _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
+            if (_log.shouldWarn())
+                _log.warn("Corrupt fragment received: offset = " + offset, npe);
+            _context.statManager().addRateData("tunnel.corruptMessage", 1);
+            return false;
         } catch (RuntimeException e) {
-            if (_log.shouldLog(Log.ERROR))
-                _log.error("Corrupt fragment received: offset = " + offset, e);
-            _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
+            if (_log.shouldWarn())
+                _log.warn("Corrupt fragment received: offset = " + offset, e);
+            _context.statManager().addRateData("tunnel.corruptMessage", 1);
             // java.lang.IllegalStateException: don't get the completed size when we're not complete - null fragment i=0 of 1
             // at net.i2p.router.tunnel.FragmentedMessage.getCompleteSize(FragmentedMessage.java:194)
             // at net.i2p.router.tunnel.FragmentedMessage.toByteArray(FragmentedMessage.java:223)
@@ -176,6 +199,7 @@ class FragmentHandler {
             // let's limit the damage here and skip the:
             // .transport.udp.MessageReceiver: b0rked receiving a message.. wazza huzza hmm?
             //throw e;
+            return false;
         } finally {
             // each of the FragmentedMessages populated make a copy out of the
             // payload, which they release separately, so we can release 
@@ -185,10 +209,11 @@ class FragmentHandler {
             // in order to put it in the pool, but it shouldn't cause any harm.
             _cache.release(new ByteArray(preprocessed));
         }
+        return true;
     }
     
-    public int getCompleteCount() { return _completed; }
-    public int getFailedCount() { return _failed; }
+    public int getCompleteCount() { return _completed.get(); }
+    public int getFailedCount() { return _failed.get(); }
     
     private static final ByteCache _validateCache = ByteCache.getInstance(512, TrivialPreprocessor.PREPROCESSED_SIZE);
     
@@ -229,8 +254,8 @@ class FragmentHandler {
         int validLength = length - offset - paddingEnd + HopProcessor.IV_LENGTH;
         System.arraycopy(preprocessed, offset + paddingEnd, preV, 0, validLength - HopProcessor.IV_LENGTH);
         System.arraycopy(preprocessed, 0, preV, validLength - HopProcessor.IV_LENGTH, HopProcessor.IV_LENGTH);
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("endpoint IV: " + Base64.encode(preV, validLength - HopProcessor.IV_LENGTH, HopProcessor.IV_LENGTH));
+        //if (_log.shouldLog(Log.DEBUG))
+        //    _log.debug("endpoint IV: " + Base64.encode(preV, validLength - HopProcessor.IV_LENGTH, HopProcessor.IV_LENGTH));
         
         byte[] v = SimpleByteCache.acquire(Hash.HASH_LENGTH);
         _context.sha().calculateHash(preV, 0, validLength, v, 0);
@@ -283,12 +308,13 @@ class FragmentHandler {
     static final short TYPE_UNDEF = 3;
     
     /** 
-     * @return the offset for the next byte after the received fragment 
+     * @return the offset for the next byte after the received fragment or -1 on error
+     * @throws RuntimeException
      */
     private int receiveFragment(byte preprocessed[], int offset, int length) {
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("CONTROL: 0x" + Integer.toHexString(preprocessed[offset] & 0xff) +
-                       " at offset " + offset);
+        //if (_log.shouldLog(Log.DEBUG))
+        //    _log.debug("CONTROL: 0x" + Integer.toHexString(preprocessed[offset] & 0xff) +
+        //               " at offset " + offset);
         if (0 == (preprocessed[offset] & MASK_IS_SUBSEQUENT))
             return receiveInitialFragment(preprocessed, offset, length);
         else
@@ -298,7 +324,8 @@ class FragmentHandler {
     /**
      * Handle the initial fragment in a message (or a full message, if it fits)
      *
-     * @return offset after reading the full fragment
+     * @return offset after reading the full fragment or -1 on error
+     * @throws RuntimeException
      */
     private int receiveInitialFragment(byte preprocessed[], int offset, int length) {
         if (_log.shouldLog(Log.DEBUG))
@@ -316,7 +343,11 @@ class FragmentHandler {
             if (offset + 4 >= preprocessed.length)
                 return -1;
             long id = DataHelper.fromLong(preprocessed, offset, 4);
-            tunnelId = new TunnelId(id);
+            // i2pd 2.19 bug? 0 will throw IAE.
+            // message checked and discarded below.
+            // don't throw so we can process the other fragments if any, if they're from a different message
+            if (id != 0)
+                tunnelId = new TunnelId(id);
             offset += 4;
         }
         if ( (type == TYPE_ROUTER) || (type == TYPE_TUNNEL) ) {
@@ -358,6 +389,18 @@ class FragmentHandler {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Dropping msg at tunnel endpoint with unsupported delivery instruction type " +
                           type + " rcvr: " + _receiver);
+            _context.statManager().addRateData("tunnel.corruptMessage", 1);
+        } else if (type == TYPE_TUNNEL && tunnelId == null) {
+            // do this after the above since we have to return offset
+            // i2pd 2.19 bug? see above
+            if (_log.shouldLog(Log.WARN))
+                _log.warn("Dropping msg at tunnel endpoint with delivery instruction to tunnel 0" +
+                          " gw: " + router +
+                          " fragmented? " + fragmented +
+                          " id: " + messageId +
+                          " size: " + size +
+                          " type: " + (preprocessed[offset] & 0xff));
+            _context.statManager().addRateData("tunnel.corruptMessage", 1);
         } else if (fragmented) {
             FragmentedMessage msg;
             synchronized (_fragmentedMessages) {
@@ -380,7 +423,6 @@ class FragmentHandler {
                         msg.getExpireEvent().cancel();
                     receiveComplete(msg);
                 } else {
-                    noteReception(msg.getMessageId(), 0, msg);
                     if (msg.getExpireEvent() == null) {
                         RemoveFailed evt = new RemoveFailed(msg);
                         msg.setExpireEvent(evt);
@@ -407,7 +449,8 @@ class FragmentHandler {
     /**
      * Handle a fragment beyond the initial fragment in a message
      *
-     * @return offset after reading the full fragment
+     * @return offset after reading the full fragment or -1 on error
+     * @throws RuntimeException
      */
     private int receiveSubsequentFragment(byte preprocessed[], int offset, int length) {
         if (_log.shouldLog(Log.DEBUG))
@@ -449,7 +492,6 @@ class FragmentHandler {
                 _context.statManager().addRateData("tunnel.fragmentedComplete", msg.getFragmentCount(), msg.getLifetime());
                 receiveComplete(msg);
             } else {
-                noteReception(msg.getMessageId(), fragmentNum, msg);
                 if (msg.getExpireEvent() == null) {
                     RemoveFailed evt = new RemoveFailed(msg);
                     msg.setExpireEvent(evt);
@@ -468,13 +510,9 @@ class FragmentHandler {
     private void receiveComplete(FragmentedMessage msg) {
         if (msg == null)
             return;
-        _completed++;
-        String stringified = null;
-        if (_log.shouldLog(Log.DEBUG))
-            stringified = msg.toString();
+        _completed.incrementAndGet();
         byte data[] = null;
         try {
-            int fragmentCount = msg.getFragmentCount();
             // toByteArray destroys the contents of the message completely
             data = msg.toByteArray();
             if (data == null)
@@ -483,22 +521,28 @@ class FragmentHandler {
                 _log.debug("RECV(" + data.length + "): "); // + Base64.encode(data)  
                            //+ " " + _context.sha().calculateHash(data).toBase64());
 
-            // TODO read in as unknown message for outbound tunnels,
+            // Read in as unknown message for outbound tunnels,
             // since this will just be packaged in a TunnelGatewayMessage.
             // Not a big savings since most everything is a GarlicMessage
             // and so the readMessage() call is fast.
             // The unencrypted messages at the OBEP are (V)TBMs
             // and perhaps an occasional DatabaseLookupMessage
-            I2NPMessage m = new I2NPMessageHandler(_context).readMessage(data);
-            noteReception(m.getUniqueId(), fragmentCount-1, "complete: ");// + msg.toString());
-            noteCompletion(m.getUniqueId());
+            I2NPMessage m;
+            if (_isInbound) {
+                m = new I2NPMessageHandler(_context).readMessage(data);
+            } else {
+                int utype = data[0] & 0xff;
+                m = new UnknownI2NPMessage(_context, utype);
+                m.readBytes(data, utype, 1);
+            }
             _receiver.receiveComplete(m, msg.getTargetRouter(), msg.getTargetTunnel());
         } catch (I2NPMessageException ime) {
-            if (stringified == null) stringified = msg.toString();
-            if (_log.shouldLog(Log.WARN)) {
-                _log.warn("Error receiving fragmented message (corrupt?): " + stringified, ime);
-                _log.warn("DUMP:\n" + HexDump.dump(data));
-                _log.warn("RAW:\n" + Base64.encode(data));
+            if (_log.shouldWarn()) {
+                _log.warn("Error receiving fragmented message (corrupt?): " + msg, ime);
+                if (_log.shouldInfo()) {
+                    _log.info("DUMP:\n" + HexDump.dump(data));
+                    _log.info("RAW:\n" + Base64.encode(data));
+                }
             }
         }
     }
@@ -508,22 +552,27 @@ class FragmentHandler {
      *  @since 0.9
      */
     private void receiveComplete(byte[] data, int offset, int len, Hash router, TunnelId tunnelId) {
-        _completed++;
+        _completed.incrementAndGet();
         try {
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("RECV unfrag(" + len + ')');
 
-            // TODO read in as unknown message for outbound tunnels,
+            // Read in as unknown message for outbound tunnels,
             // since this will just be packaged in a TunnelGatewayMessage.
             // Not a big savings since most everything is a GarlicMessage
             // and so the readMessage() call is fast.
             // The unencrypted messages at the OBEP are (V)TBMs
             // and perhaps an occasional DatabaseLookupMessage
-            I2NPMessageHandler h = new I2NPMessageHandler(_context);
-            h.readMessage(data, offset, len);
-            I2NPMessage m = h.lastRead();
-            noteReception(m.getUniqueId(), 0, "complete: ");// + msg.toString());
-            noteCompletion(m.getUniqueId());
+            I2NPMessage m;
+            if (_isInbound) {
+                I2NPMessageHandler h = new I2NPMessageHandler(_context);
+                h.readMessage(data, offset, len);
+                m = h.lastRead();
+            } else {
+                int utype = data[offset++] & 0xff;
+                m = new UnknownI2NPMessage(_context, utype);
+                m.readBytes(data, utype, offset, len - 1);
+            }
             _receiver.receiveComplete(m, router, tunnelId);
         } catch (I2NPMessageException ime) {
             if (_log.shouldLog(Log.WARN)) {
@@ -534,10 +583,6 @@ class FragmentHandler {
         }
     }
 
-    protected void noteReception(long messageId, int fragmentId, Object status) {}
-    protected void noteCompletion(long messageId) {}
-    protected void noteFailure(long messageId, String status) {}
-    
     /**
      * Receive messages out of the tunnel endpoint.  There should be a single 
      * instance of this object per tunnel so that it can tell what tunnel various
@@ -565,14 +610,13 @@ class FragmentHandler {
         }
 
         public void timeReached() {
-            boolean removed = false;
+            boolean removed;
             synchronized (_fragmentedMessages) {
                 removed = (null != _fragmentedMessages.remove(Long.valueOf(_msg.getMessageId())));
             }
             synchronized (_msg) {
                 if (removed && !_msg.getReleased()) {
-                    _failed++;
-                    noteFailure(_msg.getMessageId(), _msg.toString());
+                    _failed.incrementAndGet();
                     if (_log.shouldLog(Log.WARN))
                         _log.warn("Dropped incomplete fragmented message: " + _msg);
                     _context.statManager().addRateData("tunnel.fragmentedDropped", _msg.getFragmentCount(), _msg.getLifetime());

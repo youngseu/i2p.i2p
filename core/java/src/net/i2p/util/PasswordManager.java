@@ -5,11 +5,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 import net.i2p.I2PAppContext;
+import net.i2p.crypto.SHA256Generator;
 import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.data.SessionKey;
-
-//import org.bouncycastle.oldcrypto.digests.MD5Digest;
 
 /**
  *  Manage both plaintext and salted/hashed password storage in
@@ -32,8 +31,17 @@ public class PasswordManager {
     protected static final String PROP_B64 = ".b64";
     /** stored as the hex of the MD5 hash of the UTF-8 bytes. Compatible with Jetty. */
     protected static final String PROP_MD5 = ".md5";
-    /** stored as a Unix crypt string */
+
+    /**
+     *  Stored as a Unix crypt string
+     *  Originally intended as a Jetty-compatible UnixCrypt string, see man crypt(5),
+     *  but not fully implemented and insecure anyway.
+     *
+     *  @deprecated unused
+     */
+    @Deprecated
     protected static final String PROP_CRYPT = ".crypt";
+
     /** stored as the b64 of the 16 byte salt + the 32 byte hash of the UTF-8 bytes */
     protected static final String PROP_SHASH = ".shash";
 
@@ -65,7 +73,10 @@ public class PasswordManager {
         String pfx = realm;
         if (user != null && user.length() > 0)
             pfx += '.' + user;
-        return pw.equals(_context.getProperty(pfx + PROP_PW));
+        String s = _context.getProperty(pfx + PROP_PW);
+        if (s == null)
+            return false;
+        return DataHelper.eqCT(pw, s);
     }
     
     /**
@@ -81,7 +92,7 @@ public class PasswordManager {
         String b64 = _context.getProperty(pfx + PROP_B64);
         if (b64 == null)
             return false;
-        return b64.equals(Base64.encode(DataHelper.getUTF8(pw)));
+        return DataHelper.eqCT(Base64.encode(DataHelper.getUTF8(pw)), b64);
     }
     
     /**
@@ -119,7 +130,7 @@ public class PasswordManager {
         System.arraycopy(shashBytes, 0, salt, 0, SALT_LENGTH);
         System.arraycopy(shashBytes, SALT_LENGTH, hash, 0, SessionKey.KEYSIZE_BYTES);
         byte[] pwHash = _context.keyGenerator().generateSessionKey(salt, DataHelper.getUTF8(pw)).getData();
-        return DataHelper.eq(hash, pwHash);
+        return DataHelper.eqCT(hash, 0, pwHash, 0, SessionKey.KEYSIZE_BYTES);
     }
     
     /**
@@ -232,6 +243,38 @@ public class PasswordManager {
             return md.digest();
         } catch (NoSuchAlgorithmException nsae) {}
         return null;
+    }
+
+    /**
+     *  Straight SHA256, no salt
+     *  Will return the SHA256 sum of "user:subrealm:pw", compatible with RFC 7616.
+     *  NOT currently supported by Jetty.
+     *
+     *  @param subrealm to be used in creating the checksum
+     *  @param user non-null, non-empty, already trimmed
+     *  @param pw non-null, plain text, already trimmed
+     *  @return lower-case hex with leading zeros, 32 chars, or null on error
+     *  @since 0.9.56
+     */
+    public static String sha256Hex(String subrealm, String user, String pw) {
+        String fullpw = user + ':' + subrealm + ':' + pw;
+        return sha256Hex(fullpw);
+    }
+
+    /**
+     *  Return the SHA256 sum of the data, compatible with RFC 7616.
+     *  NOT currently supported by Jetty.
+     *
+     *  @param fullpw non-null, plain text, already trimmed
+     *  @return lower-case hex with leading zeros, 64 chars, or null on error
+     *  @since 0.9.56
+     */
+    public static String sha256Hex(String fullpw) {
+        byte[] data = DataHelper.getUTF8(fullpw);
+        byte[] sum = new byte[32];
+        SHA256Generator.getInstance().calculateHash(data, 0, data.length, sum, 0);
+        // adds leading zeros if necessary
+        return DataHelper.toString(sum);
     }
 
     /**

@@ -100,6 +100,7 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
     private final ConcurrentHashMap<NID, Token> _incomingTokens;
     /** recently unreachable, with lastSeen() as the added-to-blacklist time  */
     private final Set<NID> _blacklist;
+    private SimpleTimer2.TimedEvent _cleaner, _explorer;
 
     /** hook to inject and receive datagrams */
     private final I2PSession _session;
@@ -156,7 +157,8 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
     /** stagger with other cleaners */
     private static final long CLEAN_TIME = 63*1000;
     private static final long EXPLORE_TIME = 877*1000;
-    private static final long BLACKLIST_CLEAN_TIME = 17*60*1000;
+    private static final long BLACKLIST_CLEAN_TIME = 67*60*1000;
+    private static final int BLACKLIST_MAX_PEERS = 500;
     private static final long NODES_SAVE_TIME = 3*60*60*1000;
     public static final String DHT_FILE_SUFFIX = ".dht.dat";
 
@@ -622,6 +624,8 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
     public synchronized void start() {
         if (_isRunning)
             return;
+        if (_log.shouldInfo())
+            _log.info("KRPC start", new Exception());
         _session.addMuxedSessionListener(this, I2PSession.PROTO_DATAGRAM_RAW, _rPort);
         _session.addMuxedSessionListener(this, I2PSession.PROTO_DATAGRAM, _qPort);
         _knownNodes.start();
@@ -629,9 +633,8 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
         PersistDHT.loadDHT(this, _dhtFile, _backupDhtFile);
         // start the explore thread
         _isRunning = true;
-        // no need to keep ref, it will eventually stop
-        new Cleaner();
-        new Explorer(5*1000);
+        _cleaner = new Cleaner();
+        _explorer = new Explorer(5*1000);
         _txPkts.set(0);
         _rxPkts.set(0);
         _txBytes.set(0);
@@ -647,7 +650,10 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
         if (!_isRunning)
             return;
         _isRunning = false;
-        // FIXME stop the explore thread
+        if (_log.shouldInfo())
+            _log.info("KRPC stop", new Exception());
+        _cleaner.cancel();
+        _explorer.cancel();
         // unregister port listeners
         _session.removeListener(I2PSession.PROTO_DATAGRAM, _qPort);
         _session.removeListener(I2PSession.PROTO_DATAGRAM_RAW, _rPort);
@@ -682,12 +688,12 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
     public String renderStatusHTML() {
         long uptime = Math.max(1000, _context.clock().now() - _started);
         StringBuilder buf = new StringBuilder(256);
-        buf.append("<br><hr class=\"debug\"><b>DHT DEBUG</b><br><hr class=\"debug\"><hr><b>TX:</b> ").append(_txPkts.get()).append(" pkts / ")
+        buf.append("<br><hr class=\"debug\"><br><hr class=\"debug\"><hr><b>TX:</b> ").append(_txPkts.get()).append(" pkts / ")
            .append(DataHelper.formatSize2(_txBytes.get())).append("B / ")
-           .append(DataHelper.formatSize2(_txBytes.get() * 1000 / uptime)).append("Bps<br>" +
+           .append(DataHelper.formatSize2Decimal(_txBytes.get() * 1000 / uptime)).append("Bps<br>" +
                    "<b>RX:</b> ").append(_rxPkts.get()).append(" pkts / ")
            .append(DataHelper.formatSize2(_rxBytes.get())).append("B / ")
-           .append(DataHelper.formatSize2(_rxBytes.get() * 1000 / uptime)).append("Bps<br>" +
+           .append(DataHelper.formatSize2Decimal(_rxBytes.get() * 1000 / uptime)).append("Bps<br>" +
                    "<b>DHT Peers:</b> ").append( _knownNodes.size()).append("<br>" +
                    "<b>Blacklisted:</b> ").append(_blacklist.size()).append("<br>" +
                    "<b>Sent tokens:</b> ").append(_outgoingTokens.size()).append("<br>" +
@@ -1034,7 +1040,11 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
         opts.setDate(_context.clock().now() + 60*1000);
         opts.setTagsToSend(SEND_CRYPTO_TAGS);
         opts.setTagThreshold(LOW_CRYPTO_TAGS);
-        if (!repliable)
+        // Session default is don't compress
+        // DG1 contains full dest which is compressible
+        if (repliable)
+            opts.setGzip(true);
+        else
             opts.setSendLeaseSet(false);
         try {
             boolean success = _session.sendMessage(dest, payload, 0, payload.length,
@@ -1231,10 +1241,12 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
                 if (_log.shouldLog(Log.INFO))
                     _log.info("Removed after consecutive timeouts: " + nInfo);
             }
-            if (!_blacklist.contains(nid)) {
-                // used as when-added time
-                nid.setLastSeen();
-                _blacklist.add(nid);
+            // remove and add back with new date, may not be same object
+            // used as when-added time
+            nid.setLastSeen();
+            boolean already = _blacklist.remove(nid);
+            _blacklist.add(nid);
+            if (!already) {
                 if (_log.shouldLog(Log.INFO))
                     _log.info("Blacklisted: " + nid);
             }
@@ -1636,6 +1648,7 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
     public void disconnected(I2PSession session) {
         if (_log.shouldLog(Log.WARN))
             _log.warn("KRPC disconnected");
+        stop();
     }
 
     public void errorOccurred(I2PSession session, String message, Throwable error) {
@@ -1684,6 +1697,14 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
                 // lastSeen() is actually when-added
                 if (nid.lastSeen() < expire)
                     iter.remove();
+            }
+            int sz = _blacklist.size();
+            if (sz > BLACKLIST_MAX_PEERS) {
+                // just remove random peers
+                for (Iterator<NID> iter = _blacklist.iterator(); iter.hasNext() && sz > BLACKLIST_MAX_PEERS; sz--) {
+                    iter.next();
+                    iter.remove();
+                }
             }
             if (now - _nodesLastSaved > NODES_SAVE_TIME) {
                 PersistDHT.saveDHT(_knownNodes, false, _dhtFile);
@@ -1748,7 +1769,7 @@ public class KRPC implements I2PSessionMuxedListener, DHT {
             }
             if (_log.shouldLog(Log.INFO))
                 _log.info("Explore of " + keys.size() + " buckets done, new size: " + _knownNodes.size());
-            new Explorer(EXPLORE_TIME);
+            _explorer = new Explorer(EXPLORE_TIME);
         }
     }
 }

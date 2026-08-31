@@ -10,15 +10,26 @@ package net.i2p.i2ptunnel.web;
 
 import java.io.File;
 import java.io.IOException;
+import java.text.Collator;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
+
+import javax.servlet.http.HttpSession;
 
 import net.i2p.I2PAppContext;
 import net.i2p.I2PException;
 import net.i2p.app.ClientAppManager;
 import net.i2p.app.Outproxy;
+import net.i2p.crypto.ChaCha20;
+import net.i2p.crypto.Blinding;
+import net.i2p.data.Base64;
 import net.i2p.data.Certificate;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
@@ -31,9 +42,12 @@ import net.i2p.i2ptunnel.I2PTunnelServer;
 import net.i2p.i2ptunnel.TunnelController;
 import net.i2p.i2ptunnel.TunnelControllerGroup;
 import net.i2p.i2ptunnel.ui.GeneralHelper;
+import net.i2p.i2ptunnel.ui.Messages;
 import net.i2p.i2ptunnel.ui.TunnelConfig;
 import net.i2p.util.Addresses;
 import net.i2p.util.Log;
+import net.i2p.util.PortMapper;
+import net.i2p.util.UIMessages;
 
 /**
  * Simple accessor for exposing tunnel info, but also an ugly form handler
@@ -49,11 +63,11 @@ public class IndexBean {
     protected final GeneralHelper _helper;
     private final String _fatalError;
     private String _action;
+    private String _method;
     private int _tunnel;
-    //private long _prevNonce;
-    //private long _prevNonce2;
     private String _curNonce;
-    //private long _nextNonce;
+    protected HttpSession _session;
+    private int _msgID = -1;
 
     private final TunnelConfig _config;
     private boolean _removeConfirmed;
@@ -66,17 +80,16 @@ public class IndexBean {
     public static final int NOT_RUNNING = GeneralHelper.NOT_RUNNING;
     public static final int STANDBY = GeneralHelper.STANDBY;
     
-    //static final String PROP_NONCE = IndexBean.class.getName() + ".nonce";
-    //static final String PROP_NONCE_OLD = PROP_NONCE + '2';
-    /** 3 wasn't enough for some browsers. They are reloading the page for some reason - maybe HEAD? @since 0.8.1 */
+    private static final String SESSION_I2PTUNNEL_NONCE = "__i2ptunnel.nonce.queue__";
     private static final int MAX_NONCES = 8;
-    /** store nonces in a static FIFO instead of in System Properties @since 0.8.1 */
-    private static final List<String> _nonces = new ArrayList<String>(MAX_NONCES + 1);
+    private static final UIMessages _messages = new UIMessages(100);
+    private static final String SESSION_I2PTUNNEL_FORMKEYS = "__i2ptunnel.formkeys__";
 
-    public static final String PROP_THEME_NAME = "routerconsole.theme";
-    public static final String DEFAULT_THEME = "light";
-    public static final String PROP_CSS_DISABLED = "routerconsole.css.disabled";
-    public static final String PROP_JS_DISABLED = "routerconsole.javascript.disabled";
+    private static final String PROP_THEME_NAME = "routerconsole.theme";
+    private static final String DEFAULT_THEME = "light";
+    /** From CSSHelper */
+    private static final String PROP_DISABLE_OLD = "routerconsole.disableOldThemes";
+    private static final boolean DEFAULT_DISABLE_OLD = true;
     private static final String PROP_PW_ENABLE = "routerconsole.auth.enable";
     
     public IndexBean() {
@@ -96,8 +109,6 @@ public class IndexBean {
         _helper = new GeneralHelper(_context, _group);
         _fatalError = error;
         _tunnel = -1;
-        _curNonce = "-1";
-        addNonce();
         _config = new TunnelConfig();
     }
     
@@ -108,10 +119,28 @@ public class IndexBean {
         return _group != null;
     }
 
-    public static String getNextNonce() {
-        synchronized (_nonces) {
-            return _nonces.get(0);
+    /**
+     *  storeSession() must have been called
+     *  @return a new nonce for each call
+     */
+    @SuppressWarnings("unchecked")
+    public String getNextNonce() { 
+        if (_session == null) {
+            return "FAIL_SESSION_NOT_SET";
         }
+        // add a prefix to distinguish from other nonces for debugging
+        String rv = "HSM" + _context.random().nextLong();
+        synchronized(_session) {
+            LinkedList<String> nonces = (LinkedList<String>) _session.getAttribute(SESSION_I2PTUNNEL_NONCE);
+            if (nonces == null) {
+                nonces = new LinkedList<String>();
+                _session.setAttribute(SESSION_I2PTUNNEL_NONCE, nonces);
+            }
+            nonces.offer(rv);
+            if (nonces.size() > MAX_NONCES)
+                nonces.poll();
+        }
+        return rv;
     }
 
     public void setNonce(String nonce) {
@@ -119,22 +148,42 @@ public class IndexBean {
         _curNonce = nonce;
     }
 
-    /** add a random nonce to the head of the queue @since 0.8.1 */
-    private void addNonce() {
-        String nextNonce = Long.toString(_context.random().nextLong());
-        synchronized (_nonces) {
-            _nonces.add(0, nextNonce);
-            int sz = _nonces.size();
-            if (sz > MAX_NONCES)
-                _nonces.remove(sz - 1);
-        }
+    /**
+     * @since 0.9.70
+     */
+    public void storeMethod(String method) {
+        _method = method;
     }
 
-    /** do we know this nonce? @since 0.8.1 */
-    private static boolean haveNonce(String nonce) {
-        synchronized (_nonces) {
-            return _nonces.contains(nonce);
+    /**
+     *  For nonce validation
+     *  @since 0.9.70
+     */
+    public void storeSession(HttpSession session) { _session = session; }
+
+    /**
+     *  storeSession() and setNonce() must have been called
+     *  @return true if valid
+     *  @since 0.9.70
+     */
+    @SuppressWarnings("unchecked")
+    public boolean validateNonce() { 
+        if (_curNonce == null) {
+            return false;
         }
+        if (_session == null) {
+            return false;
+        }
+        boolean rv;
+        synchronized(_session) {
+            LinkedList<String> nonces = (LinkedList<String>) _session.getAttribute(SESSION_I2PTUNNEL_NONCE);
+            if (nonces != null) {
+                rv = nonces.removeLastOccurrence(_curNonce);
+            } else {
+                rv = false;
+            }
+        }
+        return rv;
     }
 
     public void setAction(String action) {
@@ -150,44 +199,67 @@ public class IndexBean {
             _tunnel = -1;
         }
     }
+
+    /** @since 0.9.33 */
+    public void setMsgid(String id) {
+        if (id == null) return;
+        try {
+            _msgID = Integer.parseInt(id);
+        } catch (NumberFormatException nfe) {
+            _msgID = -1;
+        }
+    }
     
+    /** @return non-null */
     private String processAction() {
         if ( (_action == null) || (_action.trim().length() <= 0) || ("Cancel".equals(_action)))
             return "";
         if (_group == null)
             return "Error - tunnels are not initialized yet";
-        // If passwords are turned on, all is assumed good
-        if (!_context.getBooleanProperty(PROP_PW_ENABLE) &&
-            !haveNonce(_curNonce))
+        if ( !"POST".equals(_method) ||
+            !validateNonce()) {
             return _t("Invalid form submission, probably because you used the 'back' or 'reload' button on your browser. Please resubmit.")
                    + ' ' +
                    _t("If the problem persists, verify that you have cookies enabled in your browser.");
-        if ("Stop all".equals(_action)) 
-            return stopAll();
-        else if ("Start all".equals(_action))
-            return startAll();
-        else if ("Restart all".equals(_action))
-            return restartAll();
-        else if ("Reload configuration".equals(_action))
+        }
+        // for any of these that call getMessage(msgs),
+        // we return "", as getMessage() will add them to the returned string.
+        if ("Stop all".equals(_action)) {
+            stopAll();
+            return "";
+        } else if ("Start all".equals(_action)) {
+            startAll();
+            return "";
+        } else if ("Restart all".equals(_action)) {
+            restartAll();
+            return "";
+        } else if ("Reload configuration".equals(_action)) {
             return reloadConfig();
-        else if ("stop".equals(_action))
+        } else if ("stop".equals(_action)) {
             return stop();
-        else if ("start".equals(_action))
+        } else if ("start".equals(_action)) {
             return start();
-        else if ("Save changes".equals(_action) || // IE workaround:
-                (_action.toLowerCase(Locale.US).indexOf("s</span>ave") >= 0))
-            return saveChanges();
-        else if ("Delete this proxy".equals(_action) || // IE workaround:
-                (_action.toLowerCase(Locale.US).indexOf("d</span>elete") >= 0))
-            return deleteTunnel();
-        else if ("Estimate".equals(_action))
+        } else if ("Save changes".equals(_action)) {
+            saveChanges();
+            return "";
+        } else if ("Delete this proxy".equals(_action)) {
+            deleteTunnel();
+            return "";
+        } else if ("Estimate".equals(_action)) {
             return PrivateKeyFile.estimateHashCashTime(_hashCashValue);
-        else if ("Modify".equals(_action))
+        } else if ("Modify".equals(_action)) {
             return modifyDestination();
-        else if ("Generate".equals(_action))
+        } else if ("Generate".equals(_action)) {
             return generateNewEncryptionKey();
-        else
+        } else if ("Clear".equals(_action)) {
+            _messages.clearThrough(_msgID);
+            ClientAppManager cmgr = _context.clientAppManager();
+            if (cmgr != null)
+                cmgr.setBubble(PortMapper.SVC_I2PTUNNEL, 0, null);
+            return "";
+        } else {
             return "Action " + _action + " unknown";
+        }
     }
 
     private String stopAll() {
@@ -238,6 +310,11 @@ public class IndexBean {
         return _t("Stopping tunnel") + ' ' + getTunnelName(_tunnel) + "...";
     }
     
+    /**
+     * Only call this ONCE! Or you will get duplicate tunnels on save.
+     *
+     * @return not HTML escaped, or "" if empty
+     */
     private String saveChanges() {
         // FIXME name will be HTML escaped twice
         return getMessages(_helper.saveTunnel(_tunnel, _config));
@@ -258,7 +335,9 @@ public class IndexBean {
      * Executes any action requested (start/stop/etc) and dump out the 
      * messages.
      *
-     * @return HTML escaped
+     * Only call this ONCE! Or you will get duplicate tunnels on save.
+     *
+     * @return HTML escaped or "" if empty
      */
     public String getMessages() {
         if (_group == null)
@@ -267,14 +346,31 @@ public class IndexBean {
         StringBuilder buf = new StringBuilder(512);
         if (_action != null) {
             try {
-                buf.append(processAction()).append('\n');
+                String result = processAction();
+                if (result.length() > 0)
+                    buf.append(result).append('\n');
             } catch (RuntimeException e) {
                 _log.log(Log.CRIT, "Error processing " + _action, e);
                 buf.append("Error: ").append(e.toString()).append('\n');
             }
         }
+        List<UIMessages.Message> msgs = _messages.getMessages();
+        if (!msgs.isEmpty()) {
+            for (UIMessages.Message msg : msgs) {
+                buf.append(msg.message).append('\n');
+            }
+        }
         getMessages(_group.clearAllMessages(), buf);
         return DataHelper.escapeHTML(buf.toString());
+    }
+    
+    /**
+     * The last stored message ID
+     *
+     * @since 0.9.33
+     */
+    public int getLastMessageID() {
+        return _messages.getLastMessageID();
     }
     
     ////
@@ -283,20 +379,55 @@ public class IndexBean {
     
     public String getTheme() {
         String theme = _context.getProperty(PROP_THEME_NAME, DEFAULT_THEME);
-        return "/themes/console/" + theme + "/";
+        // remap deprecated themes
+        if (theme.equals("midnight")) {
+            if (_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD))
+                theme = "dark";
+        } else if (theme.equals("classic")) {
+            if (_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD))
+                theme = "light";
+        }
+        return "themes/" + theme + "/";
     }
 
-    public boolean allowCSS() {
-        return !_context.getBooleanProperty(PROP_CSS_DISABLED);
-    }
-    
-    public boolean allowJS() {
-        return !_context.getBooleanProperty(PROP_JS_DISABLED);
-    }
-    
     public int getTunnelCount() {
         if (_group == null) return 0;
         return _group.getControllers().size();
+    }
+
+    /**
+     *  Return tunnel numbers of clients or servers only, sorted by tunnel name
+     *  @param isClient true for clients, false for servers
+     *  @return non-null, may be empty
+     *  @since 0.9.57
+     */
+    public List<Integer> getControllerNumbers(boolean isClient) {
+        if (_group == null)
+            return Collections.emptyList();
+        List<TunnelController> all = _group.getControllers();
+        List<Integer> rv = new ArrayList<Integer>(all.size());
+        for (int i = 0; i < all.size(); i++) {
+            TunnelController tc = all.get(i);
+            if (tc.isClient() == isClient)
+                rv.add(Integer.valueOf(i));
+        }
+        if (rv.size() > 1)
+            Collections.sort(rv, new TCComparator());
+        return rv;
+    }
+
+    /**
+     *  Sort tunnel numbers by the name of the tunnel
+     *  @since 0.9.57
+     */
+    private class TCComparator implements Comparator<Integer> {
+         private final Collator _comp = Collator.getInstance();
+         public int compare(Integer l, Integer r) {
+             int rv = _comp.compare(getTunnelName(l), getTunnelName(r));
+             if (rv != 0)
+                 return rv;
+             return l.compareTo(r);
+        }
     }
     
     /**
@@ -318,10 +449,17 @@ public class IndexBean {
     public static boolean isClient(String type) {
         return TunnelController.isClient(type);
     }
+
+    /**
+     *  @since 0.9.46 moved from subclass
+     */
+    public boolean isSharedClient(int tunnel) {
+        return _helper.isSharedClient(tunnel);
+    }
     
     public String getTunnelName(int tunnel) {
         String name = _helper.getTunnelName(tunnel);
-        if (name != null)
+        if (name != null && name.length() > 0)
             return DataHelper.escapeHTML(name);
         else
             return _t("New Tunnel");
@@ -354,13 +492,23 @@ public class IndexBean {
                        ": " + port + "</font>";
             // dup check, O(n**2)
             List<TunnelController> controllers = _group.getControllers();
+            String ifc = tun.getListenOnInterface();
             for (int i = 0; i < controllers.size(); i++) {
                 if (i == tunnel)
                     continue;
-                if (port.equals(controllers.get(i).getListenPort()))
-                    return "<font color=\"red\">" +
-                           _t("Warning - duplicate port") +
-                           ": " + port + "</font>";
+                TunnelController tc = controllers.get(i);
+                if (port.equals(tc.getListenPort())) {
+                    String ifc2 = tc.getListenOnInterface();
+                    if (DataHelper.eq(ifc, ifc2) ||
+                        "0.0.0.0".equals(ifc) ||
+                        "0.0.0.0".equals(ifc2) ||
+                        "0:0:0:0:0:0:0:0".equals(ifc) ||
+                        "0:0:0:0:0:0:0:0".equals(ifc2)) {
+                        return "<font color=\"red\">" +
+                               _t("Warning - duplicate port") +
+                               ": " + port + "</font>";
+                    }
+                }
             }
             return port;
         }
@@ -488,6 +636,28 @@ public class IndexBean {
             return d.toBase32();
         return "";
     }
+    
+    /**
+     *  Works even if tunnel is not running.
+     *  @return "{56 chars}.b32.i2p" or "" if not blinded
+     *  @since 0.9.40
+     */
+    public String getEncryptedBase32(int tunnel) {
+        Destination d = getDestination(tunnel);
+        if (d != null) {
+            int mode = _helper.getEncryptMode(tunnel);
+            if (mode > 1 && mode < 10) {
+                try {
+                    String secret = _helper.getBlindedPassword(tunnel);
+                    boolean requireSecret = secret != null && secret.length() > 0 &&
+                                            (mode == 3 || mode == 5 || mode == 7 || mode == 9);
+                    boolean requireAuth = mode >= 4;
+                    return Blinding.encode(d.getSigningPublicKey(), requireSecret, requireAuth);
+                } catch (RuntimeException re) {}
+            }
+        }
+        return "";
+    }
 
     /**
      *  Works even if tunnel is not running.
@@ -521,6 +691,15 @@ public class IndexBean {
             return d.toBase32();
         return "";
     }
+
+    /**
+     *  Works even if tunnel is not running.
+     *  @return true if offline keys
+     *  @since 0.9.40
+     */
+    public boolean getIsOfflineKeys(int tunnel) {
+        return _helper.isOfflineKeys(tunnel);
+    }
     
     /**
      *  For index.jsp
@@ -542,6 +721,13 @@ public class IndexBean {
         return false;
     }
 
+    /**
+     * @since 0.9.32 moved from EditBean
+     */
+    public String getSpoofedHost(int tunnel) {
+        return DataHelper.escapeHTML(_helper.getSpoofedHost(tunnel));
+    }
+
     ///
     /// bean props for form submission
     ///
@@ -557,7 +743,7 @@ public class IndexBean {
     String getType() { return _config.getType(); }
     
     /** Short name of the tunnel */
-    public void setName(String name) { 
+    public void setNofilter_name(String name) {
         _config.setName(name);
     }
     /** one line description */
@@ -572,7 +758,10 @@ public class IndexBean {
     public void setClientport(String port) {
         _config.setClientPort(port);
     }
-    /** how many hops to use for inbound tunnels */
+
+    /** how many hops to use for inbound tunnels
+     *  In or both in/out
+     */
     public void setTunnelDepth(String tunnelDepth) {
         if (tunnelDepth != null) {
             try {
@@ -580,7 +769,10 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
-    /** how many parallel inbound tunnels to use */
+
+    /** how many parallel inbound tunnels to use
+     *  In or both in/out
+     */
     public void setTunnelQuantity(String tunnelQuantity) {
         if (tunnelQuantity != null) {
             try {
@@ -588,7 +780,10 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
-    /** how much randomisation to apply to the depth of tunnels */
+
+    /** how much randomisation to apply to the depth of tunnels
+     *  In or both in/out
+     */
     public void setTunnelVariance(String tunnelVariance) {
         if (tunnelVariance != null) {
             try {
@@ -596,7 +791,10 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
-    /** how many tunnels to hold in reserve to guard against failures */
+
+    /** how many tunnels to hold in reserve to guard against failures
+     *  In or both in/out
+     */
     public void setTunnelBackupQuantity(String tunnelBackupQuantity) {
         if (tunnelBackupQuantity != null) {
             try {
@@ -604,6 +802,51 @@ public class IndexBean {
             } catch (NumberFormatException nfe) {}
         }
     }
+
+    /** how many hops to use for outbound tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelDepthOut(String tunnelDepth) {
+        if (tunnelDepth != null) {
+            try {
+                _config.setTunnelDepthOut(Integer.parseInt(tunnelDepth.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /** how many parallel outbound tunnels to use
+     *  @since 0.9.33
+     */
+    public void setTunnelQuantityOut(String tunnelQuantity) {
+        if (tunnelQuantity != null) {
+            try {
+                _config.setTunnelQuantityOut(Integer.parseInt(tunnelQuantity.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /** how much randomisation to apply to the depth of outbound tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelVarianceOut(String tunnelVariance) {
+        if (tunnelVariance != null) {
+            try {
+                _config.setTunnelVarianceOut(Integer.parseInt(tunnelVariance.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /** how many outbound tunnels to hold in reserve to guard against failures
+     *  @since 0.9.33
+     */
+    public void setTunnelBackupQuantityOut(String tunnelBackupQuantity) {
+        if (tunnelBackupQuantity != null) {
+            try {
+                _config.setTunnelBackupQuantityOut(Integer.parseInt(tunnelBackupQuantity.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
     /** what I2P session overrides should be used */
     public void setNofilter_customOptions(String customOptions) { 
         _config.setCustomOptions(customOptions);
@@ -697,6 +940,77 @@ public class IndexBean {
         _config.setEncrypt(true);
     }
 
+    /** @since 0.9.40 */
+    public void setEncryptMode(String val) {
+        if (val != null) {
+            try {
+                _config.setEncryptMode(Integer.parseInt(val.trim()));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+    
+    /** @since 0.9.40 */
+    public void setNofilter_blindedPassword(String s) {
+        _config.setBlindedPassword(s);
+    }
+
+    /**
+     * Multiple entries in form
+     * @since 0.9.41
+     */
+    public void setNofilter_clientName(String[] s) {
+        if (s != null) {
+            _config.addClientNames(s);
+        }
+    }
+
+
+    /**
+     * Multiple entries in form
+     * @since 0.9.41
+     */
+    public void setclientKey(String[] s) {
+        if (s != null) {
+            _config.addClientKeys(s);
+        }
+    }
+
+    /**
+     * Multiple entries in form
+     * Values are integers
+     * @since 0.9.41
+     */
+    public void setRevokeClient(String[] s) {
+        if (s != null) {
+            _config.revokeClients(s);
+        }
+    }
+
+    /**
+     * @since 0.9.41
+     */
+    public void setNofilter_newClientName(String s) {
+        if (s != null) {
+            _config.newClientName(s.trim());
+        }
+    }
+
+    /**
+     * @since 0.9.41
+     */
+    public void setNewClientKey(String s) {
+        if (s != null) {
+            _config.newClientKey(s.trim());
+        }
+    }
+
+    /**
+     * @since 0.9.41
+     */
+    public void setAddClient(String moo) {
+        _config.setAddClient(true);
+    }
+
     /** @since 0.8.9 */
     public void setDCC(String moo) {
         _config.setDCC(true);
@@ -758,6 +1072,14 @@ public class IndexBean {
                 _config.setAccessMode(Integer.parseInt(val.trim()));
             } catch (NumberFormatException nfe) {}
         }
+    }
+
+    /**
+     *  @since 0.9.40
+     */
+    public void setFilterDefinition(String val) {
+        if (val != null)
+            _config.setFilterDefinition(val);
     }
 
     public void setDelayOpen(String moo) {
@@ -832,7 +1154,10 @@ public class IndexBean {
 
     /** all proxy auth @since 0.8.2 */
     public void setProxyAuth(String s) {
-        _config.setProxyAuth(I2PTunnelHTTPClientBase.DIGEST_AUTH);
+        String type = getType();
+        boolean isSOCKS = TunnelController.TYPE_SOCKS.equals(type) ||
+                          TunnelController.TYPE_SOCKS_IRC.equals(type);
+        _config.setProxyAuth(isSOCKS ? "true" : I2PTunnelHTTPClientBase.DIGEST_AUTH);
     }
     
     public void setProxyUsername(String s) {
@@ -864,6 +1189,15 @@ public class IndexBean {
     public void setUseOutproxyPlugin(String moo) {
         _config.setUseOutproxyPlugin(true);
     }
+
+    /**
+     *  @param s "connect" or "socks"
+     *  @since 0.9.57
+     */
+    public void setOutproxyType(String s) {
+        _config.setOutproxyType(s);
+    }
+
 
     public void setLimitMinute(String s) {
         if (s != null) {
@@ -1000,23 +1334,116 @@ public class IndexBean {
     }
 
     /**
+     * Adds to existing, comma separated
+     * @since 0.9.44
+     */
+    public void setEncType(String s) {
+        _config.setEncType(s);
+    }
+
+    /**
      *  Random keys, hidden in forms
      *  @since 0.9.18
      */
     public void setKey1(String s) {
+        s = decrypt("inbound.randomKey", s);
         _config.setInboundRandomKey(s);
     }
 
     public void setKey2(String s) {
+        s = decrypt("outbound.randomKey", s);
         _config.setOutboundRandomKey(s);
     }
 
     public void setKey3(String s) {
+        s = decrypt("i2cp.leaseSetSigningPrivateKey", s);
         _config.setLeaseSetSigningPrivateKey(s);
     }
 
     public void setKey4(String s) {
+        s = decrypt("i2cp.leaseSetPrivateKey", s);
         _config.setLeaseSetPrivateKey(s);
+    }
+
+    /**
+     *  Decrypt a property using an in-memory key, for
+     *  interaction with the UI only, using ChaCha20.
+     *  IV is SHA256(k).
+     *
+     *  These are transient keys by design, but are persisted
+     *  to hide restarts. They are hidden inputs in the edit form.
+     *  Storage in config files is not encrypted.
+     *
+     *  @param k non-null
+     *  @param v Base64, or empty, or null
+     *  @since 0.9.46
+     */
+    @SuppressWarnings("unchecked")
+    private String decrypt(String k, String v) {
+        if (v == null || v.length() <= 0)
+            return v;
+        byte[] enc = Base64.decode(v);
+        if (enc == null)
+            return null;
+        if (_session == null)
+            return null;
+        SessionKey key;
+        synchronized(_session) {
+            Map<Integer, SessionKey> formKeys = (Map<Integer, SessionKey>) _session.getAttribute(SESSION_I2PTUNNEL_FORMKEYS);
+            if (formKeys == null)
+                return null;
+            key = formKeys.get(Integer.valueOf(_tunnel));
+        }
+        if (key == null)
+            return null;
+        byte[] kb = DataHelper.getUTF8(k);
+        byte[] iv = new byte[32];
+        _context.sha().calculateHash(kb, 0, kb.length, iv, 0);
+        ChaCha20.decrypt(key.getData(), iv, enc, 0, enc, 0, enc.length);
+        return DataHelper.getUTF8(enc);
+    }
+
+    /**
+     *  Encrypt a property using an in-memory key, for
+     *  interaction with the UI only, using ChaCha20.
+     *  IV is SHA256(k).
+     *
+     *  These are transient keys by design, but are persisted
+     *  to hide restarts. They are hidden inputs in the edit form.
+     *  Storage in config files is not encrypted.
+     *
+     *  @param k non-null
+     *  @param v may be empty or null
+     *  @return Base64, or empty, or null
+     *  @since 0.9.46
+     */
+    @SuppressWarnings("unchecked")
+    protected String encrypt(int tunnel, String k, String v) {
+        if (v == null || v.length() <= 0)
+            return v;
+        byte[] dec = DataHelper.getUTF8(v);
+        if (_session == null)
+            return null;
+        SessionKey key;
+        synchronized(_session) {
+            Map<Integer, SessionKey> formKeys = (Map<Integer, SessionKey>) _session.getAttribute(SESSION_I2PTUNNEL_FORMKEYS);
+            if (formKeys == null) {
+                formKeys =  new HashMap<Integer, SessionKey>();
+                _session.setAttribute(SESSION_I2PTUNNEL_FORMKEYS, formKeys);
+            }
+            key = formKeys.get(Integer.valueOf(tunnel));
+            if (key == null) {
+                byte[] keyb = new byte[32];
+                _context.random().nextBytes(keyb);
+                key = new SessionKey(keyb);
+                formKeys.put(Integer.valueOf(tunnel), key);
+            }
+        }
+        byte[] kb = DataHelper.getUTF8(k);
+        byte[] iv = new byte[32];
+        _context.sha().calculateHash(kb, 0, kb.length, iv, 0);
+        ChaCha20.encrypt(key.getData(), iv, dec, 0, dec, 0, dec.length);
+        return Base64.encode(dec);
     }
 
     /** Modify or create a destination */
@@ -1096,22 +1523,18 @@ public class IndexBean {
     /** New key */
     private String generateNewEncryptionKey() {
         TunnelController tun = getController(_tunnel);
-        Properties config = getConfig();
         if (tun == null) {
             // creating new
-            tun = new TunnelController(config, "", true);
-            _group.addController(tun);
-            saveChanges();
         } else if (tun.getIsRunning() || tun.getIsStarting()) {
             return "Tunnel must be stopped before modifying leaseset encryption key";
         }
         byte[] data = new byte[SessionKey.KEYSIZE_BYTES];
         _context.random().nextBytes(data);
-        SessionKey sk = new SessionKey(data);
-        setEncryptKey(sk.toBase64());
+        String b64 = Base64.encode(data);
+        setEncryptKey(b64);
         setEncrypt("");
         saveChanges();
-        return "New Leaseset Encryption Key: " + sk.toBase64();
+        return "New Leaseset Encryption Key: " + b64;
      }
 
     /**
@@ -1144,7 +1567,9 @@ public class IndexBean {
     private static void getMessages(List<String> msgs, StringBuilder buf) {
         if (msgs == null) return;
         for (int i = 0; i < msgs.size(); i++) {
-            buf.append(msgs.get(i)).append("\n");
+            String msg = msgs.get(i);
+            _messages.addMessageNoEscape(msg);
+            buf.append(msg).append("\n");
         }
     }
 

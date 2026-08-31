@@ -34,12 +34,14 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
+import net.i2p.data.DataHelper;
+
 /**
  * Folder object manages a array Object[] to support
  * paging and sorting.
  * 
  * You create a folder object, set the contents with setElements(),
- * add Comparators with addSorter(), choose one with sortBy() and
+ * add Comparators with addSorter(), choose one with setSortBy() and
  * and then fetch the content of the current page with
  * currentPageIterator().
  * 
@@ -59,12 +61,28 @@ public class Folder<O extends Object> {
 		UP;
 	}
 
+	/**
+	 * @since 0.9.63
+	 */
+	public interface Selector<O> {
+		/**
+		 * @return non-null
+		 */
+		public String getSelectionKey();
+		/**
+		 * @return true if selected
+		 */
+		public boolean select(O element);
+	}
+
 	private int pages, pageSize, currentPage;
 	private O[] elements;
 	private final Map<String, Comparator<O>> sorter;
 	private SortOrder sortingDirection;
 	private Comparator<O> currentSorter;
 	private String currentSortID;
+	private Selector<O> currentSelector;
+	private List<O> selected;
 	
 	public Folder()
 	{
@@ -107,10 +125,18 @@ public class Folder<O extends Object> {
 	/**
 	 * Returns the number of pages in the folder.
          * Minimum of 1 even if empty.
+	 * If the selector is non-null, this will be the number of pages in the selected results.
+	 *
 	 * @return Returns the number of pages.
 	 */
 	public synchronized int getPages() {
-		return pages;
+		if (currentSelector == null || elements == null)
+			return pages;
+		int ps = getPageSize();
+		int rv = selected.size() / ps;
+		if (rv * ps < elements.length)
+			rv++;
+		return rv;
 	}
 
 	/**
@@ -153,26 +179,29 @@ public class Folder<O extends Object> {
 
 	/**
 	 * Sorts the elements according the order given by @link addSorter()
-	 * and @link sortBy().
+	 * and @link setSortBy().
+         *
+         * @since public since 0.9.33
 	 */
-	private void sort()
+	public synchronized void sort()
 	{
-		if( currentSorter != null )
-			Arrays.sort( elements, currentSorter );
+		if (currentSorter != null && elements != null && elements.length > 1)
+			DataHelper.sort(elements, currentSorter);
 	}
 	
 	/**
 	 * Set the array of objects the folder should manage.
 	 * Does NOT copy the array.
+	 * Sorts the array if a sorter set.
 	 * 
 	 * @param elements Array of Os.
 	 */
-	public synchronized void setElements( O[] elements )
+	private synchronized void setElements( O[] elements )
 	{
 		if (elements.length > 0) {
 			this.elements = elements;
-			if( currentSorter != null )
-				sort();
+			sort();
+			select();
 		} else {
 			this.elements = null;
 		}
@@ -213,33 +242,49 @@ public class Folder<O extends Object> {
 	 * Add an element only if it does not already exist
 	 * 
 	 * @param element to add
+	 * @return true if added
 	 */
-	public void addElement(O element) {
-		addElements(Collections.singleton(element));
+	public boolean addElement(O element) {
+		return addElements(Collections.singletonList(element)) > 0;
 	}
 	
 	/**
-	 * Add elements only if it they do not already exist
+	 * Add elements only if they do not already exist
+	 * Re-sorts the array if a sorter is set and any elements are actually added.
 	 * 
-	 * @param elems to adde
+	 * @param elems to add
+	 * @return number added
 	 */
 	@SuppressWarnings("unchecked")
-	public synchronized void addElements(Collection<O> elems) {
+	public synchronized int addElements(List<O> elems) {
+		int added = 0;
 		if (elements != null) {
-			List<O> list = new ArrayList<O>(Arrays.asList(elements));
-			boolean shouldUpdate = false;
+			// delay copy until required
+			List<O> list = null;
 			for (O e : elems) {
-				if (!list.contains(e)) {
+				boolean found = false;
+				for (int i = 0; i < elements.length; i++) {
+					if (e.equals(elements[i])) {
+						found = true;
+						break;
+					}
+				}
+				if (!found) {
+					if (list == null) {
+						list = new ArrayList<O>(Arrays.asList(elements));
+					}
 					list.add(e);
-					shouldUpdate = true;
 				}
 			}
-			if (shouldUpdate) {
-				elements = (O[]) list.toArray(new Object[list.size()]);
-				sort();
-				update();
+			if (list != null) {
+				added = list.size() - elements.length;
+				setElements((O[]) list.toArray(new Object[list.size()]));
 			}
+		} else if (!elems.isEmpty()) {
+			added = elems.size();
+			setElements((O[]) (elems.toArray(new Object[added])));
 		}
+		return added;
 	}
 	
 	/**
@@ -263,6 +308,27 @@ public class Folder<O extends Object> {
 			}			
 		}
 		return list.iterator();
+	}
+
+	/**
+	 * Returns an iterator containing the elements on the current page.
+	 * This iterator is over a copy of the current page, and so
+	 * is thread safe w.r.t. other operations on this folder,
+	 * but will not reflect subsequent changes, and iter.remove()
+	 * will not change the folder.
+	 *
+	 * @return Iterator containing the elements on the current page.
+	 * @since 0.9.63
+	 */
+	public synchronized Iterator<O> currentPageSelectorIterator()
+	{
+		if (currentSelector == null)
+			return currentPageIterator();
+		int pageSize = getPageSize();
+		int offset = ( currentPage - 1 ) * pageSize;
+		if (selected == null || offset > selected.size())
+			return Collections.<O>emptyList().iterator();
+		return selected.subList(offset, Math.min(selected.size(), offset + pageSize)).iterator();
 	}
 
 	/**
@@ -303,9 +369,9 @@ public class Folder<O extends Object> {
 	
 	/**
 	 * Adds a new sorter to the folder. You can sort the folder by
-	 * calling sortBy() and choose the given id there.
+	 * calling setSortBy() and choose the given id there.
 	 * 
-	 * @param id ID to identify the Comparator with @link sortBy()
+	 * @param id ID to identify the Comparator with @link setSortBy()
 	 * @param sorter a Comparator to sort the Array given by @link setElements()
 	 */
 	public synchronized void addSorter( String id, Comparator<O> sorter )
@@ -317,18 +383,30 @@ public class Folder<O extends Object> {
 	 * Activates sorting by the choosen Comparator. The id must
 	 * match the one, which the Comparator has been stored in the
 	 * folder with @link addSorter().
+	 * Sets the sorting direction of the folder.
+	 * 
+	 * Warning, this does not do the actual sort, only addElements() and setElements() does a sort.
 	 * 
 	 * @param id ID to identify the Comparator stored with @link addSorter()
+	 * @param direction UP or DOWN. UP is reverse sort.
 	 */
-	public synchronized void sortBy( String id )
+	public synchronized void setSortBy(String id, SortOrder direction)
 	{
+		SortOrder oldDirection = sortingDirection;
+		sortingDirection = direction;
+		Comparator<O> oldSorter = currentSorter;
 		currentSorter = sorter.get( id );
 		if (currentSorter != null) {
 			if (sortingDirection == SortOrder.UP)
 				currentSorter = Collections.reverseOrder(currentSorter);
-				currentSortID = id;
+			currentSortID = id;
 		} else {
 			currentSortID = null;
+		}
+		// invalidate selection if sort order changed
+		if (oldDirection != sortingDirection || !DataHelper.eq(oldSorter, currentSorter)) {
+			currentSelector = null;
+			selected = null;
 		}
 	}
 	
@@ -345,37 +423,55 @@ public class Folder<O extends Object> {
 	public synchronized SortOrder getCurrentSortingDirection() {
 		return sortingDirection;
 	}
-	
+
 	/**
-	 * Returns the element on the current page on the given position.
+	 * Warning, this does not do the actual selection, this is done in the iterator.
+	 * Resets page to 1 if selector changed.
 	 *
-	 * @param x Position of the element on the current page.
-	 * @return Element on the current page on the given position.
+	 * @param selector may be null
+	 * @since 0.9.63
 	 */
-	public synchronized O getElementAtPosXonCurrentPage( int x )
-	{
-		O result = null;
-		if( elements != null ) {
-			int pageSize = getPageSize();
-			int offset = ( currentPage - 1 ) * pageSize;
-			offset += x;			
-			if( offset >= 0 && offset < elements.length )
-				result = elements[offset];
+	public synchronized void setSelector(Selector<O> selector) {
+		if ((currentSelector != null && selector == null) ||
+		    (currentSelector == null && selector != null) ||
+		    (currentSelector != null && selector != null &&
+		     !currentSelector.getSelectionKey().equals(selector.getSelectionKey()))) {
+			currentPage = 1;
 		}
-		return result;
+		currentSelector = selector;
+		if (selector != null)
+			select();
+		else
+			selected = null;
 	}
 
 	/**
-	 * Sets the sorting direction of the folder.
-	 * Does not re-sort. Caller must call sortBy()
-	 * 
-	 * @param direction UP or DOWN
+	 * @return current selector or null
+	 * @since 0.9.63
 	 */
-	public synchronized void setSortingDirection(SortOrder direction)
-	{
-		sortingDirection = direction;
+	public synchronized Selector<O> getCurrentSelector() {
+		return currentSelector;
 	}
-	
+
+	/**
+	 * Select and cache results
+	 * @since 0.9.63
+	 */
+	private synchronized void select() {
+		if (selected == null)
+			selected = new ArrayList<O>();
+		else
+			selected.clear();
+		if (elements == null || currentSelector == null)
+			return;
+		int sz = getSize();
+		for (int i = 0; i < sz; i++) {
+			if (currentSelector.select(elements[i])) {
+				selected.add(elements[i]);
+			}
+		}
+	}
+
 	/**
 	 * Returns the first element of the sorted folder.
 	 * 
@@ -451,6 +547,49 @@ public class Folder<O extends Object> {
 		}
 		return result;
 	}
+
+	/**
+	 * Retrieves the next element in the sorted array.
+	 * 
+	 * @param element
+	 * @return The next element
+	 * @since 0.9.63
+	 */
+	public synchronized O getNextSelectedElement(O element)
+	{
+		if (currentSelector == null || selected == null)
+			return getNextElement(element);
+		O result = null;
+		int i = selected.indexOf(element);
+		if (i != -1) {
+			i++;
+			if (i < selected.size())
+				result = selected.get(i);
+		}
+		return result;
+	}
+
+	/**
+	 * Retrieves the previous element in the sorted array.
+	 * 
+	 * @param element
+	 * @return The previous element
+	 * @since 0.9.63
+	 */
+	public synchronized O getPreviousSelectedElement(O element)
+	{
+		if (currentSelector == null || selected == null)
+			return getPreviousElement(element);
+		O result = null;
+		int i = selected.indexOf(element);
+		if (i != -1) {
+			i--;
+			if (i >= 0 && i < selected.size())
+				result = selected.get(i);
+		}
+		return result;
+	}
+
 	/**
 	 * Retrieves element at index i.
 	 * 
@@ -505,5 +644,23 @@ public class Folder<O extends Object> {
 		if( elements == null )
 			return false;
 		return elements[0].equals( element );
+	}
+	
+	/**
+	 * Returns the page this element is on, using the current sort, or 1 if not found
+	 * 
+	 * @param element
+	 * @since 0.9.33
+	 */
+	public synchronized int getPageOf(O element)
+	{
+		if (pages <= 1)
+			return 1;
+		if (elements == null)
+			return 1;
+		int i = getIndexOf(element);
+		if (i < 0)
+			return 1;
+		return 1 + (i / getPageSize());
 	}
 }

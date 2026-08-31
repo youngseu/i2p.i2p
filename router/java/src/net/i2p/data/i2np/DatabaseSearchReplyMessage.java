@@ -87,6 +87,8 @@ public class DatabaseSearchReplyMessage extends FastI2NPMessageImpl {
         //_from = new Hash(from);
 
         //_context.statManager().addRateData("netDb.searchReplyMessageReceive", num*32 + 64, 1);
+        if (curIndex - offset > dataSize)
+            throw new I2NPMessageException("buffer overrun");
     }
     
     /** calculate the message body's length (not including the header and footer */
@@ -103,8 +105,7 @@ public class DatabaseSearchReplyMessage extends FastI2NPMessageImpl {
 
         System.arraycopy(_key.getData(), 0, out, curIndex, Hash.HASH_LENGTH);
         curIndex += Hash.HASH_LENGTH;
-        DataHelper.toLong(out, curIndex, 1, _peerHashes.size());
-        curIndex++;
+        out[curIndex++] = (byte) _peerHashes.size();
         for (int i = 0; i < getNumReplies(); i++) {
             System.arraycopy(getReply(i).getData(), 0, out, curIndex, Hash.HASH_LENGTH);
             curIndex += Hash.HASH_LENGTH;

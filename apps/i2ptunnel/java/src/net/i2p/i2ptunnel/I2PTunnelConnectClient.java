@@ -65,9 +65,8 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
     private final static String ERR_BAD_PROTOCOL =
          "HTTP/1.1 405 Bad Method\r\n"+
          "Content-Type: text/html; charset=iso-8859-1\r\n"+
-         "Cache-control: no-cache\r\n"+
+         "Cache-Control: no-cache\r\n"+
          "Connection: close\r\n"+
-         "Proxy-Connection: close\r\n"+
          "\r\n"+
          "<html><body><H1>I2P ERROR: METHOD NOT ALLOWED</H1>"+
          "The request uses a bad protocol. "+
@@ -76,9 +75,8 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
     private final static String ERR_LOCALHOST =
          "HTTP/1.1 403 Access Denied\r\n"+
          "Content-Type: text/html; charset=iso-8859-1\r\n"+
-         "Cache-control: no-cache\r\n"+
+         "Cache-Control: no-cache\r\n"+
          "Connection: close\r\n"+
-         "Proxy-Connection: close\r\n"+
          "\r\n"+
          "<html><body><H1>I2P ERROR: REQUEST DENIED</H1>"+
          "Your browser is misconfigured. Do not use the proxy to access the router console or other localhost destinations.<BR>";
@@ -154,7 +152,9 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
         boolean usingInternalOutproxy = false;
         Outproxy outproxy = null;
         long requestId = __requestId.incrementAndGet();
+        I2PSocket i2ps = null;
         try {
+            s.setSoTimeout(INITIAL_SO_TIMEOUT);
             out = s.getOutputStream();
             in = s.getInputStream();
             String line, method = null, host = null, destination = null, restofline = null;
@@ -201,8 +201,9 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
                         restofline = request.substring(pos); // ":80 HTTP/1.1" or " HTTP/1.1"
                     }
 
-                    if (host.toLowerCase(Locale.US).endsWith(".i2p")) {
-                        // Destination gets the host name
+                    String hostLowerCase = host.toLowerCase(Locale.US);
+                    if (hostLowerCase.endsWith(".i2p")) {
+                        // Destination gets the hostname
                         destination = host;
                     } else if (host.contains(".") || host.startsWith("[")) {
                         if (Boolean.parseBoolean(getTunnel().getClientOptions().getProperty(PROP_USE_OUTPROXY_PLUGIN, "true"))) {
@@ -222,21 +223,21 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
                         }
                         if (!usingInternalOutproxy) {
                             // The request must be forwarded to a outproxy
-                            currentProxy = selectProxy();
+                            currentProxy = selectProxy(hostLowerCase);
                             if (currentProxy == null) {
                                 if (_log.shouldLog(Log.WARN))
-                                    _log.warn(getPrefix(requestId) + "Host wants to be outproxied, but we dont have any!");
+                                    _log.warn("No outproxy configured for connection to: " + hostLowerCase);
                                 writeErrorMessage(ERR_NO_OUTPROXY, out);
-                                s.close();
                                 return;
                             }
                             destination = currentProxy;
                             usingWWWProxy = true;
                             newRequest.append("CONNECT ").append(host).append(restofline).append("\r\n"); // HTTP spec
                          }
-                    } else if (host.toLowerCase(Locale.US).equals("localhost")) {
+                    } else if (hostLowerCase.equals("localhost") || host.equals("127.0.0.1") ||
+                               hostLowerCase.endsWith(".localhost") ||
+                               host.startsWith("192.168.") || host.equals("[::1]")) {
                         writeErrorMessage(ERR_LOCALHOST, out);
-                        s.close();
                         return;
                     } else {  // full b64 address (hopefully)
                         destination = host;
@@ -283,6 +284,7 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
                         }
                     }
                     newRequest.append("\r\n"); // HTTP spec
+                    s.setSoTimeout(BROWSER_READ_TIMEOUT);
                     // do it
                     break;
                 }
@@ -290,7 +292,6 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
 
             if (method == null || !"CONNECT".equals(method.toUpperCase(Locale.US))) {
                 writeErrorMessage(ERR_BAD_PROTOCOL, out);
-                s.close();
                 return;
             }
             
@@ -307,7 +308,6 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
 
             if (destination == null) {
                 writeErrorMessage(ERR_BAD_PROTOCOL, out);
-                s.close();
                 return;
             }
             
@@ -321,7 +321,6 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
                         _log.warn(getPrefix(requestId) + "Auth required, sending 407");
                 }
                 out.write(DataHelper.getASCII(getAuthError(result == AuthResult.AUTH_STALE)));
-                s.close();
                 return;
             }
 
@@ -333,38 +332,43 @@ public class I2PTunnelConnectClient extends I2PTunnelHTTPClientBase implements R
                 else
                     header = getErrorPage("dnfh", ERR_DESTINATION_UNKNOWN);
                 writeErrorMessage(header, out, targetRequest, usingWWWProxy, destination);
-                s.close();
                 return;
             }
 
             I2PSocketOptions sktOpts = getDefaultOptions();
             if (!usingWWWProxy && remotePort > 0)
                 sktOpts.setPort(remotePort);
-            I2PSocket i2ps = createI2PSocket(clientDest, sktOpts);
+            i2ps = createI2PSocket(clientDest, sktOpts);
             byte[] data = null;
             byte[] response = null;
             if (usingWWWProxy)
                 data = newRequest.toString().getBytes("ISO-8859-1");
             else
                 response = SUCCESS_RESPONSE.getBytes("UTF-8");
-            OnTimeout onTimeout = new OnTimeout(s, s.getOutputStream(), targetRequest, usingWWWProxy, currentProxy, requestId);
-            Thread t = new I2PTunnelRunner(s, i2ps, sockLock, data, response, mySockets, onTimeout);
+            OnTimeout onTimeout = new OnTimeout(s, s.getOutputStream(), targetRequest, usingWWWProxy,
+                                                currentProxy, requestId, targetRequest, false);
+            I2PTunnelRunner t = new I2PTunnelRunner(s, i2ps, sockLock, data, response, mySockets, onTimeout);
+            if (usingWWWProxy) {
+                // isSSL must be false for ConnectClient
+                t.setSuccessCallback(new OnProxySuccess(currentProxy, host, false));
+            }
             // we are called from an unlimited thread pool, so run inline
             //t.start();
             t.run();
         } catch (IOException ex) {
             _log.info(getPrefix(requestId) + "Error trying to connect", ex);
             handleClientException(ex, out, targetRequest, usingWWWProxy, currentProxy, requestId);
-            closeSocket(s);
         } catch (I2PException ex) {
             _log.info("getPrefix(requestId) + Error trying to connect", ex);
             handleClientException(ex, out, targetRequest, usingWWWProxy, currentProxy, requestId);
-            closeSocket(s);
         } catch (OutOfMemoryError oom) {
             IOException ex = new IOException("OOM");
             _log.info("getPrefix(requestId) + Error trying to connect", ex);
             handleClientException(ex, out, targetRequest, usingWWWProxy, currentProxy, requestId);
+        } finally {
+            // only because we are running it inline
             closeSocket(s);
+            if (i2ps != null) try { i2ps.close(); } catch (IOException ioe) {}
         }
     }
 

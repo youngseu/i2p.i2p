@@ -3,8 +3,44 @@ Instructions to upload to launchpad PPA
 You must have a GPG key already uploaded to the
 usual public key servers, where launchpad can find it.
 
-Prep
-----
+Overview
+--------
+
+We currently copy the launchpad builds to our debian repo both
+for use in both the ubuntu and debian distros. This is much easier
+than doing debian builds ourselves.
+
+Versions are as follows:
+
+Min version	Max version		Uses src pkg	Copied to Debian	Notes
+-----------	-----------		------------	----------------	-----
+n/a					resolute	forky, sid		CANNOT BUILD ON LAUNCHPAD - when fixed: ant debian-release-tarball
+resolute	stonking		resolute	trixie, forky,		CURRENTLY BROKEN USE JAMMY - when fixed: ant debian-release-tarball
+							sid, stable,
+							unstable, testing
+questing				jammy					Don't bother to build, use jammy
+jammy		noble			jammy		bookworm		ant jammy-release-tarball
+
+Unsupported (No zstd package support):
+bullseye
+
+Unsupported (No Java 17):
+bionic		--			bionic		--
+focal		--			bionic		--
+
+Unsupported (Java 7):
+precise		saucy   		precise		wheezy
+trusty		wily			precise		jessie, stretch
+
+Unsupported (ant < 1.9.8)
+xenial		yakkety			xenial		--
+
+
+
+
+
+Prep (first time only)
+----------------------
 
 - Make a launchpad account
 - Log into launchpad
@@ -17,75 +53,70 @@ Prep
 - Make a PPA, lets call it 'test'
 - OPTIONAL: Go to i2p.packages PPA and copy over existing I2P to your PPA:
   (select "copy existing binaries")
-    trusty, vivid, wily, xenial, yakkety, zesty
-    not precise (only if building for precise which you probably aren't)
-    not utopic (obsolete, disabled by launchpad)
-- Go to i2p.packages PPA and copy over service-wrapper-java to your PPA.
-  This is required for the build.
-  (select "copy existing binaries")
-    trusty
-    not precise (only if building for precise which you probably aren't)
-    not vivid, wily, xenial, yakkety, zesty (more recent versions 3.5.25-2 or 3.5.26-3 are in official launchpad)
-    not utopic (obsolete, disabled by launchpad)
+    jammy and higher
 
 - you need the following packages
   sudo apt-get install devscripts dput dh_systemd bash-completion
 
-- check out clean copy of release:
-  mtn co -d i2p.mtn -b i2p.i2p i2p.i2p.foobar -r t:i2p-0.9.xx
 
 Generate files to upload
 ------------------------
 
+- check out clean copy of release:
+  git clone -l . /path/to/releasedir
+
 - export TZ=UTC
 - cd i2p.i2p.foobar
-- copy debian-alt/(series)/changelog to debian/
+- copy debian-alt/(series)/* to debian/
 - edit debian/changelog to add the release at the top
-  * version MUST be 0.9.XX-1ubuntu1
-    next version for fixes would be 0.9.XX-2ubunutu1
-  * series MUST be xenial or trusty or precise
+  * series MUST be resolute
+  * version MUST be 2.xx.0-1ubuntu1 for resolute
+    For jammy, the names are different.
+    next version for fixes would be 2.xx.0-2ubunutu1
   * name and email MUST EXACTLY match what's in your GPG keyring
     or the signing will fail.
     (or add -kkeyid argument to debuild, which you must do
-     if you want to sign with a subkey)
+     if you want to sign with a subkey. As of recent versions,
+     the keyid argument must be a 16-char fingerprint, not a short key.)
     run gpg -K to list your private keys
-- ant debian-release-tarball (ant precise-release-tarball for precise/trusty)
-  this will make a directory ../i2p-0.9.XX-0-xxxxxxxx/
-  and a tarball ../i2p_0.9.XX.orig.tar.bz2
-- cp debian/changelog ../i2p-0.9.XX-0-xxxxxxxx/debian/
-- cp debian-alt/(series)/(other files besides changelog) to ../i2p-0.9.XX-0-xxxxxxxx/debian/
-- cd ../i2p-0.9.XX-0-xxxxxxxx/
-- Note: If building for precise/trusty and you are on yakkety or higher without Java 7,
-  make a symlink so debuild will work: cd /var/lib/jvm; sudo ln -s java-8-openjdk-amd64/ java-7-openjdk-amd64
+- Remove patch files in debian/patches that are not listed in debian/patches/series
+- ant debian-release-tarball (this is currently for resolute and higher)
+  this will make a directory ../i2p-2.xx.0-0-xxxxxxxx/
+  and a tarball ../i2p_2.xx.0.orig.tar.bz2
+- cp debian/changelog ../i2p-2.xx.0-0-xxxxxxxx/debian/
+- cp debian-alt/(series)/(other files besides changelog) to ../i2p-2.xx.0-0-xxxxxxxx/debian/
+- cd ../i2p-2.xx.0-0-xxxxxxxx/
 - Build the *1ubuntu1* files:
   If you have NOT done a successful dput for this release yet:
     debuild -S -sa -kkeyid
   otherwise, if just fixing up the control files, patches, etc:
     debuild -S -sd -kkeyid
   (note: no space allowed in -kkeyid)
+  If you get a dpkg-checkbuilddeps error for jammy,
+  add a -d option, e.g. debuild -d -S -sa -kkeyid
 - If patches fail, you must fix them up, either manually or with quilt
   (quilt instructions go here)
 
 - You will now have the following files in ..:
-  i2p_0.9.XX-1ubuntu1.debian.tar.xz
-  i2p_0.9.XX-1ubuntu1.dsc
-  i2p_0.9.XX-1ubuntu1_source.changes
-  i2p_0.9.XX-1ubuntu1_source.build
+  i2p_2.xx.0-1ubuntu1.debian.tar.xz
+  i2p_2.xx.0-1ubuntu1.dsc
+  i2p_2.xx.0-1ubuntu1_source.changes
+  i2p_2.xx.0-1ubuntu1_source.build
 - And from the copy above:
-  i2p_0.9.XX.orig.tar.bz2
+  i2p_2.xx.0.orig.tar.bz2
 
 Upload to launchpad
 -------------------
 
 - cd ..
 - Upload to launchpad:
-  dput ppa:your-lp-id/your-ppa-name i2p_0.9.XX-1ubuntu1_source.changes
+  dput ppa:your-lp-id/your-ppa-name i2p_2.xx.0-1ubuntu1_source.changes
 
 This will upload the following files:
-  i2p_0.9.XX-1ubuntu1.dsc            (the GPG signature)
-  i2p_0.9.XX-1ubuntu1.debian.tar.xz  (basically the debian/ directory tarball)
-  i2p_0.9.XX-1ubuntu1_source.changes (the changelog text file)
-  i2p_0.9.XX.orig.tar.bz2            (the source tarball)
+  i2p_2.xx.0-1ubuntu1.dsc            (the GPG signature)
+  i2p_2.xx.0-1ubuntu1.debian.tar.xz  (basically the debian/ directory tarball)
+  i2p_2.xx.0-1ubuntu1_source.changes (the changelog text file)
+  i2p_2.xx.0.orig.tar.bz2            (the source tarball)
 
 Note: If you didn't add your GPG fingerprint to your launchpad account
 way up there above in step 2 or so, the upload will work,
@@ -100,8 +131,7 @@ The amd64 build produces one deb:
 The i386 build produces three debs:
    i2p-doc (arch-independent), i2p-router (arch-independent), and libjbigi-jni (i386)
 So the build isn't done until both arch builds are complete.
-Don't
-
+Don't do anything else until both builds are done and published.
 
 If it works, copy the series you are running (e.g. yakkety) in your PPA
 so that you can test.
@@ -128,16 +158,16 @@ Release
 -------
 
 Then copy from your PPA to the i2p-maintainers PPA.
-Then in the i2p-maintainers PPA, copy trusty to vivid. Copy xenial to yakkety, zesty.
+Then in the i2p-maintainers PPA, copy to other versions as specified in the table
+at the top of this document.
 Did a new series open up since the last time you did this? Copy to the new one also.
   (select "copy existing binaries")
-  Copy xenial first and wait for it to be published in i2p-maintainers or the others will fail.
-For precise and trusty, build and copy it separately. Both precise and trusty are built
-from the "ant precise-release-tarball" source.
 
 
 Creating milestone, release, and uploading files
 ----------------------------------------------
+
+You may do this either before or after doing the Launchpad builds.
 
 You must first create a milestone, then create a release
 and attach it to the milestone.
@@ -146,7 +176,7 @@ and attach it to the milestone.
 
 Go to https://launchpad.net/i2p/trunk
 Down at bottom, click 'create milestone'
-    Name: 0.9.xx (NOT i2p 0.9.xx)
+    Name: 2.xx.0 (NOT i2p 2.xx.0)
     Code name: empty
     Date targeted: Actual release date
     Tags: empty
@@ -158,22 +188,22 @@ At your milestone, 'release now'
     Release notes: empty
     Changelog: empty
 Click 'create release'
-Now you on the page for that milestone
+Now you are on the page for that milestone
 Click 'add download file'
 For each of the four files
-    i2psource_0.9.xx.tar.bz2
-      Description: I2P 0.9.xx Source Code
-      Sig: i2psource_0.9.xx.tar.bz2.sig
+    i2psource_2.xx.0.tar.bz2
+      Description: I2P 2.xx.0 Source Code
+      Sig: i2psource_2.xx.0.tar.bz2.sig
       File Content Type: Code Release Tarball
-    i2pinstall_0.9.xx_windows.exe
-      Description: I2P 0.9.xx Installer for Windows
-      Sig: i2pinstall_0.9.xx_windows.exe.sig
+    i2pinstall_2.xx.0_windows.exe
+      Description: I2P 2.xx.0 Installer for Windows
+      Sig: i2pinstall_2.xx.0_windows.exe.sig
       File Content Type: Installer File
-    i2pinstall_0.9.xx.jar
-      Description: I2P 0.9.xx Installer (Linux / OSX / FreeBSD / Solaris)
-      Sig: i2pinstall_0.9.xx.jar.sig
+    i2pinstall_2.xx.0.jar
+      Description: I2P 2.xx.0 Installer (Linux / OSX / FreeBSD / Solaris)
+      Sig: i2pinstall_2.xx.0.jar.sig
       File Content Type: Installer File
-    i2pupdate_0.9.xx.zip
-      Description: I2P 0.9.xx Update
-      Sig: i2pupdate_0.9.xx.zip.sig
+    i2pupdate_2.xx.0.zip
+      Description: I2P 2.xx.0 Update
+      Sig: i2pupdate_2.xx.0.zip.sig
       File Content Type: Installer File

@@ -1,3 +1,14 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa.math.bigint;
 
 import java.io.Serializable;
@@ -91,6 +102,16 @@ public class BigIntegerFieldElement extends FieldElement implements Serializable
 
     public FieldElement pow22523(){
         return pow(f.getQm5d8());
+    }
+
+    /**
+     * @since 0.9.36
+     */
+    @Override
+    public FieldElement cmov(FieldElement val, int b) {
+        // Not constant-time, but it doesn't really matter because none of the underlying BigInteger operations
+        // are either, so there's not much point in trying hard here ...
+        return b == 0 ? this : val;
     }
 
     @Override

@@ -28,7 +28,6 @@ import java.io.OutputStream;
 import java.io.SequenceInputStream;
 import net.i2p.I2PAppContext;
 import net.i2p.client.streaming.I2PSocket;
-import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.util.Log;
 
@@ -41,23 +40,14 @@ import net.i2p.util.Log;
 class PeerAcceptor
 {
   private final Log _log = I2PAppContext.getGlobalContext().logManager().getLog(PeerAcceptor.class);
-  private final PeerCoordinator coordinator;
   final PeerCoordinatorSet coordinators;
 
   /** shorten timeout while reading handshake */
   private static final long HASH_READ_TIMEOUT = 45*1000;
 
-
-  public PeerAcceptor(PeerCoordinator coordinator)
-  {
-    this.coordinator = coordinator;
-    this.coordinators = null;
-  }
-  
   public PeerAcceptor(PeerCoordinatorSet coordinators)
   {
     this.coordinators = coordinators;
-    this.coordinator = null;
   }
 
   public void connection(I2PSocket socket,
@@ -70,7 +60,7 @@ class PeerAcceptor
     // ahead the first $LOOKAHEAD_SIZE bytes to figure out which infohash they want to
     // talk about, and we can just look for that in our list of active torrents.
     byte peerInfoHash[] = null;
-    if (in instanceof BufferedInputStream) {
+
         // multitorrent
         in.mark(LOOKAHEAD_SIZE);
         long timeout = socket.getReadTimeout();
@@ -79,41 +69,11 @@ class PeerAcceptor
             peerInfoHash = readHash(in);
         } catch (IOException ioe) {
             // unique exception so ConnectionAcceptor can blame the peer
-            throw new ProtocolException(ioe.toString());
+            throw new ProtocolException("bad protocol", ioe);
         }
         socket.setReadTimeout(timeout);
         in.reset();
-    } else {
-        // Single torrent - is this working right?
-        try {
-          peerInfoHash = readHash(in);
-          if (_log.shouldLog(Log.INFO))
-              _log.info("infohash read from " + socket.getPeerDestination().calculateHash().toBase64() 
-                        + ": " + Base64.encode(peerInfoHash));
-        } catch (IOException ioe) {
-            if (_log.shouldLog(Log.INFO))
-                _log.info("Unable to read the infohash from " + socket.getPeerDestination().calculateHash().toBase64());
-            throw ioe;
-        }
-        in = new SequenceInputStream(new ByteArrayInputStream(peerInfoHash), in);
-    }
-    if (coordinator != null) {
-        // single torrent capability
-        if (DataHelper.eq(coordinator.getInfoHash(), peerInfoHash)) {
-            if (coordinator.needPeers())
-              {
-                Peer peer = new Peer(socket, in, out, coordinator.getID(),
-                                     coordinator.getInfoHash(), coordinator.getMetaInfo());
-                coordinator.addPeer(peer);
-              }
-            else
-              socket.close();
-        } else {
-          // its for another infohash, but we are only single torrent capable.  b0rk.
-            throw new IOException("Peer wants another torrent (" + Base64.encode(peerInfoHash) 
-                                  + ") while we only support (" + Base64.encode(coordinator.getInfoHash()) + ")");
-        }
-    } else {
+
         // multitorrent capable, so lets see what we can handle
         PeerCoordinator cur = coordinators.get(peerInfoHash);
         if (cur != null) {
@@ -123,21 +83,19 @@ class PeerAcceptor
                     Peer peer = new Peer(socket, in, out, cur.getID(),
                                          cur.getInfoHash(), cur.getMetaInfo());
                     cur.addPeer(peer);
-                    return;
                   }
                 else 
                   {
                     if (_log.shouldLog(Log.DEBUG))
                       _log.debug("Rejecting new peer for " + cur.getName());
                     socket.close();
-                    return;
                   }
+                return;
             }
         }
         // this is only reached if none of the coordinators match the infohash
-        throw new IOException("Peer wants another torrent (" + Base64.encode(peerInfoHash) 
+        throw new IOException("Peer wants torrent (" + I2PSnarkUtil.toHex(peerInfoHash) 
                               + ") while we don't support that hash");
-    }
   }
 
   private static final String PROTO_STR = "BitTorrent protocol";
@@ -183,6 +141,11 @@ class PeerAcceptor
     public static class ProtocolException extends IOException {
         public ProtocolException(String s) {
             super(s);
+        }
+
+        /** @since 0.9.71 */
+        public ProtocolException(String s, Throwable t) {
+            super(s, t);
         }
     }
 }

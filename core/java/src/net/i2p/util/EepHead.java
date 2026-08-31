@@ -37,7 +37,7 @@ import net.i2p.I2PAppContext;
  */
 public class EepHead extends EepGet {
     /** EepGet needs either a non-null file or a stream... shouldn't actually be written to... */
-    static final OutputStream _dummyStream = new ByteArrayOutputStream(0);
+    private static final OutputStream _dummyStream = new ByteArrayOutputStream(0);
 
     public EepHead(I2PAppContext ctx, String proxyHost, int proxyPort, int numRetries, String url) {
         // we're using this constructor:
@@ -138,13 +138,23 @@ public class EepHead extends EepGet {
             }
             get.addAuthorization(username, password);
         }
-        if (get.fetch(45*1000, -1, inactivityTimeout)) {
-            System.err.println("Content-Type: " + get.getContentType());
+        if (get.fetch(inactivityTimeout, inactivityTimeout, inactivityTimeout)) {
+            String x = get.getContentType();
+            if (x != null)
+                System.err.println("Content-Type: " + x);
             System.err.println("Content-Length: " + get.getContentLength());
-            System.err.println("Last-Modified: " + get.getLastModified());
-            System.err.println("Etag: " + get.getETag());
+            x = get.getLastModified();
+            if (x != null)
+                System.err.println("Last-Modified: " + x);
+            x = get.getETag();
+            if (x != null)
+                System.err.println("Etag: " + x);
         } else {
             System.err.println("Failed " + url);
+            int responseCode = get.getStatusCode();
+            String responseText = get.getStatusText();
+            if (responseCode > 0)
+                System.err.println(responseCode + (responseText != null ? (" " + responseText) : ""));
             System.exit(1);
         }
     }
@@ -157,24 +167,23 @@ public class EepHead extends EepGet {
                            "        (use -c or -p :0 for no proxy)");
     }
     
-    /** return true if the URL was completely retrieved */
+    /**
+     *  @param timeout may be null as of 0.9.49
+     */
     @Override
     protected void doFetch(SocketTimeout timeout) throws IOException {
-        _headersRead = false;
         _aborted = false;
-        try {
-            readHeaders();
-        } finally {
-            _headersRead = true;
-        }
+        readHeaders();
         if (_aborted)
             throw new IOException("Timed out reading the HTTP headers");
         
-        timeout.resetTimer();
-        if (_fetchInactivityTimeout > 0)
-            timeout.setInactivityTimeout(_fetchInactivityTimeout);
-        else
-            timeout.setInactivityTimeout(60*1000);
+        if (timeout != null) {
+            timeout.resetTimer();
+            if (_fetchInactivityTimeout > 0)
+                timeout.setInactivityTimeout(_fetchInactivityTimeout);
+            else
+                timeout.setInactivityTimeout(INACTIVITY_TIMEOUT);
+        }
         
         // Should we even follow redirects for HEAD?
         if (_redirectLocation != null) {
@@ -234,6 +243,8 @@ public class EepHead extends EepGet {
             doFetch(timeout);
             return;
         }
+        if (timeout != null)
+            timeout.cancel();
         
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("Headers read completely");
@@ -245,8 +256,6 @@ public class EepHead extends EepGet {
         if (_aborted)
             throw new IOException("Timed out reading the HTTP data");
         
-        timeout.cancel();
-        
         if (_transferFailed) {
             // 404, etc - transferFailed is called after all attempts fail, by fetch() above
             for (int i = 0; i < _listeners.size(); i++) 
@@ -257,6 +266,14 @@ public class EepHead extends EepGet {
                         0, 0, 0, _url, "dummy", false);
         }
     }
+
+    /**
+     *  Should we read the body of the response?
+     *  @return false always
+     *  @since 0.9.50
+     */
+    @Override
+    protected boolean shouldReadBody() { return false; }
 
     @Override
     protected String getRequest() throws IOException {

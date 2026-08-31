@@ -85,10 +85,10 @@ import net.i2p.I2PAppContext;
 import net.i2p.crypto.KeyStoreUtil;
 import net.i2p.data.DataHelper;
 
-import org.apache.http.conn.ssl.DefaultHostnameVerifier;
-import org.apache.http.conn.util.PublicSuffixList;
-import org.apache.http.conn.util.PublicSuffixListParser;
-import org.apache.http.conn.util.PublicSuffixMatcher;
+import net.i2p.apache.http.conn.ssl.DefaultHostnameVerifier;
+import net.i2p.apache.http.conn.util.PublicSuffixList;
+import net.i2p.apache.http.conn.util.PublicSuffixListParser;
+import net.i2p.apache.http.conn.util.PublicSuffixMatcher;
 
 /**
  * Loads trusted ASCII certs from ~/.i2p/certificates/ and $I2P/certificates/.
@@ -132,18 +132,25 @@ public class I2PSSLSocketFactory {
     /**
      *  Java 7 does not enable 1.1 or 1.2 by default on the client side.
      *  Java 8 does enable 1.1 and 1.2 by default on the client side.
+     *  1.3 in Java 11, but it requires:
+     *    ChaCha20/Poly1305 in Java 12 (we could add a provider)
+     *    X25519 in Java 13 but may be pulled in to 12 (can't use our unsigned provider)
+     *    Ed25519 in Java 13 (but we can use our provider)
+     *    ref: https://openjdk.java.net/jeps/332
+     *
      *  ref: http://docs.oracle.com/javase/7/docs/technotes/guides/security/SunProviders.html
      *  Unmodifiable.
      *  Public for RouterConsoleRunner.
      *  @since 0.9.16
      */
     public static final List<String> INCLUDE_PROTOCOLS = Collections.unmodifiableList(Arrays.asList(new String[] {
-        "TLSv1", "TLSv1.1", "TLSv1.2"
+        "TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"
     }));
 
     /**
      *  We exclude everything that Java 8 disables by default, plus some others.
      *  ref: http://docs.oracle.com/javase/8/docs/technotes/guides/security/SunProviders.html
+     *  See also: https://developer.android.com/reference/javax/net/ssl/SSLSocket.html
      *  Unmodifiable.
      *  Public for RouterConsoleRunner.
      *  @since 0.9.16
@@ -230,7 +237,7 @@ public class I2PSSLSocketFactory {
     private final I2PAppContext _context;
 
     /**
-     * @param relativeCertPath e.g. "certificates/i2cp"
+     * @param relativeCertPath e.g. "certificates/i2cp"; as of 0.9.41, may be absolute
      * @since 0.9.9 was static
      */
     public I2PSSLSocketFactory(I2PAppContext context, boolean loadSystemCerts, String relativeCertPath)
@@ -242,7 +249,7 @@ public class I2PSSLSocketFactory {
     /**
      * Returns a socket to the host.
      *
-     * A host argument that's an IP address (instead of a host name)
+     * A host argument that's an IP address (instead of a hostname)
      * is not recommended, as this will probably fail
      * SSL certificate validation.
      *
@@ -260,9 +267,9 @@ public class I2PSSLSocketFactory {
     /**
      * Returns a socket to the host.
      *
-     * An InetAddress argument created with an IP address (instead of a host name)
+     * An InetAddress argument created with an IP address (instead of a hostname)
      * is not recommended, as this will perform a reverse DNS lookup to
-     * get the host name for certificate validation, which will probably then fail.
+     * get the hostname for certificate validation, which will probably then fail.
      *
      * Hostname validation is skipped for localhost addresses, but you still
      * must trust the certificate.
@@ -278,7 +285,9 @@ public class I2PSSLSocketFactory {
     }
 
     /**
-     *  Validate the hostname
+     *  Validate the hostname.
+     *  Warning - be sure to remove [] from IPv6 addresses in host parameter if you
+     *  got it from URI.getHost().
      *
      *  ref: https://developer.android.com/training/articles/security-ssl.html
      *  ref: http://op-co.de/blog/posts/java_sslsocket_mitm/
@@ -424,20 +433,15 @@ public class I2PSSLSocketFactory {
     */
     private static void addCountries(I2PAppContext ctx, List<String> tlds) {
         Log log = ctx.logManager().getLog(I2PSSLSocketFactory.class);
-        String geoDir = ctx.getProperty(PROP_GEOIP_DIR, GEOIP_DIR_DEFAULT);
-        File geoFile = new File(geoDir);
-        if (!geoFile.isAbsolute())
-            geoFile = new File(ctx.getBaseDir(), geoDir);
-        geoFile = new File(geoFile, COUNTRY_FILE_DEFAULT);
-        if (!geoFile.exists()) {
+        InputStream is = I2PSSLSocketFactory.class.getResourceAsStream("/net/i2p/util/resources/" + COUNTRY_FILE_DEFAULT);
+        if (is == null) {
             if (log.shouldWarn())
-                log.warn("Country file not found: " + geoFile.getAbsolutePath());
+                log.warn("Country file not found");
             return;
         }
         BufferedReader br = null;
         try {
-            br = new BufferedReader(new InputStreamReader(
-                    new FileInputStream(geoFile), "UTF-8"));
+            br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
             String line = null;
             int i = 0;
             while ( (line = br.readLine()) != null) {
@@ -451,17 +455,21 @@ public class I2PSSLSocketFactory {
                 } catch (IndexOutOfBoundsException ioobe) {}
             }
             if (log.shouldInfo())
-                log.info("Loaded " + i + " TLDs from " + geoFile.getAbsolutePath());
+                log.info("Loaded " + i + " TLDs from " + COUNTRY_FILE_DEFAULT);
         } catch (IOException ioe) {
             log.error("Error reading the Country File", ioe);
         } finally {
+            try { is.close(); } catch (IOException ioe) {}
             if (br != null) try { br.close(); } catch (IOException ioe) {}
         }
     }
 
     /**
      *  Loads certs from
-     *  the ~/.i2p/certificates/ and $I2P/certificates/ directories.
+     *  the ~/.i2p/certificates/ and $I2P/certificates/ directories,
+     *  or from the absolute path given.
+     *
+     *  @param relativeCertPath e.g. "certificates/i2cp"; as of 0.9.41, may be absolute
      */
     private static SSLSocketFactory initSSLContext(I2PAppContext context, boolean loadSystemCerts, String relativeCertPath)
                                throws GeneralSecurityException {
@@ -480,7 +488,10 @@ public class I2PSSLSocketFactory {
             }
         }
 
-        File dir = new File(context.getConfigDir(), relativeCertPath);
+        File dir = new File(relativeCertPath);
+        boolean wasAbsolute = dir.isAbsolute();
+        if (!wasAbsolute)
+            dir = new File(context.getConfigDir(), relativeCertPath);
         int adds = KeyStoreUtil.addCerts(dir, ks);
         int totalAdds = adds;
         if (adds > 0) {
@@ -488,14 +499,20 @@ public class I2PSSLSocketFactory {
                 log.info("Loaded " + adds + " trusted certificates from " + dir.getAbsolutePath());
         }
 
-        File dir2 = new File(context.getBaseDir(), relativeCertPath);
-        if (!dir.getAbsolutePath().equals(dir2.getAbsolutePath())) {
-            adds = KeyStoreUtil.addCerts(dir2, ks);
-            totalAdds += adds;
-            if (adds > 0) {
-                if (log.shouldLog(Log.INFO))
-                    log.info("Loaded " + adds + " trusted certificates from " + dir.getAbsolutePath());
+        File dir2;
+        if (!wasAbsolute) {
+            dir2 = new File(context.getBaseDir(), relativeCertPath);
+            if (!dir.getAbsolutePath().equals(dir2.getAbsolutePath())) {
+                adds = KeyStoreUtil.addCerts(dir2, ks);
+                totalAdds += adds;
+                if (adds > 0) {
+                    if (log.shouldLog(Log.INFO))
+                        log.info("Loaded " + adds + " trusted certificates from " + dir.getAbsolutePath());
+                }
             }
+        } else {
+            // for logging below
+            dir2 = dir;
         }
         if (totalAdds > 0 || loadSystemCerts) {
             if (log.shouldLog(Log.INFO))

@@ -12,10 +12,8 @@ import java.io.Writer;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.GeneralSecurityException;
-import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -40,7 +38,6 @@ import net.i2p.router.news.NewsEntry;
 import net.i2p.router.news.NewsManager;
 import net.i2p.router.news.NewsMetadata;
 import net.i2p.router.news.NewsXMLParser;
-import net.i2p.router.util.RFC822Date;
 import net.i2p.router.web.ConfigUpdateHandler;
 import net.i2p.router.web.NewsHelper;
 import net.i2p.update.*;
@@ -51,6 +48,7 @@ import net.i2p.util.EepGet;
 import net.i2p.util.FileUtil;
 import net.i2p.util.Log;
 import net.i2p.util.PortMapper;
+import net.i2p.util.RFC822Date;
 import net.i2p.util.ReusableGZIPInputStream;
 import net.i2p.util.SecureFile;
 import net.i2p.util.SecureFileOutputStream;
@@ -72,22 +70,41 @@ class NewsFetcher extends UpdateRunner {
     private long _newLastModified;
     private final File _newsFile;
     private final File _tempFile;
+    private final long _timeout;
+    private final boolean _showStatus;
+    private String _failMsg;
     /** is the news newer */
     private boolean _isNewer;
     private boolean _success;
+    /** did we get a new news entry */
+    private boolean _gotNewEntry;
 
     private static final String TEMP_NEWS_FILE = "news.xml.temp";
     static final String PROP_BLOCKLIST_TIME = "router.blocklistVersion";
     private static final String BLOCKLIST_DIR = "docs/feed/blocklist";
     private static final String BLOCKLIST_FILE = "blocklist.txt";
+    private static final long DEFAULT_TIMEOUT = 60*1000;
     
     public NewsFetcher(RouterContext ctx, ConsoleUpdateManager mgr, List<URI> uris) { 
+        this(ctx, mgr, uris, DEFAULT_TIMEOUT);
+    }
+
+    /**
+     *  @param timeout if less than 60 seconds, we assume this was manually initiated,
+     *                 and we will log status to the sidebar
+     *  @since 0.9.62
+     */
+    public NewsFetcher(RouterContext ctx, ConsoleUpdateManager mgr, List<URI> uris, long timeout) { 
         super(ctx, mgr, NEWS, uris);
         _newsFile = new File(ctx.getRouterDir(), NewsHelper.NEWS_FILE);
         _tempFile = new File(ctx.getTempDir(), "tmp-" + ctx.random().nextLong() + TEMP_NEWS_FILE);
-        long lastMod = NewsHelper.lastUpdated(ctx);
-        if (lastMod > 0)
-            _lastModified = RFC822Date.to822Date(lastMod);
+        _timeout = timeout;
+        _showStatus = timeout < DEFAULT_TIMEOUT;
+        if (!langChanged()) {
+            long lastMod = NewsHelper.lastUpdated(ctx);
+            if (lastMod > 0)
+                _lastModified = RFC822Date.to822Date(lastMod);
+        }
     }
 
     @Override
@@ -140,16 +157,47 @@ class NewsFetcher extends UpdateRunner {
                 long start = _context.clock().now();
                 // will be adjusted in headerReceived() below
                 _newLastModified = start;
-                if (get.fetch()) {
+                if (get.fetch(_timeout)) {
                     int status = get.getStatusCode();
                     if (status == 200 || status == 304) {
-                        Map<String, String> opts = new HashMap<String, String>(2);
+                        Map<String, String> opts = new HashMap<String, String>(3);
                         opts.put(NewsHelper.PROP_LAST_CHECKED, Long.toString(start));
-                        if (status == 200 && _isNewer)
-                            opts.put(NewsHelper.PROP_LAST_UPDATED, Long.toString(_newLastModified));
+                        if (status == 200 && _isNewer) {
+                            String lastMod = Long.toString(_newLastModified);
+                            opts.put(NewsHelper.PROP_LAST_UPDATED, lastMod);
+                            String lang = Translate.getLanguage(_context);
+                            opts.put(NewsHelper.PROP_LAST_LANG, lang);
+                            if (_gotNewEntry)
+                                opts.put(NewsHelper.PROP_LAST_NEW_ENTRY, lastMod);
+                        }
                         _context.router().saveConfig(opts, null);
+                        if (_failMsg != null) {
+                            // from checkForUpdates()
+                            _mgr.notifyComplete(this, "<b>" + _failMsg + "</b>");
+                        } else if (_showStatus) {
+                            if (status == 200)
+                                _mgr.notifyComplete(this, "News updated from " + _currentURI.getHost());
+                            else
+                                _mgr.notifyComplete(this, "No new news available from " + _currentURI.getHost());
+                        }
                         return;
                     }
+                } else {
+                    int status = get.getStatusCode();
+                    String msg;
+                    if (status == 504 || status <= 0)
+                        msg = "Unable to connect to news server " + _currentURI.getHost();
+                    else if (status == 500)
+                        msg = "News server " + _currentURI.getHost() + " not found in address book";
+                    else if (status == 404)
+                        msg = "News file not found on news server at " + newsURL;
+                    else
+                        msg = status + " " + DataHelper.stripHTML(get.getStatusText());
+                    // only display if manually initiated
+                    if (_showStatus)
+                        updateStatus("<b>" + msg + "</b>");
+                    if (_log.shouldWarn())
+                        _log.warn(msg);
                 }
             } catch (Throwable t) {
                 _log.error("Error fetching the news", t);
@@ -190,6 +238,17 @@ class NewsFetcher extends UpdateRunner {
             return uri;
         }
     }
+
+    /**
+     *  @since 0.9.62
+     */
+    private boolean langChanged() {
+        String old = _context.getProperty(NewsHelper.PROP_LAST_LANG);
+        if (old == null)
+            return false;
+        String lang = Translate.getLanguage(_context);
+        return !lang.equals(old);
+    }
     
     // Fake XML parsing
     // Line must contain this, and full entry must be on one line
@@ -206,8 +265,14 @@ class NewsFetcher extends UpdateRunner {
     private static final String CLEARNET_SU2_KEY = "su2clearnet";
     private static final String CLEARNET_HTTP_SU3_KEY = "su3clearnet";
     private static final String CLEARNET_HTTPS_SU3_KEY = "su3ssl";
-    private static final String I2P_SUD_KEY = "sudi2p";
-    private static final String I2P_SU2_KEY = "su2i2p";
+    // unused
+    //private static final String I2P_SUD_KEY = "sudi2p";
+    //private static final String I2P_SU2_KEY = "su2i2p";
+
+    /**
+     *  @since 0.9.52
+     */
+    private static final String I2P_SU3_KEY = "su3i2p";
 
     /**
      *  Parse the installed (not the temp) news file for the latest version.
@@ -241,12 +306,14 @@ class NewsFetcher extends UpdateRunner {
                                 _mgr.notifyVersionConstraint(this, _currentURI, ROUTER_SIGNED, "", ver, msg);
                                 return;
                             }
+/*
                             if (!FileUtil.isPack200Supported()) {
                                 String msg = _mgr._t("No Pack200 support in Java runtime.");
                                 _log.logAlways(Log.WARN, "Cannot update to version " + ver + ": " + msg);
                                 _mgr.notifyVersionConstraint(this, _currentURI, ROUTER_SIGNED, "", ver, msg);
                                 return;
                             }
+*/
                             if (!ConfigUpdateHandler.USE_SU3_UPDATE) {
                                 String msg = _mgr._t("No update certificates installed.");
                                 _log.logAlways(Log.WARN, "Cannot update to version " + ver + ": " + msg);
@@ -264,8 +331,8 @@ class NewsFetcher extends UpdateRunner {
                             }
                             String minJava = args.get(MIN_JAVA_VERSION_KEY);
                             if (minJava != null) {
-                                String ourJava = System.getProperty("java.version");
-                                if (VersionComparator.comp(ourJava, minJava) < 0) {
+                                if (!SystemVersion.isJava(minJava)) {
+                                    String ourJava = System.getProperty("java.version");
                                     String msg = _mgr._t("Requires Java version {0} but installed Java version is {1}", minJava, ourJava);
                                     _log.logAlways(Log.WARN, "Cannot update to version " + ver + ": " + msg);
                                     _mgr.notifyVersionConstraint(this, _currentURI, ROUTER_SIGNED, "", ver, msg);
@@ -280,14 +347,14 @@ class NewsFetcher extends UpdateRunner {
                             Map<UpdateMethod, List<URI>> sourceMap = new HashMap<UpdateMethod, List<URI>>(4);
                             // Must do su3 first
                             //if (ConfigUpdateHandler.USE_SU3_UPDATE) {
-                                sourceMap.put(HTTP, _mgr.getUpdateURLs(ROUTER_SIGNED_SU3, "", HTTP));
+                                addMethod(HTTP, args.get(I2P_SU3_KEY), sourceMap);
                                 addMethod(TORRENT, args.get(SU3_KEY), sourceMap);
                                 addMethod(HTTP_CLEARNET, args.get(CLEARNET_HTTP_SU3_KEY), sourceMap);
                                 addMethod(HTTPS_CLEARNET, args.get(CLEARNET_HTTPS_SU3_KEY), sourceMap);
                                 // notify about all sources at once
                                 _mgr.notifyVersionAvailable(this, _currentURI, ROUTER_SIGNED_SU3,
                                                             "", sourceMap, ver, "");
-                                sourceMap.clear();
+                            //  sourceMap.clear();
                             //}
                             // now do sud/su2 - DISABLED
                             //sourceMap.put(HTTP, _mgr.getUpdateURLs(ROUTER_SIGNED, "", HTTP));
@@ -314,6 +381,7 @@ class NewsFetcher extends UpdateRunner {
         } catch (IOException ioe) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Error checking the news for an update", ioe);
+            _failMsg = "Error checking the news for an update: " + ioe;
             return;
         } finally {
             if (in != null) try { in.close(); } catch (IOException ioe) {}
@@ -475,9 +543,38 @@ class NewsFetcher extends UpdateRunner {
         _success = true;
     }
 
-    /** override to prevent status update */
+    /**
+     * override for status update
+     * @since 0.9.62
+     */
     @Override
-    public void transferFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt) {}
+    public void attemptFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt, int numRetries, Exception cause) {
+        // only display if manually initiated
+        if (_showStatus) {
+            String msg = "Unable to connect to news server " + url + ": " + DataHelper.stripHTML(cause.toString());
+            updateStatus("<b>" + msg + "</b>");
+            if (_log.shouldWarn())
+                _log.warn(msg);
+        }
+        // update manager will also log
+        _mgr.notifyAttemptFailed(this, url, null);
+    }
+
+    /**
+     * override for status update
+     */
+    @Override
+    public void transferFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt) {
+        // only display if manually initiated
+        if (_showStatus) {
+            String msg = "Failed downloading news from " + url;
+            updateStatus("<b>" + msg + "</b>");
+            if (_log.shouldWarn())
+                _log.warn(msg);
+        }
+        // update manager will also log
+        _mgr.notifyAttemptFailed(this, url, null);
+    }
 
     /**
      *  Process the fetched su3 news file _tempFile.
@@ -493,7 +590,8 @@ class NewsFetcher extends UpdateRunner {
         // real xml
         File to2 = new File(_context.getTempDir(), "tmp2-" + _context.random().nextInt() + ".xml");
         try {
-            su3.verifyAndMigrate(to1);
+            if (!su3.verifyAndMigrate(to1))
+                throw new IOException("bad signature");
             int type = su3.getFileType();
             if (su3.getContentType() != SU3File.CONTENT_NEWS)
                 throw new IOException("bad content type: " + su3.getContentType());
@@ -521,7 +619,7 @@ class NewsFetcher extends UpdateRunner {
                 if (nmgr != null) {
                     nmgr.addEntries(entries);
                     List<Node> nodes = NewsXMLParser.getNodes(root, "entry");
-                    nmgr.storeEntries(nodes);
+                    _gotNewEntry = nmgr.storeEntries(nodes);
                 }
             }
             // Persist any new CRL entries
@@ -629,15 +727,13 @@ class NewsFetcher extends UpdateRunner {
         long oldTime = _context.getProperty(PROP_BLOCKLIST_TIME, 0L);
         if (ble.updated <= oldTime) {
             if (_log.shouldWarn())
-                _log.warn("Not processing blocklist " + new Date(ble.updated) +
-                          ", already have " + new Date(oldTime));
+                _log.warn("Not processing blocklist " + DataHelper.formatDate(ble.updated) +
+                          ", already have " + DataHelper.formatDate(oldTime));
             return;
         }
         Blocklist bl = _context.blocklist();
         Banlist ban = _context.banlist();
-        DateFormat fmt = DateFormat.getDateInstance(DateFormat.SHORT);
-        fmt.setTimeZone(SystemVersion.getSystemTimeZone(_context));
-        String reason = "Blocklist feed " + new Date(ble.updated);
+        String reason = "Blocklist feed " + DataHelper.formatDate(ble.updated);
         int banned = 0;
         for (Iterator<String> iter = ble.entries.iterator(); iter.hasNext(); ) {
             String s = iter.next();
@@ -648,8 +744,10 @@ class NewsFetcher extends UpdateRunner {
                     continue;
                 }
                 Hash h = Hash.create(b);
-                if (!ban.isBanlistedForever(h))
+                if (!ban.isBanlistedForever(h)) {
                     ban.banlistRouterForever(h, reason);
+                    _context.commSystem().forceDisconnect(h);
+                }
             } else {
                 byte[] ip = Addresses.getIP(s);
                 if (ip == null) {
@@ -713,8 +811,7 @@ class NewsFetcher extends UpdateRunner {
             f.setLastModified(ble.updated);
             String upd = Long.toString(ble.updated);
             _context.router().saveConfig(PROP_BLOCKLIST_TIME, upd);
-            _mgr.notifyVersionAvailable(this, _currentURI, BLOCKLIST, "", HTTP,
-                                        null, upd, "");
+            _mgr.notifyInstalled(BLOCKLIST, Blocklist.ID_FEED, upd);
         }
         if (_log.shouldWarn())
             _log.warn("Processed " + ble.entries.size() + " blocks and " + ble.removes.size() + " unblocks from news feed");
@@ -733,7 +830,7 @@ class NewsFetcher extends UpdateRunner {
             out = new BufferedWriter(new OutputStreamWriter(new SecureFileOutputStream(to), "UTF-8"));
             out.write("<!--\n");
             // update metadata in old format
-            out.write("<i2p.release ");
+            out.write(VERSION_PREFIX);
             if (latestRelease.i2pVersion != null)
                 out.write(" version=\"" + latestRelease.i2pVersion + '"');
             if (latestRelease.minVersion != null)
@@ -742,38 +839,45 @@ class NewsFetcher extends UpdateRunner {
                 out.write(" minJavaVersion=\"" + latestRelease.minJavaVersion + '"');
             String su3Torrent = "";
             String su2Torrent = "";
+            List<String> i2pnet = null;
+            List<String> clearnet = null;
+            List<String> clearnetssl = null;
             for (NewsMetadata.Update update : latestRelease.updates) {
                 if (update.torrent != null) {
-                    if ("su3".equals(update.type))
+                    if ("su3".equals(update.type)) {
                         su3Torrent = update.torrent;
-                    else if ("su2".equals(update.type))
+                        i2pnet = update.i2pnet;
+                        clearnet = update.clearnet;
+                        clearnetssl = update.ssl;
+                    } else if ("su2".equals(update.type)) {
                         su2Torrent = update.torrent;
+                    }
                 }
             }
             if (!su2Torrent.isEmpty())
                 out.write(" su2Torrent=\"" + su2Torrent + '"');
             if (!su3Torrent.isEmpty())
                 out.write(" su3Torrent=\"" + su3Torrent + '"');
+            writeList(out, I2P_SU3_KEY, i2pnet);
+            writeList(out, CLEARNET_HTTPS_SU3_KEY, clearnetssl);
+            writeList(out, CLEARNET_HTTP_SU3_KEY, clearnet);
             out.write("/>\n");
             // su3 and feed metadata for debugging
             out.write("** News version:\t" + DataHelper.stripHTML(sudVersion) + '\n');
             out.write("** Signed by:\t" + signingKeyName + '\n');
             out.write("** Feed:\t" + DataHelper.stripHTML(data.feedTitle) + '\n');
             out.write("** Feed ID:\t" + DataHelper.stripHTML(data.feedID) + '\n');
-            out.write("** Feed Date:\t" + (new Date(data.feedUpdated)) + '\n');
+            out.write("** Feed Date:\t" + DataHelper.formatDate(data.feedUpdated) + '\n');
             out.write("-->\n");
             if (entries == null)
                 return;
-            DateFormat fmt = DateFormat.getDateInstance(DateFormat.SHORT);
-            // the router sets the JVM time zone to UTC but saves the original here so we can get it
-            fmt.setTimeZone(SystemVersion.getSystemTimeZone(_context));
             for (NewsEntry e : entries) {
                 if (e.title == null || e.content == null)
                     continue;
-                Date date = new Date(e.updated);
-                out.write("<!-- Entry Date: " + date + " -->\n");
+                out.write("<!-- Entry Date: " + e.updated + " -->\n");
                 out.write("<h3>");
-                out.write(fmt.format(date));
+                // Warning - update NewsHandler.parseNews() if you change the format
+                out.write(DataHelper.formatDate(e.updated));
                 out.write(": ");
                 out.write(e.title);
                 out.write("</h3>\n");
@@ -785,5 +889,27 @@ class NewsFetcher extends UpdateRunner {
                 out.close(); 
             } catch (IOException ioe) {}
         }
+    }
+
+    /**
+     *  Write out key="foo,bar,baz".
+     *  Values cannot contain ','
+     *
+     *  @param values if null or empty, does nothing
+     *  @since 0.9.52
+     */
+    private static void writeList(Writer out, String key, List<String> values) throws IOException {
+        if (values == null || values.isEmpty())
+            return;
+        out.write(' ');
+        out.write(key);
+        out.write("=\"");
+        int sz = values.size();
+        for (int i = 0; i < sz; i++) {
+            out.write(values.get(i));
+            if (i != sz - 1)
+                out.write(',');
+        }
+        out.write('"');
     }
 }

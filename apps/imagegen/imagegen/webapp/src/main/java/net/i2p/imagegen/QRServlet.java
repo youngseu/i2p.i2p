@@ -64,7 +64,6 @@ public class QRServlet extends HttpServlet {
 	private static final String IDENTICON_IMAGE_FORMAT = "PNG";
 	private static final String IDENTICON_IMAGE_MIMETYPE = "image/png";
 	private static final long DEFAULT_IDENTICON_EXPIRES_IN_MILLIS = 24 * 60 * 60 * 1000;
-        // TODO the fonts all look terrible. See also the rendering hints below, nothing helps
 	private static final String DEFAULT_FONT_NAME = SystemVersion.isWindows() ?
 	                                                "Lucida Sans Typewriter" : Font.SANS_SERIF;	
 	private static final Font DEFAULT_LARGE_FONT = new Font(DEFAULT_FONT_NAME, Font.BOLD, 16);
@@ -148,26 +147,32 @@ public class QRServlet extends HttpServlet {
 				}
 				String text = request.getParameter(PARAM_IDENTICON_TEXT_SHORT);
 				if (text != null) {
-					BufferedImage bi = MatrixToImageWriter.toBufferedImage(matrix);
+					// add 1 so it generates RGB instead of 1 bit,
+					// so text anti-aliasing works
+					MatrixToImageConfig cfg = new MatrixToImageConfig(MatrixToImageConfig.BLACK + 1,
+					                                                  MatrixToImageConfig.WHITE);
+					BufferedImage bi = MatrixToImageWriter.toBufferedImage(matrix, cfg);
 					Graphics2D g = bi.createGraphics();
-					// anti-aliasing and hinting degrade text with 1bit input, so let's turn this off to improve quality  
-//					g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-//					g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-//					g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-//					g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_NORMALIZE);
-//					g.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
-//					g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
-					Font font = DEFAULT_LARGE_FONT;
+					// anti-aliasing and hinting for the text
+					g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+					g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+					g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+					g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_NORMALIZE);
+					g.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
+					g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+					// scale font
+					float shrink = Math.min(1.0f, 14.0f / text.length());
+					int pts = Math.min(28, Math.round(shrink * 16.0f * size / 160));
+					Font font = new Font(DEFAULT_FONT_NAME, Font.BOLD, pts);
 					g.setFont(font);
-					// doesn't work
-					Color color = Color.RED;
+					Color color = Color.BLACK;
 					g.setColor(color);
 					int width = bi.getWidth();
 					int height = bi.getHeight();
 					double swidth = font.getStringBounds(text, 0, text.length(),
 					                                     g.getFontRenderContext()).getBounds().getWidth();
 					int x = (width - (int) swidth) / 2;
-					int y = height - 10;
+					int y = height - 6;
 					g.drawString(text, x, y);
 					if (!ImageIO.write(bi, IDENTICON_IMAGE_FORMAT, byteOut))
 						throw new IOException("ImageIO.write() fail");
@@ -193,6 +198,7 @@ public class QRServlet extends HttpServlet {
 			// return image bytes to requester
 			response.setContentType(IDENTICON_IMAGE_MIMETYPE);
 			response.setHeader("X-Content-Type-Options", "nosniff");
+			response.setHeader("Accept-Ranges", "none");
 			response.setContentLength(imageBytes.length);
 			response.getOutputStream().write(imageBytes);
 		}

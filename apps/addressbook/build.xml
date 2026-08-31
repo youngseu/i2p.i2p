@@ -7,7 +7,9 @@
 	<property name="jar" value="addressbook.jar"/>
 	<property name="war" value="addressbook.war"/>
 	<property name="javac.compilerargs" value="" />
-	<property name="javac.version" value="1.7" />
+	<property name="javac.version" value="1.8" />
+	<property name="javac.release" value="8" />
+	<property name="manifest.classpath.name" value="Class-Path" />
 
 	<target name="all" depends="jar, emptyWar"/> 
 	
@@ -40,7 +42,9 @@
 
 	<target name="compile" depends="init, depend, warUpToDate">
             <javac debug="true" deprecation="on" source="${javac.version}" target="${javac.version}" 
+                       release="${javac.release}"
                        includeAntRuntime="false"
+                       encoding="UTF-8"
                        srcdir="${src}" destdir="${build}">
             <compilerarg line="${javac.compilerargs}" />
             <classpath>
@@ -54,8 +58,14 @@
 		<property name="workspace.changes.tr" value="" />
 		<jar basedir="${build}" destfile="${dist}/${jar}">
 			<manifest>
-				<attribute name="Main-Class" value="net.i2p.addressbook.Daemon"/>
+				<attribute name="${manifest.classpath.name}" value="i2p.jar" />
+				<attribute name="Main-Class" value="net.i2p.addressbook.CommandLine"/>
+				<attribute name="Specification-Title" value="I2P Address Book" />
+				<attribute name="Specification-Version" value="${api.version}" />
+				<attribute name="Specification-Vendor" value="The I2P Project https://i2p.net/" />
+				<attribute name="Implementation-Title" value="I2P Java Address Book" />
 				<attribute name="Implementation-Version" value="${full.version}" />
+				<attribute name="Implementation-Vendor" value="The I2P Project https://i2p.net/" />
 				<attribute name="Built-By" value="${build.built-by}" />
 		                <attribute name="Build-Date" value="${build.timestamp}" />
 		                <attribute name="Base-Revision" value="${workspace.version}" />
@@ -74,28 +84,36 @@
             </jar>
         </target>
 	
+	<!-- actually the jar -->
 	<target name="warUpToDate">
-	        <uptodate property="war.uptodate" targetfile="${dist}/${war}">
-		            <srcfiles dir= "." includes="${build}/**/*.class, web.xml"/>
+	        <uptodate property="war.uptodate" targetfile="${dist}/${jar}">
+		            <srcfiles dir= "." includes="${build}/**/*.class"/>
 	        </uptodate>
                 <condition property="shouldListChanges" >
                     <and>
                         <not>
                             <isset property="war.uptodate" />
                         </not>
-                        <isset property="mtn.available" />
+                        <isset property="git.available" />
                     </and>
                 </condition>
 	</target>
 
 	<target name="changes" depends="warUpToDate" if="shouldListChanges" >
-	        <exec executable="mtn" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
-	            <arg value="list" />
-	            <arg value="changed" />
-	            <arg value="." />
-	        </exec>
+		<exec executable="git" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
+		    <arg value="status" />
+		    <arg value="-s" />
+		    <arg value="--porcelain" />
+		    <arg value="-uno" />
+		    <arg value="." />
+		</exec>
+		<!-- trim flags -->
+		<exec executable="sed" inputstring="${workspace.changes}" outputproperty="workspace.changes.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+		    <arg value="-e" />
+		    <arg value="s/^[MTADRCU ]*//" />
+		</exec>
 		<!-- \n in an attribute value generates an invalid manifest -->
-		<exec executable="tr" inputstring="${workspace.changes}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+		<exec executable="tr" inputstring="${workspace.changes.sed}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
 			<arg value="-s" />
 			<arg value="[:space:]" />
 			<arg value="," />

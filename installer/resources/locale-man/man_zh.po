@@ -5,26 +5,32 @@
 # zzz <zzz@mail.i2p>, 2017.
 # 
 # Translators:
-# YF <yfdyh000@gmail.com>, 2017
 # 黃彥儒 <r1235613@gmail.com>, 2017
+# YFdyh000 <yfdyh000@gmail.com>, 2017
+# Cloud P <heige.pcloud@outlook.com>, 2019
+# Scott Rhodes <starring169@gmail.com>, 2020
+# a478a116a491ba89a1cee347ebcf239b_fd74b84, 2022
+# Narrator Z, 2022
+# zzzi2p, 2022
+# 
 msgid ""
 msgstr ""
 "Project-Id-Version: I2P man pages\n"
-"POT-Creation-Date: 2017-01-26 15:24+0000\n"
-"PO-Revision-Date: 2017-01-26 15:24+0000\n"
-"Last-Translator: 黃彥儒 <r1235613@gmail.com>, 2017\n"
+"POT-Creation-Date: 2021-11-27 13:31-0000\n"
+"Last-Translator: zzzi2p, 2022\n"
 "Language-Team: Chinese (China) (https://www.transifex.com/otf/teams/12694/zh_CN/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Language: zh_CN\n"
+"POT-Revision-Date: 2021-11-27 13:31-0000\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
 #. type: TH
 #: man/eepget.1:1
 #, no-wrap
 msgid "EEPGET"
-msgstr ""
+msgstr "EEPGET"
 
 #. type: TH
 #: man/eepget.1:1 man/i2prouter.1:1 man/i2prouter-nowrapper.1:1
@@ -140,7 +146,7 @@ msgstr "控制进度显示。B<\\ lineLen > 控制进度行的字符长度。默
 #. type: Plain text
 #: man/eepget.1:49
 msgid "B<-m> markSize"
-msgstr ""
+msgstr "标记大小"
 
 #. type: TP
 #: man/eepget.1:49
@@ -148,7 +154,7 @@ msgstr ""
 msgid ""
 "Controls the progress display. B<\\ markSize > is the number of bytes one "
 "'#' character represents. The default is 1024."
-msgstr ""
+msgstr "控制进度显示。B<\\ markSize > 控制进度行的字符长度。默认为1024。"
 
 #. type: Plain text
 #: man/eepget.1:55
@@ -161,7 +167,7 @@ msgstr "B<-n> 次重试"
 msgid ""
 "Specify the number of times to retry downloading if the download isn't "
 "successful. If this option is not specified, eepget will not retry."
-msgstr ""
+msgstr "指定在下载不成功的情况下重试下载的次数。如果不指定这个选项，eepget将不会重试。"
 
 #. type: Plain text
 #: man/eepget.1:61
@@ -179,7 +185,7 @@ msgstr "设置要写入的输出文件。 如果未指定此选项，输出文�
 #. type: Plain text
 #: man/eepget.1:67
 msgid "B<-p> proxy_host[:port]"
-msgstr ""
+msgstr "B<-p>代理主机:[端口]"
 
 #. type: TP
 #: man/eepget.1:67
@@ -189,6 +195,7 @@ msgid ""
 "eepget will use 4444. If this option is not specified, eepget will use "
 "127.0.0.1:4444. Specify B<-c> or B<-p> :0 to disable the eeproxy."
 msgstr ""
+"指定一个要使用的I2P代理服务器(eeproxy)。如果不指定这个选项，eepget将使用127.0.0.1:4444。指定B<-c>或B<-p>:0来禁用eeproxy。"
 
 #. type: Plain text
 #: man/eepget.1:73
@@ -199,7 +206,7 @@ msgstr "B<-t> 秒"
 #: man/eepget.1:73
 #, no-wrap
 msgid "Sets the inactivity timeout. The default is 60 seconds."
-msgstr ""
+msgstr "设置不活动超时。默认是60秒。"
 
 #. type: Plain text
 #: man/eepget.1:79
@@ -210,7 +217,7 @@ msgstr "B<-u> 用户名"
 #: man/eepget.1:79
 #, no-wrap
 msgid "Sets the username for proxy authorization, if required."
-msgstr ""
+msgstr "如果需要的话，设置代理授权的用户名。"
 
 #. type: Plain text
 #: man/eepget.1:85
@@ -223,44 +230,47 @@ msgstr "B<-x> 密码"
 msgid ""
 "Sets the password for proxy authorization, if required. If a username is "
 "specified but not a password, EepGet will prompt for the password."
-msgstr ""
+msgstr "如果需要的话，设置代理授权的密码。如果指定了用户名但没有密码，EepGet将提示密码。"
 
 #. type: SH
-#: man/eepget.1:89
+#: man/eepget.1:88
 #, no-wrap
 msgid "EXIT STATUS"
 msgstr "退出状态"
 
 #. type: Plain text
-#: man/eepget.1:93
+#: man/eepget.1:92
 msgid ""
 "B<eepget> exits with status zero upon successful transfer and non-zero if "
 "there were problems with the download."
 msgstr "B<eepget> 退出状态为 0 表示传输成功。如果下载遇到问题，则退出状态非 0。"
 
 #. type: SH
-#: man/eepget.1:94 man/i2prouter.1:54 man/i2prouter-nowrapper.1:24
+#: man/eepget.1:93 man/i2prouter.1:54 man/i2prouter-nowrapper.1:24
 #, no-wrap
 msgid "REPORTING BUGS"
-msgstr ""
+msgstr "报告漏洞"
 
 #. type: Plain text
-#: man/eepget.1:99 man/i2prouter.1:59 man/i2prouter-nowrapper.1:29
+#: man/eepget.1:98 man/i2prouter.1:59 man/i2prouter-nowrapper.1:29
 msgid ""
-"Please enter a ticket on E<.UR https://trac.i2p2.de/> the I2P trac page "
-"E<.UE .>"
+"Please enter an issue on E<.UR "
+"https://i2pgit.org/i2p-hackers/i2p.i2p/-/issues> the I2P GitLab server E<.UE"
+" .>"
 msgstr ""
+"请在E<.UR https://i2pgit.org/i2p-hackers/i2p.i2p/-/issues> I2P GitLab服务器E<.UE "
+".>上输入一个问题。"
 
 #. type: SH
-#: man/eepget.1:100 man/i2prouter.1:60 man/i2prouter-nowrapper.1:30
+#: man/eepget.1:99 man/i2prouter.1:60 man/i2prouter-nowrapper.1:30
 #, no-wrap
 msgid "SEE ALSO"
 msgstr "另见"
 
 #. type: Plain text
-#: man/eepget.1:104
+#: man/eepget.1:103
 msgid "B<i2prouter>(1)  B<curl>(1)  B<wget>(1)"
-msgstr ""
+msgstr "B<i2prouter>(1)  B<curl>(1)  B<wget>(1)"
 
 #. type: TH
 #: man/i2prouter.1:1
@@ -296,7 +306,7 @@ msgstr "B<console>"
 #. type: Plain text
 #: man/i2prouter.1:17
 msgid "Runs I2P as a console application under the current user."
-msgstr ""
+msgstr "在当前用户以控制台应用运行I2P"
 
 #. type: IP
 #: man/i2prouter.1:19
@@ -324,99 +334,99 @@ msgstr "停止 I2P 服务。"
 #: man/i2prouter.1:27
 #, no-wrap
 msgid "B<restart>"
-msgstr ""
+msgstr "B<restart>"
 
 #. type: Plain text
 #: man/i2prouter.1:29
 msgid "Stops the I2P service and then starts it."
-msgstr ""
+msgstr "停止I2P服务，随后重启。"
 
 #. type: IP
 #: man/i2prouter.1:31
 #, no-wrap
 msgid "B<condrestart>"
-msgstr ""
+msgstr "B<condrestart>"
 
 #. type: Plain text
 #: man/i2prouter.1:33
 msgid "Restart the I2P service only if it is already running."
-msgstr ""
+msgstr "仅当I2P服务已在运行时重启。"
 
 #. type: IP
 #: man/i2prouter.1:35
 #, no-wrap
 msgid "B<graceful>"
-msgstr ""
+msgstr "B<graceful>"
 
 #. type: Plain text
 #: man/i2prouter.1:37
 msgid "Stop I2P gracefully (may take up to 11 minutes)"
-msgstr ""
+msgstr "平滑关闭I2P（最多可能需要11分钟）"
 
 #. type: IP
 #: man/i2prouter.1:39
 #, no-wrap
 msgid "B<install>"
-msgstr ""
+msgstr "B<install>"
 
 #. type: Plain text
 #: man/i2prouter.1:41
 msgid "Install initscript to start I2P automatically when the system boots."
-msgstr ""
+msgstr "安装initscript以在系统启动时自动启动I2P。"
 
 #. type: IP
 #: man/i2prouter.1:43
 #, no-wrap
 msgid "B<remove>"
-msgstr ""
+msgstr "B<remove>"
 
 #. type: Plain text
 #: man/i2prouter.1:45
 msgid "Uninstall initscript that was installed with B<install>"
-msgstr ""
+msgstr "卸载与B<install>一起安装的initscript"
 
 #. type: IP
 #: man/i2prouter.1:47
 #, no-wrap
 msgid "B<status>"
-msgstr ""
+msgstr "B<status>"
 
 #. type: Plain text
 #: man/i2prouter.1:49
 msgid "Prints whether the I2P service is running."
-msgstr ""
+msgstr "显示I2P服务是否在运行。"
 
 #. type: IP
 #: man/i2prouter.1:51
 #, no-wrap
 msgid "B<dump>"
-msgstr ""
+msgstr "B<dump>"
 
 #. type: Plain text
 #: man/i2prouter.1:53
 msgid "Dumps the current threads into B<wrapper.log>."
-msgstr ""
+msgstr "将当前的线程转储保存到B<wrapper.log>。"
 
 #. type: Plain text
 #: man/i2prouter.1:61
 msgid "B<i2prouter-nowrapper>(1)"
-msgstr ""
+msgstr "B<i2prouter-nowrapper>(1)"
 
 #. type: TH
 #: man/i2prouter-nowrapper.1:1
 #, no-wrap
 msgid "I2PROUTER-NOWRAPPER"
-msgstr ""
+msgstr "I2PROUTER-NOWRAPPER"
 
 #. type: Plain text
 #: man/i2prouter-nowrapper.1:5
 msgid "i2prouter-nowrapper - start the I2P router"
-msgstr ""
+msgstr "i2prouter-nowrapper - 启动I2P路由器"
 
 #. type: Plain text
 #: man/i2prouter-nowrapper.1:8
 msgid "B<i2prouter-nowrapper>"
-msgstr ""
+msgstr "B<i2prouter-nowrapper>"
 
 #. type: Plain text
 #: man/i2prouter-nowrapper.1:14
@@ -425,6 +435,7 @@ msgid ""
 "will not restart if it crashes.  Also, it will use the default memory size, "
 "which may not be enough for I2P."
 msgstr ""
+"不使用服务封装器启动 I2P 路由器。 这意味着如果路由器崩溃，它不会重新启动。 另外，它将使用默认的内存大小，这对 I2P 来说可能是不够的。"
 
 #. type: Plain text
 #: man/i2prouter-nowrapper.1:23
@@ -433,8 +444,10 @@ msgid ""
 "options.  To stop the router, use your browser to access E<.UR "
 "http://localhost:7657/> the router console E<.UE .>"
 msgstr ""
+"你应该用B<i2prouter>(1) 脚本来代替。 这里没有任何选项。 要停止路由器，使用浏览器访问E<.UR "
+"http://localhost:7657/>路由器控制台E<.UE .>。"
 
 #. type: Plain text
 #: man/i2prouter-nowrapper.1:31
 msgid "B<i2prouter>(1)"
-msgstr ""
+msgstr "B<i2prouter>(1)"

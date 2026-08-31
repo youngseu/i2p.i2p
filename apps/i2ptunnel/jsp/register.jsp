@@ -1,13 +1,16 @@
-<%@page contentType="text/html" import="java.io.InputStream,net.i2p.i2ptunnel.web.EditBean,net.i2p.servlet.RequestWrapper,net.i2p.client.I2PSessionException,net.i2p.client.naming.HostTxtEntry,net.i2p.data.PrivateKeyFile,net.i2p.data.SigningPrivateKey,net.i2p.util.OrderedProperties"
+<%@include file="headers.jsi"
+%><%@page pageEncoding="UTF-8"
+%><%@page contentType="text/html" import="java.io.InputStream,net.i2p.i2ptunnel.web.EditBean,net.i2p.servlet.RequestWrapper,net.i2p.client.I2PSessionException,net.i2p.client.naming.HostTxtEntry,net.i2p.data.PrivateKeyFile,net.i2p.data.SigningPrivateKey,net.i2p.util.OrderedProperties"
 %><%@page
-%><?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+%><!DOCTYPE html>
 <%
   /* right now using EditBean instead of IndexBean for getSpoofedHost() */
   /* but might want to POST to it anyway ??? */
 %>
-<jsp:useBean class="net.i2p.i2ptunnel.web.EditBean" id="editBean" scope="request" />
-<jsp:useBean class="net.i2p.i2ptunnel.web.Messages" id="intl" scope="request" />
+<jsp:useBean class="net.i2p.i2ptunnel.web.EditBean" id="editBean" scope="request" /><%
+    editBean.storeMethod(request.getMethod());
+    editBean.storeSession(session);
+%><jsp:useBean class="net.i2p.i2ptunnel.ui.Messages" id="intl" scope="request" />
 <%
    RequestWrapper wrequest = new RequestWrapper(request);
    String tun = wrequest.getParameter("tunnel");
@@ -24,14 +27,9 @@
 <head>
     <title><%=intl._t("Hidden Services Manager")%> - <%=intl._t("Registration Helper")%></title>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=UTF-8" />
     <link href="/themes/console/images/favicon.ico" type="image/x-icon" rel="shortcut icon" />
-
-    <% if (editBean.allowCSS()) {
-  %><link rel="icon" href="<%=editBean.getTheme()%>images/favicon.ico" />
     <link href="<%=editBean.getTheme()%>i2ptunnel.css?<%=net.i2p.CoreVersion.VERSION%>" rel="stylesheet" type="text/css" /> 
-    <% }
-  %>
+    <script src="/js/iframeResizer.contentWindow.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
 <style type='text/css'>
 input.default { width: 1px; height: 1px; visibility: hidden; }
 </style>
@@ -64,11 +62,18 @@ input.default { width: 1px; height: 1px; visibility: hidden; }
         name = editBean.getTunnelName(curTunnel);
 %>
                 <input type="hidden" name="tunnel" value="<%=curTunnel%>" />
-                <input type="hidden" name="nonce" value="<%=net.i2p.i2ptunnel.web.IndexBean.getNextNonce()%>" />
+                <input type="hidden" name="nonce" value="<%=editBean.getNextNonce()%>" />
                 <input type="hidden" name="type" value="<%=tunnelType%>" />
                 <input type="submit" class="default" name="action" value="Save changes" />
 <%
-    if (!"new".equals(tunnelType)) {
+    String curEncryptMode = editBean.getEncryptMode(curTunnel);
+    if (!"0".equals(curEncryptMode)) {
+%>
+      <table><tr><td class="infohelp">
+        <%=intl._t("This service uses encrypted leasesets. Registration is not recommended. Registration authentication is disabled.")%>
+      </td></tr>
+<%
+    } else if (!"new".equals(tunnelType)) {
 %>
 
 <table>
@@ -109,14 +114,16 @@ input.default { width: 1px; height: 1px; visibility: hidden; }
            %><tr><td class="infohelp"><%=intl._t("Local destination is not available. Start the tunnel.")%></td></tr><%
        } else if (name == null || name.equals("") || name.contains(" ") || !name.endsWith(".i2p")) {
            if (("httpserver".equals(tunnelType)) || ("httpbidirserver".equals(tunnelType))) {
-               %><tr><td class="infohelp"><%=intl._t("To enable registration verification, edit tunnel and set name (or website name) to a valid host name ending in '.i2p'")%></td></tr><%
+               %><tr><td class="infohelp"><%=intl._t("To enable registration verification, edit tunnel and set name (or website name) to a valid hostname ending in '.i2p'")%></td></tr><%
            } else {
-               %><tr><td class="infohelp"><%=intl._t("To enable registration verification, edit tunnel and set name to a valid host name ending in '.i2p'")%></td></tr><%
+               %><tr><td class="infohelp"><%=intl._t("To enable registration verification, edit tunnel and set name to a valid hostname ending in '.i2p'")%></td></tr><%
            }
        } else {
            SigningPrivateKey spk = editBean.getSigningPrivateKey(curTunnel);
            if (spk == null) {
                %><tr><td class="infohelp"><%=intl._t("Destination signing key is not available. Start the tunnel.")%></td></tr><%
+           } else if (spk.isOffline()) {
+               %><tr><td class="infohelp"><%=intl._t("Destination signing key is offline. Use CLI tools on the offline machine.")%></td></tr><%
            } else {
                valid = true;
                OrderedProperties props = new OrderedProperties();
@@ -203,7 +210,7 @@ input.default { width: 1px; height: 1px; visibility: hidden; }
 
 <%
                } else {
-                %><tr><td class="infohelp"><%=intl._t("This tunnel must be configured with the new host name.")%>
+                %><tr><td class="infohelp"><%=intl._t("This tunnel must be configured with the new hostname.")%>
                   &nbsp;<%=intl._t("Enter old hostname below.")%></td></tr>
 <%
                }
@@ -235,7 +242,7 @@ input.default { width: 1px; height: 1px; visibility: hidden; }
     </tr>
 <%
                } else {
-                %><tr> <td class="infohelp"><%=intl._t("This tunnel must be configured with the new host name.")%>
+                %><tr> <td class="infohelp"><%=intl._t("This tunnel must be configured with the new hostname.")%>
                   &nbsp;<%=intl._t("Enter old hostname below.")%></td></tr>
 <%
                }

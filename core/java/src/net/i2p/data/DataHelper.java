@@ -26,20 +26,27 @@ import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.math.BigInteger;
 import java.security.MessageDigest;
+import java.text.DateFormat;
 import java.text.DecimalFormat;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
+import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 
 import net.i2p.I2PAppContext;
+import net.i2p.util.ByteArrayStream;
 import net.i2p.util.ByteCache;
 import net.i2p.util.FileUtil;
 import net.i2p.util.OrderedProperties;
@@ -75,6 +82,8 @@ public class DataHelper {
             "ihost0", "iport0", "ikey0", "itag0", "iexp0",
             "ihost1", "iport1", "ikey1", "itag1", "iexp1",
             "ihost2", "iport2", "ikey2", "itag2", "iexp2",
+            "ihost3", "iport3", "ikey3", "itag3", "iexp3",
+            "ih0", "ih1", "ih2", "ih3",
             // RouterInfo options
             "caps", "coreVersion", "netId", "router.version",
             "netdb.knownLeaseSets", "netdb.knownRouters",
@@ -91,7 +100,11 @@ public class DataHelper {
             "family", "family.key", "family.sig",
             // BlockfileNamingService
             "version", "created", "upgraded", "lists",
-            "a", "m", "s", "v"
+            "a", "m", "s", "v", "notes",
+            // NTCP2 RouterAddress options
+            "i", "pq",
+            // Tunnel BW params prop. 168
+            "l", "r", "b"
         };
         _propertiesKeyCache = new HashMap<String, String>(keys.length);
         for (int i = 0; i < keys.length; i++) {
@@ -99,8 +112,16 @@ public class DataHelper {
         }
     }
 
-    private static final Pattern ILLEGAL_KEY =  Pattern.compile("[#=\r\n;]");
-    private static final Pattern ILLEGAL_VALUE =  Pattern.compile("[#\r\n]");
+    private static final Pattern ILLEGAL_KEY =  Pattern.compile("[#=\\r\\n;]");
+    private static final Pattern ILLEGAL_VALUE =  Pattern.compile("[#\\r\\n]");
+
+    /**
+     *  The default formatting for date/time, current locale, local time zone
+     *  @since 0.9.43
+     */
+    private static final DateFormat DATE_FORMAT = DateFormat.getDateInstance(DateFormat.MEDIUM);
+    private static final DateFormat TIME_FORMAT = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT);
+    private static boolean _date_tz_set, _time_tz_set;
 
     /** Read a mapping from the stream, as defined by the I2P data structure spec,
      * and store it into a Properties object.
@@ -115,7 +136,8 @@ public class DataHelper {
      * is repeated until there are no more bytes (not characters!) left as defined by the
      * first two byte integer.
      *
-     *  As of 0.9.18, throws DataFormatException on duplicate key
+     * As of 0.9.18, throws DataFormatException on duplicate key
+     * Does NOT enforce key ordering.
      *
      * @param rawStream stream to read the mapping from
      * @throws DataFormatException if the format is invalid
@@ -133,26 +155,58 @@ public class DataHelper {
      *  Ditto, load into an existing properties
      *
      *  As of 0.9.18, throws DataFormatException on duplicate key
+     *  Does NOT enforce key ordering.
      *
-     *  @param props the Properties to load into
+     *  @param props The Properties to load into.
+     *               As of 0.9.38, if null, a new OrderedProperties will be created.
      *  @param rawStream stream to read the mapping from
      *  @throws DataFormatException if the format is invalid
      *  @throws IOException if there is a problem reading the data
-     *  @return the parameter props
+     *  @return the parameter props, or (as of 0.9.38) a new OrderedProperties if props is null,
+     *                               and an immutable EmptyProperties if empty.
      *  @since 0.8.13
      */
     public static Properties readProperties(InputStream rawStream, Properties props) 
         throws DataFormatException, IOException {
-        long size = readLong(rawStream, 2);
-        byte data[] = new byte[(int) size];
-        int read = read(rawStream, data);
-        if (read != size) throw new DataFormatException("Not enough data to read the properties, expected " + size + " but got " + read);
+        return readProperties(rawStream, props, false);
+    }
+
+    /**
+     *  Ditto, load into an existing properties
+     *
+     *  As of 0.9.18, throws DataFormatException on duplicate key
+     *
+     *  @param props The Properties to load into.
+     *               As of 0.9.38, if null, a new OrderedProperties will be created.
+     *  @param rawStream stream to read the mapping from
+     *  @param enforceOrder if true, throw DataFormatException if keys are not ordered
+     *  @throws DataFormatException if the format is invalid
+     *  @throws IOException if there is a problem reading the data
+     *  @return the parameter props, or (as of 0.9.38) a new OrderedProperties if props is null,
+     *                               and an immutable EmptyProperties if empty.
+     *  @since 0.9.66
+     */
+    public static Properties readProperties(InputStream rawStream, Properties props, boolean enforceOrder) 
+        throws DataFormatException, IOException {
+        int size = (int) readLong(rawStream, 2);
+        if (size == 0) {
+            return (props != null) ? props : EmptyProperties.INSTANCE;
+        }
+        if (props == null)
+            props = new OrderedProperties();
+        byte data[] = new byte[size];
+        // full read guaranteed
+        read(rawStream, data);
         ByteArrayInputStream in = new ByteArrayInputStream(data);
+        String prev = "";
         while (in.available() > 0) {
             String key = readString(in);
             String cached = _propertiesKeyCache.get(key);
             if (cached != null)
                 key = cached;
+            if (enforceOrder && key.compareTo(prev) <= 0)
+                throw new DataFormatException("option " + key + " out of order");
+            prev = key;
             int b = in.read();
             if (b != '=')
                 throw new DataFormatException("Bad key");
@@ -208,7 +262,7 @@ public class DataHelper {
      */
     public static void writeProperties(OutputStream rawStream, Properties props, boolean utf8) 
             throws DataFormatException, IOException {
-        writeProperties(rawStream, props, utf8, props != null && !(props instanceof OrderedProperties));
+        writeProperties(rawStream, props, utf8, props != null && props.size() > 1 && !(props instanceof OrderedProperties));
     }
 
     /**
@@ -237,7 +291,7 @@ public class DataHelper {
             throws DataFormatException, IOException {
         if (props != null && !props.isEmpty()) {
             Properties p;
-            if (sort) {
+            if (sort && props.size() > 1) {
                 p = new OrderedProperties();
                 p.putAll(props);
             } else {
@@ -260,9 +314,8 @@ public class DataHelper {
             }
             if (baos.size() > 65535)
                 throw new DataFormatException("Properties too big (65535 max): " + baos.size());
-            byte propBytes[] = baos.toByteArray();
-            writeLong(rawStream, 2, propBytes.length);
-            rawStream.write(propBytes);
+            writeLong(rawStream, 2, baos.size());
+            baos.writeTo(rawStream);
         } else {
             writeLong(rawStream, 2, 0);
         }
@@ -279,20 +332,23 @@ public class DataHelper {
      *
      * Properties from the defaults table of props (if any) are not written out by this method.
      *
-     * @deprecated unused
-     *
      * @param target returned array as specified in data structure spec
      * @param props source may be null
      * @return new offset
      * @throws DataFormatException if any string is over 255 bytes long, or if the total length
      *                             (not including the two length bytes) is greater than 65535 bytes.
+     * @since un-deprecated in 0.9.48
      */
-    @Deprecated
     public static int toProperties(byte target[], int offset, Properties props) throws DataFormatException, IOException {
-        if (props != null) {
-            OrderedProperties p = new OrderedProperties();
-            p.putAll(props);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(p.size() * 64);
+        if (props != null && !props.isEmpty()) {
+            Properties p;
+            if (props instanceof OrderedProperties) {
+                p = props;
+            } else {
+                p = new OrderedProperties();
+                p.putAll(props);
+            }
+            ByteArrayStream baos = new ByteArrayStream(p.size() * 64);
             for (Map.Entry<Object, Object> entry : p.entrySet()) {
                 String key = (String) entry.getKey();
                 String val = (String) entry.getValue();
@@ -303,11 +359,10 @@ public class DataHelper {
             }
             if (baos.size() > 65535)
                 throw new DataFormatException("Properties too big (65535 max): " + baos.size());
-            byte propBytes[] = baos.toByteArray();
-            toLong(target, offset, 2, propBytes.length);
+            toLong(target, offset, 2, baos.size());
             offset += 2;
-            System.arraycopy(propBytes, 0, target, offset, propBytes.length);
-            offset += propBytes.length;
+            baos.copyTo(target, offset);
+            offset += baos.size();
             return offset;
         } else {
             toLong(target, offset, 2, 0);
@@ -395,14 +450,14 @@ public class DataHelper {
     /**
      * Pretty print the mapping, unsorted
      * (unless the options param is an OrderedProperties)
-     * @since 0.9.4
+     * @since 0.9.4, as of 0.9.38 supports non-String values
      */
     public static String toString(Map<?, ?> options) {
         StringBuilder buf = new StringBuilder();
         if (options != null) {
             for (Map.Entry<?, ?> entry : options.entrySet()) {
                 String key = (String) entry.getKey();
-                String val = (String) entry.getValue();
+                String val = entry.getValue().toString();
                 buf.append("[").append(key).append("] = [").append(val).append("]");
             }
         } else {
@@ -447,7 +502,7 @@ public class DataHelper {
     public static void loadProps(Properties props, InputStream inStr, boolean forceLowerCase) throws IOException {
         BufferedReader in = null;
         try {
-            in = new BufferedReader(new InputStreamReader(inStr, "UTF-8"), 16*1024);
+            in = new BufferedReader(new InputStreamReader(inStr, "UTF-8"), 4*1024);
             String line = null;
             while ( (line = in.readLine()) != null) {
                 if (line.trim().length() <= 0) continue;
@@ -494,23 +549,27 @@ public class DataHelper {
      *                                  or a value contains '#' or '\n'
      */
     public static void storeProps(Properties props, File file) throws IOException {
+        FileOutputStream fos = null;
         PrintWriter out = null;
         IllegalArgumentException iae = null;
         File tmpFile = new File(file.getPath() + ".tmp");
         try {
-            FileOutputStream fos = new SecureFileOutputStream(tmpFile);
+            fos = new SecureFileOutputStream(tmpFile);
             out = new PrintWriter(new BufferedWriter(new OutputStreamWriter(fos, "UTF-8")));
+            if (file.getName().equals("router.config"))
+                out.println("# WARNING: Do NOT copy this file from one router to another, this may cause serious problems.");
             out.println("# NOTE: This I2P config file must use UTF-8 encoding");
+            out.println("# Last saved: " + formatTimeNormalSpaces(System.currentTimeMillis()));
             for (Map.Entry<Object, Object> entry : props.entrySet()) {
                 String name = (String) entry.getKey();
                 String val = (String) entry.getValue();
-                if (ILLEGAL_KEY.matcher(name).matches()) {
+                if (ILLEGAL_KEY.matcher(name).find()) {
                     if (iae == null)
                         iae = new IllegalArgumentException("Invalid character (one of \"#;=\\r\\n\") in key: \"" +
                                                            name + "\" = \"" + val + '\"');
                     continue;
                 }
-                if (ILLEGAL_VALUE.matcher(val).matches()) {
+                if (ILLEGAL_VALUE.matcher(val).find()) {
                     if (iae == null)
                         iae = new IllegalArgumentException("Invalid character (one of \"#\\r\\n\") in value: \"" +
                                                            name + "\" = \"" + val + '\"');
@@ -533,6 +592,7 @@ public class DataHelper {
                 throw new IOException("Failed rename from " + tmpFile + " to " + file);
         } finally {
             if (out != null) out.close();
+            if (fos != null) try { fos.close(); } catch (IOException ioe) {}
         }
         if (iae != null)
             throw iae;
@@ -601,6 +661,7 @@ public class DataHelper {
      *  @return (new BigInteger(1, buf)).toString()
      *  @deprecated unused
      */
+    @Deprecated
     public static String toDecimalString(byte buf[], int len) {
         if (buf == null)
             return "0";
@@ -610,7 +671,7 @@ public class DataHelper {
 
     /**
      *  Lower-case hex without leading zeros.
-     *  Use toString(byte[] to get leading zeros
+     *  Use toString(byte[]) to get leading zeros
      *  @param data may be null (returns "00")
      */
     public final static String toHexString(byte data[]) {
@@ -624,6 +685,7 @@ public class DataHelper {
      *  @return minimum-length representation (with possible leading 0 byte)
      *  @deprecated unused
      */
+    @Deprecated
     public final static byte[] fromHexString(String val) {
         BigInteger bv = new BigInteger(val, 16);
         return bv.toByteArray();
@@ -665,7 +727,7 @@ public class DataHelper {
         }
         
         if (rv < 0)
-            throw new DataFormatException("fromLong got a negative? " + rv + " numBytes=" + numBytes);
+            throw new DataFormatException("readLong got a negative? " + rv + " numBytes=" + numBytes);
         return rv;
     }
     
@@ -781,6 +843,37 @@ public class DataHelper {
             throw new IllegalArgumentException("fromLong got a negative? " + rv + ": offset="+ offset +" numBytes="+numBytes);
         return rv;
     }
+
+    /**
+     * Big endian.
+     * Same as fromLong(src, offset, 8) but allows negative result
+     *
+     * @throws ArrayIndexOutOfBoundsException
+     * @since 0.9.47 moved from NTCP2Payload
+     */
+    public static long fromLong8(byte src[], int offset) {
+        long rv = 0;
+        int limit = offset + 8;
+        for (int i = offset; i < limit; i++) {
+            rv <<= 8;
+            rv |= src[i] & 0xFF;
+        }
+        return rv;
+    }
+    
+    /**
+     * Big endian.
+     * Same as toLong(target, offset, 8, value) but allows negative value
+     *
+     * @throws ArrayIndexOutOfBoundsException
+     * @since 0.9.47 moved from NTCP2Payload
+     */
+    public static void toLong8(byte target[], int offset, long value) {
+        for (int i = offset + 7; i >= offset; i--) {
+            target[i] = (byte) value;
+            value >>= 8;
+        }
+    }
     
     /** Read in a date from the stream as specified by the I2P data structure spec.
      * A date is an 8 byte unsigned integer in network byte order specifying the number of
@@ -859,9 +952,8 @@ public class DataHelper {
             return "";   // reduce object proliferation
         size &= 0xff;
         byte raw[] = new byte[size];
-        int read = read(in, raw);
-        // was DataFormatException
-        if (read != size) throw new EOFException("EOF reading string");
+        // full read guaranteed
+        read(in, raw);
         // the following constructor throws an UnsupportedEncodingException which is an IOException,
         // but that's only if UTF-8 is not supported. Other encoding errors are not thrown.
         return new String(raw, "UTF-8");
@@ -922,88 +1014,6 @@ public class DataHelper {
             out.write(raw);
         }
     }
-
-    /** Read in a boolean as specified by the I2P data structure spec.
-     * A boolean is 1 byte that is either 0 (false), 1 (true), or 2 (null)
-     * @param in stream to read from
-     * @throws DataFormatException if the boolean is not valid
-     * @throws IOException if there is an IO error reading the boolean
-     * @return boolean value, or null
-     * @deprecated unused
-     */
-    @Deprecated
-    public static Boolean readBoolean(InputStream in) throws DataFormatException, IOException {
-        int val = in.read();
-        switch (val) {
-        case -1:
-            throw new EOFException("EOF reading boolean");
-        case 0:
-            return Boolean.FALSE;
-        case 1:
-            return Boolean.TRUE;
-        case 2:
-            return null;
-        default:
-            throw new DataFormatException("Uhhh.. readBoolean read a value that isn't a known ternary val (0,1,2): "
-                                          + val);
-        }
-    }
-
-    /** Write out a boolean as specified by the I2P data structure spec.
-     * A boolean is 1 byte that is either 0 (false), 1 (true), or 2 (null)
-     * @param out stream to write to
-     * @param bool boolean value, or null
-     * @throws DataFormatException if the boolean is not valid
-     * @throws IOException if there is an IO error writing the boolean
-     * @deprecated unused
-     */
-    @Deprecated
-    public static void writeBoolean(OutputStream out, Boolean bool) 
-        throws DataFormatException, IOException {
-        if (bool == null)
-            writeLong(out, 1, BOOLEAN_UNKNOWN);
-        else if (Boolean.TRUE.equals(bool))
-            writeLong(out, 1, BOOLEAN_TRUE);
-        else
-            writeLong(out, 1, BOOLEAN_FALSE);
-    }
-    
-    /** @deprecated unused */
-    @Deprecated
-    public static Boolean fromBoolean(byte data[], int offset) {
-        if (data[offset] == BOOLEAN_TRUE)
-            return Boolean.TRUE;
-        else if (data[offset] == BOOLEAN_FALSE)
-            return Boolean.FALSE;
-        else
-            return null;
-    }
-    
-    /** @deprecated unused */
-    @Deprecated
-    public static void toBoolean(byte data[], int offset, boolean value) {
-        data[offset] = (value ? BOOLEAN_TRUE : BOOLEAN_FALSE);
-    }
-
-    /** @deprecated unused */
-    @Deprecated
-    public static void toBoolean(byte data[], int offset, Boolean value) {
-        if (value == null)
-            data[offset] = BOOLEAN_UNKNOWN;
-        else
-            data[offset] = (value.booleanValue() ? BOOLEAN_TRUE : BOOLEAN_FALSE);
-    }
-    
-    /** deprecated - used only in DatabaseLookupMessage */
-    public static final byte BOOLEAN_TRUE = 0x1;
-    /** deprecated - used only in DatabaseLookupMessage */
-    public static final byte BOOLEAN_FALSE = 0x0;
-    /** @deprecated unused */
-    @Deprecated
-    public static final byte BOOLEAN_UNKNOWN = 0x2;
-    /** @deprecated unused */
-    @Deprecated
-    public static final int BOOLEAN_LENGTH = 1;
 
     //
     // The following comparator helpers make it simpler to write consistently comparing
@@ -1118,6 +1128,34 @@ public class DataHelper {
             r |=  lhs[offsetLeft + i] ^ rhs[offsetRight + i];
         }
         return r == 0;
+    }
+
+    /**
+     *  This returns false if either lhs or rhs is null.
+     *  Constant time, almost.
+     *  Warning: not constant time if secret is empty.
+     *
+     *  @param user user-supplied String, will attempt for time to be proportional to this length
+     *  @param secret internal String, will attempt for time to be independent of this length
+     *  @since 0.9.70
+     */
+    public final static boolean eqCT(String user, String secret) {
+        if (user == null || secret == null)
+            return false;
+        int ul = user.length();
+        int sl = secret.length();
+        if (ul == 0)
+            return sl == 0;
+        int v = ul ^ sl;
+        if (sl == 0) {
+            // so charAt() below works
+            secret = "\0";
+            sl = 1;
+        }
+        for (int i = 0; i < ul; i++) {
+            v |= user.charAt(i) ^ secret.charAt(i % sl);
+        }
+        return v == 0;
     }
     
     /**
@@ -1438,25 +1476,25 @@ public class DataHelper {
             // {0,number,####} prevents 1234 from being output as 1,234 in the English locale.
             // If you want the digit separator in your locale, translate as {0}.
             // alternates: msec, msecs
-            t = ngettext("1 ms", "{0,number,####} ms", (int) ms);
+            t = ngettext("{0,number,####} ms", "{0,number,####} ms", (int) ms);
         } else if (ams < 2 * 60 * 1000) {
             // seconds
             // alternates: secs, sec. 'seconds' is probably too long.
-            t = ngettext("1 sec", "{0} sec", (int) (ms / 1000));
+            t = ngettext("{0} sec", "{0} sec", (int) (ms / 1000));
         } else if (ams < 120 * 60 * 1000) {
             // minutes
             // alternates: mins, min. 'minutes' is probably too long.
-            t = ngettext("1 min", "{0} min", (int) (ms / (60 * 1000)));
+            t = ngettext("{0} min", "{0} min", (int) (ms / (60 * 1000)));
         } else if (ams < 2 * 24 * 60 * 60 * 1000) {
             // hours
             // alternates: hrs, hr., hrs.
-            t = ngettext("1 hour", "{0} hours", (int) (ms / (60 * 60 * 1000)));
+            t = ngettext("{0} hour", "{0} hours", (int) (ms / (60 * 60 * 1000)));
         } else if (ams < 3L * 365 * 24 * 60 * 60 * 1000) {
             // days
-            t = ngettext("1 day", "{0} days", (int) (ms / (24 * 60 * 60 * 1000)));
+            t = ngettext("{0} day", "{0} days", (int) (ms / (24 * 60 * 60 * 1000)));
         } else if (ams < 1000L * 365 * 24 * 60 * 60 * 1000) {
             // years
-            t = ngettext("1 year", "{0} years", (int) (ms / (365L * 24 * 60 * 60 * 1000)));
+            t = ngettext("{0} year", "{0} years", (int) (ms / (365L * 24 * 60 * 60 * 1000)));
         } else {
             return _t("n/a");
         }
@@ -1487,23 +1525,23 @@ public class DataHelper {
         if (adms < 0.000000001d) {
             return "0";
         } else if (adms < 0.001d) {
-            t = ngettext("1 ns", "{0,number,###} ns", (int) Math.round(ms * 1000000d));
+            t = ngettext("{0,number,####} ns", "{0,number,###} ns", (int) Math.round(ms * 1000000d));
         } else if (adms < 1.0d) {
-            t = ngettext("1 μs", "{0,number,###} μs", (int) Math.round(ms * 1000d));
+            t = ngettext("{0,number,####} μs", "{0,number,###} μs", (int) Math.round(ms * 1000d));
         } else if (ams < 3 * 1000) {
-            t = ngettext("1 ms", "{0,number,####} ms", (int) Math.round(ms));
+            t = ngettext("{0,number,####} ms", "{0,number,####} ms", (int) Math.round(ms));
         } else if (ams < 2 * 60 * 1000) {
-            t = ngettext("1 sec", "{0} sec", (int) (ms / 1000));
+            t = ngettext("{0} sec", "{0} sec", (int) (ms / 1000));
         } else if (ams < 120 * 60 * 1000) {
-            t = ngettext("1 min", "{0} min", (int) (ms / (60 * 1000)));
+            t = ngettext("{0} min", "{0} min", (int) (ms / (60 * 1000)));
         } else if (ams < 2 * 24 * 60 * 60 * 1000) {
-            t = ngettext("1 hour", "{0} hours", (int) (ms / (60 * 60 * 1000)));
+            t = ngettext("{0} hour", "{0} hours", (int) (ms / (60 * 60 * 1000)));
         } else if (ams < 3L * 365 * 24 * 60 * 60 * 1000) {
             // days
-            t = ngettext("1 day", "{0} days", (int) (ms / (24 * 60 * 60 * 1000)));
+            t = ngettext("{0} day", "{0} days", (int) (ms / (24 * 60 * 60 * 1000)));
         } else if (ams < 1000L * 365 * 24 * 60 * 60 * 1000) {
             // years
-            t = ngettext("1 year", "{0} years", (int) (ms / (365L * 24 * 60 * 60 * 1000)));
+            t = ngettext("{0} year", "{0} years", (int) (ms / (365L * 24 * 60 * 60 * 1000)));
         } else {
             return _t("n/a");
         }
@@ -1512,7 +1550,7 @@ public class DataHelper {
         return t.replace(" ", "&nbsp;");
     }
     
-    private static final String BUNDLE_NAME = "net.i2p.router.web.messages";
+    private static final String BUNDLE_NAME = "net.i2p.util.messages";
 
     private static String _t(String key) {
         return Translate.getString(key, I2PAppContext.getGlobalContext(), BUNDLE_NAME);
@@ -1523,8 +1561,15 @@ public class DataHelper {
     }
 
     /**
-     * Caller should append 'B' or 'b' as appropriate
-     * NOTE: formatDuration2() recommended in most cases for readability
+     * This is binary, i.e. multiples of 1024.
+     * For decimal, see formatSize2Decimal().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
+     *
+     * No space between the number and the letter.
+     * NOTE: formatSize2() recommended in most cases for readability
+     *
+     * @return e.g. "123.05Ki"
      */
     public static String formatSize(long bytes) {
         float val = bytes;
@@ -1538,23 +1583,29 @@ public class DataHelper {
 
         String str = fmt.format(val);
         switch (scale) {
-            case 1: return str + "K";
-            case 2: return str + "M";
-            case 3: return str + "G";
-            case 4: return str + "T";
-            case 5: return str + "P";
-            case 6: return str + "E";
-            case 7: return str + "Z";
-            case 8: return str + "Y";
-            default: return bytes + "";
+            case 1: return str + "Ki";
+            case 2: return str + "Mi";
+            case 3: return str + "Gi";
+            case 4: return str + "Ti";
+            case 5: return str + "Pi";
+            case 6: return str + "Ei";
+            case 7: return str + "Zi";
+            case 8: return str + "Yi";
+            default: return Long.toString(bytes);
         }
     }
 
     /**
+     * This is binary, i.e. multiples of 1024.
+     * For decimal, see formatSize2Decimal().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
      * Like formatSize but with a non-breaking space after the number
      * This seems consistent with most style guides out there.
      * Use only in HTML, and not inside form values (use
      * formatSize2(bytes, false) there instead).
+     *
+     * @return e.g. "123.05&amp;#8239;Ki"
      * @since 0.7.14, uses thin non-breaking space since 0.9.31
      */
     public static String formatSize2(long bytes) {
@@ -1562,12 +1613,21 @@ public class DataHelper {
     }
 
     /**
+     * This is binary, i.e. multiples of 1024.
+     * For decimal, see formatSize2Decimal().
+     *
+     * Caller should append 'B' or 'b' as appropriate,
      * Like formatSize but with a space after the number
      * This seems consistent with most style guides out there.
-     * @param nonBreaking use an HTML thin non-breaking space (&#8239;)
+     *
+     * @param nonBreaking use an HTML thin non-breaking space (&amp;#8239;)
+     * @return e.g. "123.05&amp;#8239;Ki" or "123.05 Ki"
      * @since 0.9.31
      */
     public static String formatSize2(long bytes, boolean nonBreaking) {
+        String space = nonBreaking ? "&#8239;" : " ";
+        if (bytes < 1024)
+            return bytes + space;
         double val = bytes;
         int scale = 0;
         while (val >= 1024) {
@@ -1575,11 +1635,72 @@ public class DataHelper {
             val /= 1024;
         }
         
-        DecimalFormat fmt = new DecimalFormat("##0.00");
+        DecimalFormat fmt = new DecimalFormat("##0.##");
+        if (val >= 200) {
+            fmt.setMaximumFractionDigits(0);
+        } else if (val >= 20) {
+            fmt.setMaximumFractionDigits(1);
+        }
 
         // Replace &nbsp; with thin non-breaking space &#8239; (more consistent/predictable width between fonts & point sizes)
 
+        String str = fmt.format(val) + space;
+        switch (scale) {
+            case 1: return str + "Ki";
+            case 2: return str + "Mi";
+            case 3: return str + "Gi";
+            case 4: return str + "Ti";
+            case 5: return str + "Pi";
+            case 6: return str + "Ei";
+            case 7: return str + "Zi";
+            case 8: return str + "Yi";
+            default: return bytes + space;
+        }
+    }
+
+    /**
+     * This is decimal, i.e. multiples of 1000.
+     * For binary, see formatSize2().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
+     * Like formatSize but with a space after the number
+     * This seems consistent with most style guides out there.
+     *
+     * @return e.g. "123.05&amp;#8239;K"
+     * @since 0.9.34
+     */
+    public static String formatSize2Decimal(long bytes) {
+        return formatSize2Decimal(bytes, true);
+    }
+
+    /**
+     * This is decimal, i.e. multiples of 1000.
+     * For binary, see formatSize2().
+     *
+     * Caller should append 'B' or 'b' as appropriate.
+     * Like formatSize but with a space after the number
+     * This seems consistent with most style guides out there.
+     *
+     * @param nonBreaking use an HTML thin non-breaking space (&amp;#8239;)
+     * @return e.g. "123.05&amp;#8239;K" or "123.05 K"
+     * @since 0.9.34
+     */
+    public static String formatSize2Decimal(long bytes, boolean nonBreaking) {
         String space = nonBreaking ? "&#8239;" : " ";
+        if (bytes < 1000)
+            return bytes + space;
+        double val = bytes;
+        int scale = 0;
+        while (val >= 1000) {
+            scale++; 
+            val /= 1000;
+        }
+        DecimalFormat fmt = new DecimalFormat("##0.##");
+        if (val >= 200) {
+            fmt.setMaximumFractionDigits(0);
+        } else if (val >= 20) {
+            fmt.setMaximumFractionDigits(1);
+        }
         String str = fmt.format(val) + space;
         switch (scale) {
             case 1: return str + "K";
@@ -1592,6 +1713,67 @@ public class DataHelper {
             case 8: return str + "Y";
             default: return bytes + space;
         }
+    }
+
+    /**
+     *  The default formatting for date, current locale, local time zone.
+     *  Warning - NOT UTC!
+     *  Examples:
+     *  en: Aug 30, 2019
+     *  de: 30.08.2019
+     *  @since 0.9.43
+     */
+    public static String formatDate(long now) {
+        synchronized(DATE_FORMAT) {
+            if (!_date_tz_set) {
+                // delayed set, too early if done in static block
+                TimeZone tz = SystemVersion.getSystemTimeZone();
+                DATE_FORMAT.setTimeZone(tz);
+                _date_tz_set = true;
+            }
+            return DATE_FORMAT.format(new Date(now));
+        }
+    }
+
+    /**
+     *  The default formatting for date/time, current locale, local time zone.
+     *  Warning - NOT UTC!
+     *  Warning - may contain UTF-8 chars, output format may change between Java versions.
+     *  As of Java 20, space before the AM/PM is a narrow no-break space U+202F,
+     *  or e2 80 af.
+     *
+     *  Examples:
+     *  en: Aug 30, 2019 12:38 PM
+     *  de: 30.08.2019 12:38
+     *  @since 0.9.43
+     */
+    public static String formatTime(long now) {
+        synchronized(TIME_FORMAT) {
+            if (!_time_tz_set) {
+                // delayed set, too early if done in static block
+                TimeZone tz = SystemVersion.getSystemTimeZone();
+                TIME_FORMAT.setTimeZone(tz);
+                _time_tz_set = true;
+            }
+            return TIME_FORMAT.format(new Date(now));
+        }
+    }
+
+    /**
+     *  The default formatting for date/time, current locale, local time zone,
+     *  EXCEPT UTF-8 spaces are replaced with normal spaces.
+     *  ref: https://inside.java/2024/03/29/quality-heads-up/
+     *
+     *  Warning - NOT UTC!
+     *  Warning - may contain other UTF-8 chars, output format may change between Java versions.
+     *
+     *  Examples:
+     *  en: Aug 30, 2019 12:38 PM
+     *  de: 30.08.2019 12:38
+     *  @since 0.9.71
+     */
+    public static String formatTimeNormalSpaces(long now) {
+        return formatTime(now).replace('\u202F', ' ').replace('\u00A0', ' ');
     }
     
     /**
@@ -1642,7 +1824,20 @@ public class DataHelper {
 
     /** */
     public static final int MAX_UNCOMPRESSED = 40*1024;
+    /**
+     *  Appx. 30% slower, 2.5% smaller than MEDIUM_COMPRESSION
+     */
     public static final int MAX_COMPRESSION = Deflater.BEST_COMPRESSION;
+    /**
+     *  Appx. 15% slower, 1.5% smaller than MEDIUM_COMPRESSION
+     *  @since 0.9.47
+     */
+    public static final int HIGH_COMPRESSION = 5;
+    /**
+     *  New default as of 0.9.47
+     *  @since 0.9.47
+     */
+    public static final int MEDIUM_COMPRESSION = 3;
     public static final int NO_COMPRESSION = Deflater.NO_COMPRESSION;
 
     /**
@@ -1653,6 +1848,10 @@ public class DataHelper {
      *  Prior to 0.9.29, this would return a zero-length output
      *  for a zero-length input. As of 0.9.29, output is valid for
      *  a zero-length input also.
+     *
+     *  As of 0.9.47, this uses a level of MEDIUM_COMPRESSION,
+     *  which is a good space/speed tradeoff.
+     *  Prior to that, it used MAX_COMPRESSION.
      *
      *  @throws IllegalArgumentException if input size is over 40KB
      *  @throws IllegalStateException on compression failure, as of 0.9.29
@@ -1671,12 +1870,16 @@ public class DataHelper {
      *  for a zero-length input. As of 0.9.29, output is valid for
      *  a zero-length input also.
      *
+     *  As of 0.9.47, this uses a level of MEDIUM_COMPRESSION,
+     *  which is a good space/speed tradeoff.
+     *  Prior to that, it used MAX_COMPRESSION.
+     *
      *  @throws IllegalArgumentException if size is over 40KB
      *  @throws IllegalStateException on compression failure, as of 0.9.29
      *  @return null if orig is null
      */
     public static byte[] compress(byte orig[], int offset, int size) {
-        return compress(orig, offset, size, MAX_COMPRESSION);
+        return compress(orig, offset, size, MEDIUM_COMPRESSION);
     }
 
     /**
@@ -1695,6 +1898,8 @@ public class DataHelper {
      */
     public static byte[] compress(byte orig[], int offset, int size, int level) {
         if (orig == null) return orig;
+        if (level == NO_COMPRESSION && size <= 32767)
+            return zeroCompress(orig, offset, size);
         if (size > MAX_UNCOMPRESSED) 
             throw new IllegalArgumentException("tell jrandom size=" + size);
         ReusableGZIPOutputStream out = ReusableGZIPOutputStream.acquire();
@@ -1729,7 +1934,41 @@ public class DataHelper {
         }
         
     }
-    
+
+    /**
+     *  Fast NO_COMPRESSION.
+     *  135x faster for 23 bytes, 15x faster for 1752 bytes.
+     *
+     *  Ref: RFC 1951, RFC 1952, ResettableGzipOutputStream
+     *
+     *  @param len 32767 max
+     *  @return 23 bytes longer
+     *  @since 0.9.46
+     */
+    private static byte[] zeroCompress(byte[] in, int off, int len) {
+        if (len > 32767)
+            throw new IllegalArgumentException();
+        byte[] rv = new byte[len + 23];
+        rv[0] = 0x1F;
+        rv[1] = (byte) 0x8B;
+        rv[2] = 0x08;
+        rv[8] = 0x02;         // XFL max compression slowest algorithm
+        rv[9] = (byte) 0xFF;  // unknown OS
+        rv[10] = 0x01;        // BFINAL, BTYPE = 0 (no compression)
+        rv[11] = (byte) (len & 0xff);
+        rv[12] = (byte) ((len >> 8) & 0xff);
+        rv[13] = (byte) ~ rv[11];
+        rv[14] = (byte) ~ rv[12];
+        System.arraycopy(in, off, rv, 15, len);
+        CRC32 crc = new CRC32();
+        crc.update(in, off, len);
+        long val = crc.getValue();
+        toLongLE(rv, rv.length - 8, 4, val);
+        rv[rv.length - 4] = rv[11];
+        rv[rv.length - 3] = rv[12];
+        return rv;
+    }
+
     /**
      *  Decompress the GZIP compressed data (returning null on error).
      *  @throws IOException if uncompressed is over 40 KB,
@@ -1748,6 +1987,11 @@ public class DataHelper {
      */
     public static byte[] decompress(byte orig[], int offset, int length) throws IOException {
         if (orig == null) return orig;
+        // normal overhead is 23 bytes, but a compress of zero bytes is 20 bytes
+        if (length < 20)
+            throw new IOException("length");
+        if (length < 65559 && orig[offset + 10] == 0x01)
+            return zeroDecompress(orig, offset, length);
         if (offset + length > orig.length)
             throw new IOException("Bad params arrlen " + orig.length + " off " + offset + " len " + length);
         
@@ -1780,6 +2024,53 @@ public class DataHelper {
     }
 
     /**
+     *  Fast NO_COMPRESSION.
+     *  ~30x faster for typ. lengths, ~20x faster for 4 KB or more.
+     *
+     *  Ref: RFC 1951, RFC 1952, ResettableGzipOutputStream
+     *
+     *  @param in in[off + 10] MUST BE VALIDATED == 1 before calling this.
+     *  @param len 65558 max
+     *  @return 23 bytes shorter
+     *  @throws IOException on all errors
+     *  @since 0.9.47
+     */
+    private static byte[] zeroDecompress(byte[] in, int off, int len) throws IOException {
+        if (len > 65535 + 23)
+            throw new IOException("length");
+        try {
+            final int olen = len - 23;
+            if (in[off++] != 0x1F ||
+                in[off++] != (byte) 0x8B ||
+                in[off] != 0x08)
+                throw new IOException("header");
+            off += 8;
+            if (in[off++] != 0x01 ||
+                fromLongLE(in, off, 2) != olen)
+                throw new IOException("header");
+            off += 2;
+            if (in[off] != (byte) ~ in[off - 2] ||
+                in[off + 1] != (byte) ~ in[off - 1])
+                throw new IOException("header");
+            off += 2;
+            final int trailer = off + olen;
+            if (fromLongLE(in, trailer + 4, 4) != olen)
+                throw new IOException("trailer");
+            CRC32 crc = new CRC32();
+            crc.update(in, off, olen);
+            long val = crc.getValue();
+            if (val != fromLongLE(in, trailer, 4))
+                throw new IOException("CRC");
+            final byte[] rv = new byte[olen];
+            System.arraycopy(in, off, rv, 0, olen);
+            return rv;
+        } catch (ArrayIndexOutOfBoundsException aioobe) {
+            throw new IOException(aioobe);
+        }
+    }
+
+
+    /**
      *  Same as orig.getBytes("UTF-8") but throws an unchecked RuntimeException
      *  instead of an UnsupportedEncodingException if no UTF-8, for ease of use.
      *
@@ -1803,6 +2094,7 @@ public class DataHelper {
      *  @throws RuntimeException
      *  @deprecated unused
      */
+    @Deprecated
     public static byte[] getUTF8(StringBuffer orig) {
         if (orig == null) return null;
         return getUTF8(orig.toString());
@@ -1862,8 +2154,11 @@ public class DataHelper {
      *  Same as s.split(regex) but caches the compiled pattern for speed.
      *  This saves about 10 microseconds (Bulldozer) on subsequent invocations.
      *
+     *  Note: For an input "" this returns [""], not a zero-length array.
+     *  This is the same behavior as String.split().
+     *
      *  @param s non-null
-     *  @param regex non-null
+     *  @param regex non-null, don't forget to enclose multiple choices with []
      *  @throws java.util.regex.PatternSyntaxException unchecked
      *  @since 0.9.24
      */
@@ -1877,8 +2172,11 @@ public class DataHelper {
      *  Same as s.split(regex, limit) but caches the compiled pattern for speed.
      *  This saves about 10 microseconds (Bulldozer) on subsequent invocations.
      *
+     *  Note: For an input "" this returns [""], not a zero-length array.
+     *  This is the same behavior as String.split().
+     *
      *  @param s non-null
-     *  @param regex non-null
+     *  @param regex non-null, don't forget to enclose multiple choices with []
      *  @param limit result threshold
      *  @throws java.util.regex.PatternSyntaxException unchecked
      *  @since 0.9.24
@@ -1886,6 +2184,11 @@ public class DataHelper {
     public static String[] split(String s, String regex, int limit) {
         Pattern p = patterns.get(regex);
         if (p == null) {
+            // catches easy mistake, and also swapping the args by mistake
+            if (regex.length() > 1 && !regex.startsWith("[") && !regex.equals("\r\n") && !regex.startsWith("\\")) {
+                //(new Exception("Warning: Split on regex: \"" + regex + "\" should probably be enclosed with []")).printStackTrace();
+                System.out.println("Warning: Split on regex: \"" + regex + "\" should probably be enclosed with []");
+            }
             p = Pattern.compile(regex);
             patterns.putIfAbsent(regex, p);
         }
@@ -1912,4 +2215,98 @@ public class DataHelper {
             cache.release(ba);
         }
     }
+
+    /**
+      * Same as Collections.sort(), but guaranteed not to throw an IllegalArgumentException if the
+      * sort is unstable. As of Java 7, TimSort will throw an IAE if the underlying sort order
+      * changes during the sort.
+      *
+      * This catches the IAE, retries once, and then returns.
+      * If an IAE is thrown twice, this method will return, with the list possibly unsorted.
+      *
+      * @param list the list to be sorted.
+      * @param c the comparator to determine the order of the list. A null value indicates that the elements' natural ordering should be used.
+      * @since 0.9.34
+      */
+    public static <T> void sort(List<T> list, Comparator<? super T> c) {
+        try {
+            Collections.sort(list, c);
+        } catch (IllegalArgumentException iae1) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ie) {}
+            try {
+                Collections.sort(list, c);
+            } catch (IllegalArgumentException iae2) {}
+        }
+    }
+
+    /**
+      * Same as Arrays.sort(), but guaranteed not to throw an IllegalArgumentException if the
+      * sort is unstable. As of Java 7, TimSort will throw an IAE if the underlying sort order
+      * changes during the sort.
+      *
+      * This catches the IAE, retries once, and then returns.
+      * If an IAE is thrown twice, this method will return, with the array possibly unsorted.
+      *
+      * @param a the array to be sorted.
+      * @param c the comparator to determine the order of the array. A null value indicates that the elements' natural ordering should be used.
+      * @since 0.9.34
+      */
+    public static <T> void sort(T[] a, Comparator<? super T> c) {
+        try {
+            Arrays.sort(a, c);
+        } catch (IllegalArgumentException iae1) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ie) {}
+            try {
+                Arrays.sort(a, c);
+            } catch (IllegalArgumentException iae2) {}
+        }
+    }
+
+    /**
+      * Replace all instances of "from" with "to" in the StringBuilder buf.
+      * Same as String.replace(), but in-memory with no object churn,
+      * as long as "to" is equal size or smaller than "from", or buf has capacity.
+      * Use for large Strings or for multiple replacements in a row.
+      *
+      * @param buf contains the string to be searched
+      * @param from the string to be replaced
+      * @param to the replacement string
+      * @since 0.9.34
+      */
+    public static void replace(StringBuilder buf, String from, String to) {
+        int oidx = 0;
+        while (oidx < buf.length()) {
+            int idx = buf.indexOf(from, oidx);
+            if (idx < 0)
+                break;
+            buf.replace(idx, idx + from.length(), to);
+            oidx = idx + to.length();
+        }
+    }
+
+/*
+    public static void main(String[] args) {
+        test("123", "123");
+        test("a", "b");
+        test("ba", "b");
+        test("ba", "baa");
+        test("", "xxx");
+        test("xxx", "");
+        test("xxx", null);
+        test(null, "xxx");
+    }
+
+    private static void test(String a, String b) {
+        try {
+            boolean r = eqCT(a, b);
+            System.out.println(" test: " + a + ' ' + b + " equals? " + r);
+        } catch (Exception e) {
+            System.out.println(" test: " + a + ' ' + b + " fails " + e);
+        }
+    }
+*/
 }

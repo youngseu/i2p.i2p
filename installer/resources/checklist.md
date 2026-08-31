@@ -1,84 +1,120 @@
-# Release checklist
+# Release checklist and process
+
+## Two weeks before
+
+- Review Google Play crash reports, fix any related issues
+
 
 ## One week before
 
 - Announce string freeze on #i2p-dev
-- Update local English po files: `ant poupdate`
-- Revert non-English changes if any
-- Push to Transifex: `tx push -s`
-- Make announcement on Transifex with checkin deadline
+- Update local English po files: `ant poupdate-source`
+- Review changes in English po files, fix up any necessary tagged strings in Java source
+- Revert English po files with no actual changes (i.e. with line number changes only)
+- Check in remaining English po files (and any files with changed strings)
+- Weblate admin pulls from Github
+- Weblate admin makes announcement on Weblate with checkin deadline
 
-- GeoIP: Maxmind update is usually first week of the month, time accordingly
-- wget http://geolite.maxmind.com/download/geoip/database/GeoIPCountryCSV.zip
-- unzip GeoIPCountryCSV.zip
-- cut -d, -f3-5 < GeoIPCountryWhois.csv|sed 's/"//g' > geoip.txt
-- replace header
-- fix date in header (get date from HEAD)
-- ./makegeoipv6.sh
-- mtn ci geoip.txt geoipv6.dat.gz
+- GeoIP: db-ip.com update is usually first of the month, time accordingly
+- installer/resources/makegeoip.sh
+- git commit installer/resources/GeoLite2-Country.mmdb.gz
 
 - BuildTime: Don't have to do this every release, but update the
-  EARLIEST and EARLIEST_LONG values in ~/mtn/i2p/core/java/src/net/i2p/time/BuildTime.java
-  to the current date, more or less.
+  EARLIEST and EARLIEST_LONG values in core/java/src/net/i2p/time/BuildTime.java
+  to the current date, more or less.(or use `ant bumpBuildTime`)
 
 - Tickets: Check if any blocker or critical tickets for this release remain open;
+  check for overlooked issues on Gitea, Github, i2pforum.i2p, and Reddit;
   get them fixed and closed, or reclassified.
+
+- Initial review: Review the complete diff from the last release, fix any issues
+
+- Trial Debian build: Run 'ant debcheckpatch' and fix any issues.
+  Build and test a preliminary Debian build with 'ant debian' and fix any issues
+
+- Javadoc test: 'ant javadoc'
+  with a recent Oracle JDK (12+), and fix any issues.
+  Oracle JDK will error on things that OpenJDK does not!
+
+- Java 7 test: 'ant mavenCentral.deps' with a Java 17 Compiler targeting Java 7 release.
+  Set `javac.compilerargs=--release 7` in override.properties, which will automatically resolve bootclasspath issues. Do a test build with Android using `./installer/resources/maven-dev-release.sh $num`, run for at least 21 minutes to catch bootclasspath issues(it will crash at exactly that moment if something is broken).
+  Ensure that JAVA_HOME is unset.
+
+- Verify CI is passing (green checks) on both Gitea and Github https://github.com/i2p/i2p.i2p/commits/master/
+
+- If there was any major change such as an increase in minimum Java version,
+  change in Debian build dependencies, or similar, do preliminary builds and tests of all
+  products including easy-install bundles, Debian, Docker, Android, etc.
+
 
 
 ## A day or two before
 
-1. Write the release announcement and push to Transifex:
+1. Write the release announcement, check in, and pull into Weblate:
 
   - Checkout i2p.newsxml branch
     - See README for setup
   - `./create_new_entry.sh`
     - Entry href should be the in-net link to the release blog post
-  - `tx push -s`
-  - `mtn ci`
+  - `git commit`
+  - Pull from github into Weblate
+  - Weblate admin pulls from Github and announces
 
-2. Write the draft blog post and push to Transifex:
+2. Write the draft blog post, check in
 
   - Checkout i2p.www branch
   - Write draft release announcement - see i2p2www/blog/README for instructions
     - Top content should be the same as the news entry
-  - `tx push -s`
-  - `mtn ci`
+  - `git commit`
+  - Github CI auto-translates
+  - Verify newsxml blog post link works
 
-3. Make announcement on Transifex asking for news translation
+3. Weblate admin makes announcement asking for news translation
 
 4. Tickets: Check if any blocker or critical tickets for this release remain open;
    get them fixed and closed, or reclassified.
+
+5. Update and check in blocklist-tor.txt with `maketorblocklist.sh`
+
+6. Verify CI is passing on both Gitea and Github
+
+
+## On checkin deadline day
+
+1. Ensure all translation updates are imported from Weblate
+
+  - `installer/resources/wlpull` (requires Weblate API key)
+  - Note any new resource/language pairs logged by wlpull.
+  - Add any new ones with `installer/resources/wlpull resource language`
+    (use your own judgement on which to include
+    based on minimum translated percentage)
+  - `ant testscripts` to verify that all updated translations are valid
+  - For any invalid that break the test, fix up the po file manually, or fix on
+    Weblate and pull again, or (if new) don't check in,
+    and delete the po file.
+  - `installer/resources/poupdate-man.sh` to generate new man page translations
+    (requires po4a package)
+  - `git add` for any new po files
+  - `git commit` all changed po files
+
+2. Sync with git.idk.i2p `git push`
 
 
 ## On release day
 
 ### Preparation
 
-1. Ensure all translation updates are imported from Transifex
+1. Verify all translation updates were checked in
 
-  - Look for newly translated languages and resources on Transifex
-  - Add any new ones to .tx/config (use your own judgement on which to include
-    based on minimum translated percentage)
-  - `tx pull`
-  - `ant testcripts` to verify that all updated translations are valid
-  - For any invalid that break the test, fix up the po file manually, or fix on
-    tx and pull again, or (if new) comment out in .tx/config (add a comment why)
-    and delete the po file
-  - `installer/resources/poupdate-man.sh` to generate new man page translations
-    (requires po4a package)
-  - `mtn add` for any new po files
-  - `mtn ci` all changed po files, and .tx/config if changed
-
-2. Sync with mtn.i2p2.i2p
+2. Sync with git.idk.i2p `git pull`
 
 3. Start with a clean checkout:
 
     ```
-    mtn -d i2p.mtn co --branch=i2p.i2p /path/to/releasedir
+    git clone -l . /path/to/releasedir
     ```
 
-  - You must build with Java 7 or higher.
-    If you build with Java 8 or higher, you must also have the Java 7 JRE installed for the bootclasspath.
+  - You must build with Java 17 or higher.
 
 4. Create override.properties with (adjust as necessary):
 
@@ -87,82 +123,54 @@
     release.gpg.keyid=0xnnnnnnnn
     release.signer.su3=xxx@mail.i2p
     build.built-by=xxx
-    javac.compilerargs=-bootclasspath /usr/lib/jvm/java-7-openjdk-amd64/jre/lib/rt.jar:/usr/lib/jvm/java-7-openjdk-amd64/jre/lib/jce.jar
-    javac.compilerargs7=-bootclasspath /usr/lib/jvm/java-7-openjdk-amd64/jre/lib/rt.jar:/usr/lib/jvm/java-7-openjdk-amd64/jre/lib/jce.jar
     ```
 
-5. Copy latest trust list _MTN/monotonerc from website or some other workspace
-
-6. Change revision in:
-  - `history.txt`
-  - `installer/install.xml`
-  - `core/java/src/net/i2p/CoreVersion.java`
-  - `router/java/src/net/i2p/router/RouterVersion.java`
-    - (change to BUILD = 0 and EXTRA = "")
-
-7. `mtn ci`
-
-8. Review the complete diff from the last release:
+5. Verify that no untrusted revisions were included:
 
     ```
-    mtn diff -r t:i2p-0.9.(xx-1) > out.diff
+    ant revisions
+    ```
+
+6. Review the complete diff from the last release:
+
+    ```
+    git diff i2p-2.(xx-1).0..HEAD > out.diff
     vi out.diff
     ```
 
-9. Verify that no untrusted revisions were inadvertently blessed by a trusted party:
+7. Change revision in:
+  - `history.txt`
+  - `installer/install.xml`
+  - `installer/install5.xml`
+  - `core/java/src/net/i2p/CoreVersion.java`
+    - (both VERSION and PUBLISHED_VERSION)
+  - `router/java/src/net/i2p/router/RouterVersion.java`
+    - (change to BUILD = 0 and EXTRA = "" and QUALIFIER = "")
 
-    ```
-    mtn log --brief --no-graph --to t:i2p-0.9.(xx-1) | cut -d ' ' -f 2 | sort | uniq -c
-    ```
+8. `git commit`
+
 
 ### Build and test
 
-1. `ant release`
+0. Make sure you're using the right JDK
+   `echo $JAVA_HOME` and `java -version`
 
-    > NOTE: These tasks are now automated by `ant release`
-    >
-    > Build and tag:
-    >
-    >     ant pkg
-    >
-    > Create signed update files with:
-    >
-    >     export I2P=~/i2p
-    >     java -cp $I2P/lib/i2p.jar net.i2p.crypto.TrustedUpdate sign i2pupdate.zip i2pupdate.sud /path/to/private.key 0.x.xx
-    >     java -cp $I2P/lib/i2p.jar net.i2p.crypto.TrustedUpdate sign i2pupdate200.zip i2pupdate.su2 /path/to/private.key 0.x.xx
-    >
-    > Verify signed update files with:
-    >
-    >     java -cp $I2P/lib/i2p.jar net.i2p.crypto.TrustedUpdate showversion i2pupdate.sud
-    >     java -cp $I2P/lib/i2p.jar net.i2p.crypto.TrustedUpdate verifysig i2pupdate.sud
-    >
-    > Make the source tarball:
-    >
-    >     Start with a clean checkout mtn -d i2p.mtn co --branch=i2p.i2p i2p-0.x.xx
-    >     Double-check trust list
-    >     tar cjf i2psource-0.x.xx.tar.bz2 --exclude i2p-0.x.xx/_MTN i2p-0.x.xx
-    >     mv i2p-0.x.xx.tar.bz2 i2p.i2p
-    >
-    > Rename some files:
-    >
-    >     mv i2pinstall.exe i2pinstall-0.x.xx.exe
-    >     mv i2pupdate.zip i2pupdate-0.x.xx.zip
-    >
-    > Generate hashes:
-    >
-    >     sha256sum i2p*0.x.xx.*
-    >     sha256sum i2pupdate.sud
-    >     sha256sum i2pupdate.su2
-    >
-    > Generate PGP signatures:
-    >
-    >     gpg -b i2pinstall-0.x xx.exe
-    >     gpg -b i2psource-0.x.xx.tar.bz2
-    >     gpg -b i2pupdate-0.x.xx.zip
-    >     gpg -b i2pupdate.sud
-    >     gpg -b i2pupdate.su2
-    >
-    > (end of tasks automated by 'ant release')
+1.  Build the release.
+  - Decide if you want to include GeoIP or not.
+    If it's been a few months since it was last included,
+    use releaseWithGeoIPRepack. Otherwise, use releaseRepack.
+    Use releaseWithJbigiRepack only if jbigi binaries were updated.
+  - `ant releaseRepack` or `ant releaseWithGeoIPRepack` or `ant releaseWithJbigiRepack`
+  - Copy i2pinstall_${release.number}_windows.exe,
+    console.ico, ../lib/izpack/rh.bat, and ../lib/izpack/VersionInfo_template.rc
+    to Windows machine
+  - Edit rh.bat to set the correct version number
+  - Run rh.bat to edit the resources
+  - Sign the windows installer:
+    Open Visual Studio developer prompt
+    signtool sign /a /debug /fd SHA256 i2pinstall_${release.number}_windows.exe
+  - GPG sign the signed windows installer: gpg -u keyid -b i2pinstall_${release.number}_windows.exe
+  - sha256sum i2pinstall_${release.number}_windows.exe
 
 2. Now test:
   - Save the output about checksums, sizes, and torrents to a file
@@ -194,33 +202,35 @@
 3. If all goes well, tag and push the release:
 
     ```
-    mtn tag h: i2p-0.x.xx
-    mtn cert t:i2p-0.x.xx branch i2p.i2p.release
-    mtn push
+    git tag -s i2p-2.x.x
+    git push
+    git push origin tag i2p-2.x.x
     ```
+
+    Ensure the release revision AND tag are pushed from Gitea to Github.
+
 
 ### Distribute updates
 
 1. Update news with new version:
-  - Add magnet links, change release dates and release number in to old-format
-    news.xml, and distribute to news hosts (no longer necessary)
   - In the i2p.newsxml branch, edit magnet links, release dates and release
     number in data/releases.json, check in and push
 
-2. Add i2pupdate-0.9.xx.su3 torrent to tracker2.postman.i2p and start seeding
+2. Add i2pupdate-2.xx.0.su3 torrent to tracker2.postman.i2p and start seeding
 
 3. Notify the following people:
-  - All in-network update hosts
+  - All in-network update hosts(zzz(stats.i2p) and idk(mgp**.b32.i2p)), they will need the i2pupdate.su3 file
   - PPA maintainer
   - news.xml maintainer
   - backup news.xml maintainer
+  - OSX launcher maintainer
   - website files maintainer
 
-4. Update Trac:
+4. Update Gitea:
   - Add milestone and version dates
   - Increment milestone and version defaults
 
-5. Wait for a few update hosts to be ready
+5. Wait for the update hosts to be ready
 
 6. Tell news hosts to flip the switch
 
@@ -233,36 +243,65 @@
 
 2. Upload the bundles to Maven Central via https://oss.sonatype.org
 
+3. Verify upload was successful and is visible at https://central.sonatype.com/search?q=i2p&smo=true
+
+
+### Docker build
+
+1. Verify release is tagged at https://hub.docker.com/r/geti2p/i2p.i2p/tags
+
+
+### Easy-install bundle builds
+
+1. Add update torrent to tracker2.postman.i2p and start seeding
+
+2. Add update to newsxml metadata, checkin, notify news maintainers
+
+
+### Android build
+
+1. See branch i2p.android.base for build instructions
+
+2. Upload to Google Play, f-droid.i2p.io, f-droid.org, and website
+
+3. Verify Google Play acceptance
+
+4. Tell zzz to announce on Twitter
+
 
 ### Notify release
 
 1. Upload files to launchpad release (download mirror)
    (see debian-alt/doc/launchpad.txt for instructions)
 
-2. Wait for files to be updated on download server
-   Verify at http://download.i2p2.no/releases/
+2. Wait for files to be updated on download server,
+   including new OSX launcher version.
+   Verify at https://files.i2p-projekt.de/
 
 3. Website files to change:
-  - Sync with mtn.i2p-projekt.i2p
-  - `i2p2www/static/hosts.txt` if it changed (copy from i2p.i2p mtn branch)
+  - Sync with git.idk.i2p `git pull`
+  - `i2p2www/static/hosts.txt` if it changed (copy from i2p.i2p git branch)
   - `i2p2www/__init__.py` (release number)
   - `i2p2www/pages/downloads/list.html` (release signer, if changed)
   - `i2p2www/pages/downloads/macros` (checksums)
   - `i2p2www/pages/site/get-involved/roadmap.html` (release date, actual release contents)
   - `i2p2www/static/news/news.xml` (no longer necessary)
-  - Sync with mtn.i2p-projekt.i2p
+  - Rename (undraft) the blog post
+  - Sync with git.idk.i2p `git push`
 
 4. Announce on:
   - #i2p, #i2p-dev (also on Freenode side)
-  - forum.i2p
+  - Remember to update the topic on #i2p-dev
+  - IRC
   - Twitter
 
 5. Launchpad builds
    (see debian-alt/doc/launchpad.txt for instructions)
 
-6. Debian builds
+6. Copy launchpad files to our Debian repo,
+   or build Debian packages and upload them
    (see debian-alt/doc/debian-build.txt for instructions)
 
 7. Announce Launchpad and Debian builds on Twitter
 
-8. Notify Tails that new Debian builds are available
+8. Notify downstream Debian maintainer

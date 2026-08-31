@@ -32,8 +32,10 @@ public class I2PTunnelClient extends I2PTunnelClientBase {
      * replacement for dests
      */
     private final List<I2PSocketAddress> _addrs;
-    private static final long DEFAULT_READ_TIMEOUT = 5*60*1000; // -1
+    // We don't know what protocol, so we assume the application has its own timeout mechanism
+    private static final long DEFAULT_READ_TIMEOUT = -1;
     protected long readTimeout = DEFAULT_READ_TIMEOUT;
+    private InternalSocketRunner _isr;
 
     /**
      * As of 0.9.20 this is fast, and does NOT connect the manager to the router,
@@ -106,7 +108,36 @@ public class I2PTunnelClient extends I2PTunnelClientBase {
         }
     }
 
+    /**
+     *  Set the read idle timeout for newly-created connections (in
+     *  milliseconds).  After this time expires without data being reached from
+     *  the I2P network, the connection itself will be closed.
+     *
+     *  Less than or equal to 0 means forever.
+     *  Default -1 (forever) as of 0.9.36 for standard tunnels,
+     *  but extending classes may override.
+     *  Prior to that, default was 5 minutes, but did not work
+     *  due to streaming bugs.
+     *
+     *  Applies only to future connections;
+     *  calling this does not affect existing connections.
+     *
+     *  @param ms in ms
+     */
     public void setReadTimeout(long ms) { readTimeout = ms; }
+
+    /**
+     *  Get the read idle timeout for newly-created connections (in
+     *  milliseconds).
+     *
+     *  Less than or equal to 0 means forever.
+     *  Default -1 (forever) as of 0.9.36 for standard tunnels,
+     *  but extending classes may override.
+     *  Prior to that, default was 5 minutes, but did not work
+     *  due to streaming bugs.
+     *
+     *  @return in ms
+     */
     public long getReadTimeout() { return readTimeout; }
     
     protected void clientConnectionRun(Socket s) {
@@ -129,21 +160,16 @@ public class I2PTunnelClient extends I2PTunnelClientBase {
         } catch (IOException ex) {
             if (_log.shouldLog(Log.INFO))
                 _log.info("Error connecting", ex);
-            //l.log("Error connecting: " + ex.getMessage());
-            closeSocket(s);
-            if (i2ps != null) {
-                synchronized (sockLock) {
-                    mySockets.remove(sockLock);
-                }
-            }
         } catch (I2PException ex) {
             if (_log.shouldLog(Log.INFO))
                 _log.info("Error connecting", ex);
-            //l.log("Error connecting: " + ex.getMessage());
+        } finally {
+            // only because we are running it inline
             closeSocket(s);
             if (i2ps != null) {
+                try { i2ps.close(); } catch (IOException ioe) {}
                 synchronized (sockLock) {
-                    mySockets.remove(sockLock);
+                    mySockets.remove(i2ps);
                 }
             }
         }
@@ -200,6 +226,8 @@ public class I2PTunnelClient extends I2PTunnelClientBase {
                     svc = PortMapper.SVC_POP;
                 }
                 if (svc != null) {
+                    _isr = new InternalSocketRunner(this);
+                    _isr.start();
                     _context.portMapper().register(svc, getTunnel().listenHost, getLocalPort());
                 }
             }
@@ -223,6 +251,9 @@ public class I2PTunnelClient extends I2PTunnelClientBase {
             _context.portMapper().unregister(PortMapper.SVC_POP);
         }
         boolean rv = super.close(forced);
+        if (_isr != null) {
+            _isr.stopRunning();
+        }
         return rv;
     }
 }

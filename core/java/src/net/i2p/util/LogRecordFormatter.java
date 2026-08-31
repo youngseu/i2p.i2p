@@ -12,6 +12,7 @@ package net.i2p.util;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.text.SimpleDateFormat;
 import java.util.Date;
 
 import net.i2p.I2PAppContext;
@@ -86,7 +87,11 @@ class LogRecordFormatter {
     }
 
     public static String getWhen(LogManager manager, LogRecord logRecord) {
-        return manager.getDateFormat().format(new Date(logRecord.getDate()));
+        SimpleDateFormat fmt = manager.getDateFormat();
+        Date d = new Date(logRecord.getDate());
+        synchronized(fmt) {
+            return fmt.format(d);
+        }
     }
 
     /** don't translate */
@@ -97,7 +102,11 @@ class LogRecordFormatter {
 ****/
 
     /** */
-    private static final String BUNDLE_NAME = "net.i2p.router.web.messages";
+    private static final String BUNDLE_NAME = "net.i2p.util.messages";
+    static {
+        // just for tagging
+        String[] levels = { _x("CRIT"), _x("ERROR"), _x("WARN"), _x("INFO"), _x("DEBUG") };
+    }
 
     /** translate @since 0.7.14 */
     private static String getPriority(LogRecord rec, I2PAppContext ctx) {
@@ -128,5 +137,15 @@ class LogRecordFormatter {
         while (buf.length() < size)
             buf.append(' ');
         return buf.toString();
+    }
+
+    /**
+     *  Mark a string for extraction by xgettext and translation.
+     *  Use this only in static initializers.
+     *  It does not translate!
+     *  @return s
+     */
+    private static String _x(String s) {
+        return s;
     }
 }

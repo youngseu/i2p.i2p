@@ -1,7 +1,6 @@
 package net.i2p.router.tunnel.pool;
 
 import java.io.Serializable;
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -12,36 +11,50 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.StringTokenizer;
 
-import net.i2p.I2PAppContext;
+import net.i2p.CoreVersion;
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.SHA256Generator;
 import net.i2p.crypto.SigType;
+import net.i2p.crypto.SipHashInline;
 import net.i2p.data.DataFormatException;
+import net.i2p.data.DataHelper;
 import net.i2p.data.Hash;
+import net.i2p.data.SessionKey;
+import net.i2p.data.router.RouterAddress;
+import net.i2p.data.router.RouterIdentity;
 import net.i2p.data.router.RouterInfo;
+import net.i2p.router.LeaseSetKeys;
 import net.i2p.router.Router;
 import net.i2p.router.RouterContext;
 import net.i2p.router.TunnelPoolSettings;
 import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
-import net.i2p.router.util.HashDistance;
+import net.i2p.router.peermanager.PeerProfile;
+import net.i2p.router.transport.TransportUtil;
+import net.i2p.util.ArraySet;
 import net.i2p.util.Log;
+import net.i2p.util.SystemVersion;
 import net.i2p.util.VersionComparator;
 
 /**
- * Coordinate the selection of peers to go into a tunnel for one particular 
+ * Coordinate the selection of peers to go into a tunnel for one particular
  * pool.
  *
- * Todo: there's nothing non-static in here
  */
-public abstract class TunnelPeerSelector {
-    protected final RouterContext ctx;
+public abstract class TunnelPeerSelector extends ConnectChecker {
+
+    private static final String DEFAULT_EXCLUDE_CAPS = String.valueOf(Router.CAPABILITY_BW12) +
+                                                       String.valueOf(Router.CAPABILITY_CONGESTION_SEVERE) +
+                                                       String.valueOf(Router.CAPABILITY_NO_TUNNELS);
+    private static final String ALT_EXCLUDE_CAPS = String.valueOf(Router.CAPABILITY_BW12) +
+                                                   String.valueOf(Router.CAPABILITY_NO_TUNNELS);
 
     protected TunnelPeerSelector(RouterContext context) {
-        ctx = context;
+        super(context);
     }
 
     /**
-     * Which peers should go into the next tunnel for the given settings?  
-     * 
+     * Which peers should go into the next tunnel for the given settings?
+     *
      * @return ordered list of Hash objects (one per peer) specifying what order
      *         they should appear in a tunnel (ENDPOINT FIRST).  This includes
      *         the local router in the list.  If there are no tunnels or peers
@@ -49,7 +62,7 @@ public abstract class TunnelPeerSelector {
      *         return null.
      */
     public abstract List<Hash> selectPeers(TunnelPoolSettings settings);
-    
+
     /**
      *  @return randomized number of hops 0-7, not including ourselves
      */
@@ -75,58 +88,42 @@ public abstract class TunnelPeerSelector {
             length = 0;
         else if (length > 7) // as documented in tunnel.html
             length = 7;
-        /*
-        if ( (ctx.tunnelManager().getOutboundTunnelCount() <= 0) || 
-             (ctx.tunnelManager().getFreeTunnelCount() <= 0) ) {
-            Log log = ctx.logManager().getLog(TunnelPeerSelector.class);
-            // no tunnels to build tunnels with
-            if (settings.getAllowZeroHop()) {
-                if (log.shouldLog(Log.INFO))
-                    log.info("no outbound tunnels or free inbound tunnels, but we do allow zeroHop: " + settings);
-                return 0;
-            } else {
-                if (log.shouldLog(Log.WARN))
-                    log.warn("no outbound tunnels or free inbound tunnels, and we dont allow zeroHop: " + settings);
-                return -1;
-            }
-        }
-        */
         return length;
     }
-    
+
     /**
      *  For debugging, also possibly for restricted routes?
      *  Needs analysis and testing
-     *  @return should always be false
+     *  @return usually false
      */
     protected boolean shouldSelectExplicit(TunnelPoolSettings settings) {
         if (settings.isExploratory()) return false;
+        // To test IB or OB only
+        //if (settings.isInbound()) return false;
+        //if (!settings.isInbound()) return false;
         Properties opts = settings.getUnknownOptions();
-        if (opts != null) {
-            String peers = opts.getProperty("explicitPeers");
-            if (peers == null)
-                peers = I2PAppContext.getGlobalContext().getProperty("explicitPeers");
-            if (peers != null)
-                return true;
-        }
+        String peers = opts.getProperty("explicitPeers");
+        if (peers == null)
+            peers = ctx.getProperty("explicitPeers");
+        // only one out of 4 times so we don't break completely if peer doesn't build one
+        if (peers != null && ctx.random().nextInt(4) == 0)
+            return true;
         return false;
     }
-    
+
     /**
      *  For debugging, also possibly for restricted routes?
      *  Needs analysis and testing
-     *  @return should always be false
+     *  @return the peers
      */
     protected List<Hash> selectExplicit(TunnelPoolSettings settings, int length) {
         String peers = null;
         Properties opts = settings.getUnknownOptions();
-        if (opts != null)
-            peers = opts.getProperty("explicitPeers");
-        
+        peers = opts.getProperty("explicitPeers");
+
         if (peers == null)
-            peers = I2PAppContext.getGlobalContext().getProperty("explicitPeers");
-        
-        Log log = ctx.logManager().getLog(ClientPeerSelector.class);
+            peers = ctx.getProperty("explicitPeers");
+
         List<Hash> rv = new ArrayList<Hash>();
         StringTokenizer tok = new StringTokenizer(peers, ",");
         while (tok.hasMoreTokens()) {
@@ -134,25 +131,39 @@ public abstract class TunnelPeerSelector {
             Hash peer = new Hash();
             try {
                 peer.fromBase64(peerStr);
-                
+
                 if (ctx.profileOrganizer().isSelectable(peer)) {
                     rv.add(peer);
                 } else {
-                    if (log.shouldLog(Log.DEBUG))
-                        log.debug("Explicit peer is not selectable: " + peerStr);
+                    log.logAlways(Log.WARN, "Explicit peer is not selectable: " + peerStr);
                 }
             } catch (DataFormatException dfe) {
                 if (log.shouldLog(Log.ERROR))
                     log.error("Explicit peer is improperly formatted (" + peerStr + ")", dfe);
             }
         }
-        
+
         int sz = rv.size();
-        Collections.shuffle(rv, ctx.random());
-        
-        while (rv.size() > length)
+        if (sz == 0) {
+            log.logAlways(Log.WARN, "No valid explicit peers found, building zero hop");
+        } else if (sz > 1) {
+            Collections.shuffle(rv, ctx.random());
+        }
+
+        while (rv.size() > length) {
             rv.remove(0);
-        
+        }
+        if (rv.size() < length) {
+            int more = length - rv.size();
+            Set<Hash> exclude = getExclude(settings.isInbound(), settings.isExploratory());
+            exclude.addAll(rv);
+            Set<Hash> matches = new ArraySet<Hash>(more);
+            // don't bother with IP restrictions here
+            ctx.profileOrganizer().selectFastPeers(more, exclude, matches);
+            rv.addAll(matches);
+            Collections.shuffle(rv, ctx.random());
+        }
+
         if (log.shouldLog(Log.INFO)) {
             StringBuilder buf = new StringBuilder();
             if (settings.getDestinationNickname() != null)
@@ -169,19 +180,29 @@ public abstract class TunnelPeerSelector {
             buf.append(", out of ").append(sz).append(" (not including self)");
             log.info(buf.toString());
         }
-        
+
         if (settings.isInbound())
             rv.add(0, ctx.routerHash());
         else
             rv.add(ctx.routerHash());
-        
+
         return rv;
     }
-    
-    /** 
-     * Pick peers that we want to avoid
+
+    /**
+     *  As of 0.9.58, this returns a set populated only by TunnelManager.selectPeersInTooManyTunnels(),
+     *  for passing to ProfileOrganizer.
+     *  The set will be populated via the contains() calls.
      */
-    public Set<Hash> getExclude(boolean isInbound, boolean isExploratory) {
+    protected Set<Hash> getExclude(boolean isInbound, boolean isExploratory) {
+        return new Excluder(isInbound, isExploratory);
+    }
+
+
+    /**
+     *  @since 0.9.58, previously getExclude()
+     */
+    private boolean shouldExclude(Hash h, boolean isInbound, boolean isExploratory) {
         // we may want to update this to skip 'hidden' or 'unreachable' peers, but that
         // isn't safe, since they may publish one set of routerInfo to us and another to
         // other peers.  the defaults for filterUnreachable has always been to return false,
@@ -198,192 +219,156 @@ public abstract class TunnelPeerSelector {
         // We could just try and exclude them as the inbound gateway but that's harder
         // (and even worse for anonymity?).
         //
-        // Defaults changed to true for inbound only in filterUnreachable below.
 
-        Set<Hash> peers = new HashSet<Hash>(1);
-        peers.addAll(ctx.profileOrganizer().selectPeersRecentlyRejecting());
-        peers.addAll(ctx.tunnelManager().selectPeersInTooManyTunnels());
-        // if (false && filterUnreachable(ctx, isInbound, isExploratory)) {
-        if (filterUnreachable(isInbound, isExploratory)) {
-            // NOTE: filterUnreachable returns true for inbound, false for outbound
-            // This is the only use for getPeersByCapability? And the whole set of datastructures in PeerManager?
-            Collection<Hash> caps = ctx.peerManager().getPeersByCapability(Router.CAPABILITY_UNREACHABLE);
-            if (caps != null)
-                peers.addAll(caps);
-            caps = ctx.profileOrganizer().selectPeersLocallyUnreachable();
-            if (caps != null)
-                peers.addAll(caps);
+        PeerProfile prof = ctx.profileOrganizer().getProfileNonblocking(h);
+        if (prof != null) {
+            long cutoff = ctx.clock().now() - (20*1000);
+            if (prof.getTunnelHistory().getLastRejectedBandwidth() > cutoff)
+                return true;
         }
+
+        // the transport layer thinks is unreachable
+        if (ctx.commSystem().wasUnreachable(h))
+            return true;
+
+        // Here, we use validation, because BuildRequestor does,
+        // so if we don't skip old routers here, it gets all the way to BuildRequestor
+        // before failing.
+        RouterInfo info = (RouterInfo) ctx.netDb().lookupLocally(h);
+        if (info == null)
+            return true;
+
+        // reduce load on floodfills
+        String caps = info.getCapabilities();
+        boolean isFF = caps.indexOf(FloodfillNetworkDatabaseFacade.CAPABILITY_FLOODFILL) >= 0;
+        if (isFF && caps.indexOf(Router.CAPABILITY_UNREACHABLE) >= 0)
+            return true;
+        if (isExploratory && isFF &&
+            ctx.random().nextInt(4) != 0)
+            return true;
+
+        if (filterUnreachable(isInbound, isExploratory)) {
+            if (caps.indexOf(Router.CAPABILITY_UNREACHABLE) >= 0)
+                return true;
+        }
+
         if (filterSlow(isInbound, isExploratory)) {
             // NOTE: filterSlow always returns true
-            Log log = ctx.logManager().getLog(TunnelPeerSelector.class);
-            char excl[] = getExcludeCaps(ctx);
-            if (excl != null) {
-                FloodfillNetworkDatabaseFacade fac = (FloodfillNetworkDatabaseFacade)ctx.netDb();
-                List<RouterInfo> known = fac.getKnownRouterData();
-                if (known != null) {
-                    for (int i = 0; i < known.size(); i++) {
-                        RouterInfo peer = known.get(i);
-                        boolean shouldExclude = shouldExclude(ctx, log, peer, excl);
-                        if (shouldExclude) {
-                            peers.add(peer.getIdentity().calculateHash());
-                            continue;
-                        }
-                        /*
-                        String cap = peer.getCapabilities();
-                        if (cap == null) {
-                            peers.add(peer.getIdentity().calculateHash());
-                            continue;
-                        }
-                        for (int j = 0; j < excl.length; j++) {
-                            if (cap.indexOf(excl[j]) >= 0) {
-                                peers.add(peer.getIdentity().calculateHash());
-                                continue;
-                            }
-                        }
-                        int maxLen = 0;
-                        if (cap.indexOf(FloodfillNetworkDatabaseFacade.CAPACITY_FLOODFILL) >= 0)
-                            maxLen++;
-                        if (cap.indexOf(Router.CAPABILITY_REACHABLE) >= 0)
-                            maxLen++;
-                        if (cap.indexOf(Router.CAPABILITY_UNREACHABLE) >= 0)
-                            maxLen++;
-                        if (cap.length() <= maxLen)
-                            peers.add(peer.getIdentity().calculateHash());
-                        // otherwise, it contains flags we aren't trying to focus on,
-                        // so don't exclude it based on published capacity
-                        
-                        if (filterUptime(ctx, isInbound, isExploratory)) {
-                            Properties opts = peer.getOptions();
-                            if (opts != null) {
-                                String val = opts.getProperty("stat_uptime");
-                                long uptimeMs = 0;
-                                if (val != null) {
-                                    long factor = 1;
-                                    if (val.endsWith("ms")) {
-                                        factor = 1;
-                                        val = val.substring(0, val.length()-2);
-                                    } else if (val.endsWith("s")) {
-                                        factor = 1000l;
-                                        val = val.substring(0, val.length()-1);
-                                    } else if (val.endsWith("m")) {
-                                        factor = 60*1000l;
-                                        val = val.substring(0, val.length()-1);
-                                    } else if (val.endsWith("h")) {
-                                        factor = 60*60*1000l;
-                                        val = val.substring(0, val.length()-1);
-                                    } else if (val.endsWith("d")) {
-                                        factor = 24*60*60*1000l;
-                                        val = val.substring(0, val.length()-1);
-                                    }
-                                    try { uptimeMs = Long.parseLong(val); } catch (NumberFormatException nfe) {}
-                                    uptimeMs *= factor;
-                                } else {
-                                    // not publishing an uptime, so exclude it
-                                    peers.add(peer.getIdentity().calculateHash());
-                                    continue;
-                                }
-                                
-                                long infoAge = ctx.clock().now() - peer.getPublished();
-                                if (infoAge < 0) {
-                                    infoAge = 0;
-                                } else if (infoAge > 24*60*60*1000) {
-				    // Only exclude long-unseen peers if we haven't just started up
-				    long DONT_EXCLUDE_PERIOD = 15*60*1000;
-				    if (ctx.router().getUptime() < DONT_EXCLUDE_PERIOD) {
-				        if (log.shouldLog(Log.DEBUG))
-				            log.debug("Not excluding a long-unseen peer, since we just started up.");
-				    } else {
-				        if (log.shouldLog(Log.DEBUG))
-				            log.debug("Excluding a long-unseen peer.");
-				        peers.add(peer.getIdentity().calculateHash());
-				    }
-                                    //peers.add(peer.getIdentity().calculateHash());
-                                    continue;
-                                } else {
-                                    if (infoAge + uptimeMs < 2*60*60*1000) {
-                                        // up for less than 2 hours, so exclude it
-                                        peers.add(peer.getIdentity().calculateHash());
-                                    }
-                                }
-                            } else {
-                                // not publishing stats, so exclude it
-                                peers.add(peer.getIdentity().calculateHash());
-                                continue;
-                            }
-                        }
-                         */
-                    }
-                }
-                /*
-                for (int i = 0; i < excludeCaps.length(); i++) {
-                    List matches = ctx.peerManager().getPeersByCapability(excludeCaps.charAt(i));
-                    if (log.shouldLog(Log.INFO))
-                        log.info("Filtering out " + matches.size() + " peers with capability " + excludeCaps.charAt(i));
-                    peers.addAll(matches);
-                }
-                 */
-            }
+            String excl = getExcludeCaps(ctx);
+            if (shouldExclude(info, excl))
+                return true;
         }
-        return peers;
+
+        return false;
     }
-    
-    /** 
-     *  Pick peers that we want to avoid for the first OB hop or last IB hop.
-     *  This is only filled in if our router sig type is not DSA.
+
+    /**
+     *  Are we IPv6 only?
+     *  @since 0.9.34
+     */
+    protected boolean isIPv6Only() {
+        // The setting is the same for both SSU and NTCP, so just take the SSU one
+        return TransportUtil.getIPv6Config(ctx, "SSU") == TransportUtil.IPv6Config.IPV6_ONLY;
+    }
+
+    /**
+     *  Should we allow as OBEP?
+     *  This just checks for IPv4 support.
+     *  Will return false for IPv6-only.
+     *  This is intended for tunnel candidates, where we already have
+     *  the RI. Will not force RI lookups.
+     *  Default true.
      *
-     *  @param isInbound unused
-     *  @return null if none
+     *  @since 0.9.34, protected since 0.9.58 for ClientPeerSelector
+     */
+    protected boolean allowAsOBEP(Hash h) {
+        RouterInfo ri = (RouterInfo) ctx.netDb().lookupLocallyWithoutValidation(h);
+        if (ri == null)
+            return true;
+        return canConnect(ri, ANY_V4);
+    }
+
+    /**
+     *  Should we allow as IBGW?
+     *  This just checks for the "R" capability and IPv4 support.
+     *  Will return false for hidden or IPv6-only.
+     *  This is intended for tunnel candidates, where we already have
+     *  the RI. Will not force RI lookups.
+     *  Default true.
+     *
+     *  @since 0.9.34, protected since 0.9.58 for ClientPeerSelector
+     */
+    protected boolean allowAsIBGW(Hash h) {
+        RouterInfo ri = (RouterInfo) ctx.netDb().lookupLocallyWithoutValidation(h);
+        if (ri == null)
+            return true;
+        if (ri.getCapabilities().indexOf(Router.CAPABILITY_REACHABLE) < 0)
+            return false;
+        return canConnect(ANY_V4, ri);
+    }
+
+    /**
+     *  Pick peers that we want to avoid for the first OB hop or last IB hop.
+     *  There's several cases of importance:
+     *  <ol><li>Inbound and we are hidden -
+     *      Exclude all unless connected.
+     *      This is taken care of in ClientPeerSelector and TunnelPeerSelector selectPeers(), not here.
+     *
+     *  <li>We are IPv6-only.
+     *      Exclude all v4-only peers, unless connected
+     *      This is taken care of here.
+     *
+     *  <li>We have NTCP or SSU disabled.
+     *      Exclude all incompatible peers, unless connected
+     *      This is taken care of here.
+     *
+     *  <li>Minimum version check, if we are some brand-new sig type,
+     *      or are using some new tunnel build method.
+     *      Not currently used, but this is where to implement the checks if needed.
+     *      Make sure that ClientPeerSelector and TunnelPeerSelector selectPeers() call this when needed.
+     *  </ol>
+     *
+     *  As of 0.9.58, this a set with only toAdd, for use in ProfileOrganizer.
+     *  The set will be populated via the contains() calls.
+     *
+     *  @param isInbound
+     *  @return non-null
      *  @since 0.9.17
      */
-    protected Set<Hash> getClosestHopExclude(boolean isInbound) {
-        RouterInfo ri = ctx.router().getRouterInfo();
-        if (ri == null)
-            return null;
-        SigType type = ri.getIdentity().getSigType();
-        if (type == SigType.DSA_SHA1)
-            return null;
-        Set<Hash> rv = new HashSet<Hash>(1024);
-        FloodfillNetworkDatabaseFacade fac = (FloodfillNetworkDatabaseFacade)ctx.netDb();
-        List<RouterInfo> known = fac.getKnownRouterData();
-        if (known != null) {
-            for (int i = 0; i < known.size(); i++) {
-                RouterInfo peer = known.get(i);
-                String v = peer.getVersion();
-                // RI sigtypes added in 0.9.16
-                // SSU inbound connection bug fixed in 0.9.17, but it won't bid, so NTCP only,
-                // no need to check
-                if (VersionComparator.comp(v, "0.9.16") < 0)
-                    rv.add(peer.getIdentity().calculateHash());
-            }
-        }
-        return rv;
+    protected Set<Hash> getClosestHopExclude(boolean isInbound, Set<Hash> toAdd) {
+        return new ClosestHopExcluder(isInbound, toAdd);
     }
-    
-    /** warning, this is also called by ProfileOrganizer.isSelectable() */
-    public static boolean shouldExclude(RouterContext ctx, RouterInfo peer) {
-        Log log = ctx.logManager().getLog(TunnelPeerSelector.class);
-        return shouldExclude(ctx, log, peer, getExcludeCaps(ctx));
-    }
-    
-    private static char[] getExcludeCaps(RouterContext ctx) {
-        String excludeCaps = ctx.getProperty("router.excludePeerCaps", 
-                                             String.valueOf(Router.CAPABILITY_BW12));
-        if (excludeCaps != null) {
-            char excl[] = excludeCaps.toCharArray();
-            return excl;
-        } else {
-            return null;
-        }
-    }
-    
-    /** 0.7.8 and earlier had major message corruption bugs */
-    private static final String MIN_VERSION = "0.7.9";
 
-    private static boolean shouldExclude(RouterContext ctx, Log log, RouterInfo peer, char excl[]) {
+    /**
+     *  Should the peer be excluded based on its published caps?
+     *
+     *  Warning, this is also called by ProfileOrganizer.isSelectable()
+     */
+    public static boolean shouldExclude(RouterContext ctx, RouterInfo peer) {
+        return shouldExclude(peer, getExcludeCaps(ctx));
+    }
+
+    /**
+     *  @return non-null, possibly empty
+     */
+    private static String getExcludeCaps(RouterContext ctx) {
+        // sometimes try the 'E' routers anyway
+        String dflt = (ctx.random().nextInt(4) != 0) ? DEFAULT_EXCLUDE_CAPS : ALT_EXCLUDE_CAPS;
+        return ctx.getProperty("router.excludePeerCaps", dflt);
+    }
+
+    /** SSU2 fixes (2.1.0), Congestion fixes (2.2.0) */
+    private static final String MIN_VERSION = "0.9.62";
+
+    /**
+     *  Should the peer be excluded based on its published caps?
+     *
+     *  Warning, this is also called by ProfileOrganizer.isSelectable()
+     */
+    private static boolean shouldExclude(RouterInfo peer, String excl) {
         String cap = peer.getCapabilities();
-        for (int j = 0; j < excl.length; j++) {
-            if (cap.indexOf(excl[j]) >= 0) {
+        for (int j = 0; j < excl.length(); j++) {
+            if (cap.indexOf(excl.charAt(j)) >= 0) {
                 return true;
             }
         }
@@ -396,110 +381,85 @@ public abstract class TunnelPeerSelector {
             maxLen++;
         if (cap.length() <= maxLen)
             return true;
+        RouterIdentity ident = peer.getIdentity();
+        if (ident.getSigningPublicKey().getType() == SigType.DSA_SHA1)
+            return true;
+        // Shouldn't be any ElG routers MIN_VERSION or higher, but just to make sure,
+        // and prevent large build messages.
+        // Restricting to 25519 may also allow us to remove some of the ElG tunnel build code.
+        EncType type = ident.getPublicKey().getType();
+        if (type != EncType.ECIES_X25519)
+            return true;
+
         // otherwise, it contains flags we aren't trying to focus on,
         // so don't exclude it based on published capacity
 
         // minimum version check
         String v = peer.getVersion();
+        // quick check to skip the comparator
+        if (v.equals(CoreVersion.PUBLISHED_VERSION))
+            return false;
         if (VersionComparator.comp(v, MIN_VERSION) < 0)
             return true;
-
-        // uptime is always spoofed to 90m, so just remove all this
-      /******
-        String val = peer.getOption("stat_uptime");
-        if (val != null) {
-            long uptimeMs = 0;
-                long factor = 1;
-                if (val.endsWith("ms")) {
-                    factor = 1;
-                    val = val.substring(0, val.length()-2);
-                } else if (val.endsWith("s")) {
-                    factor = 1000l;
-                    val = val.substring(0, val.length()-1);
-                } else if (val.endsWith("m")) {
-                    factor = 60*1000l;
-                    val = val.substring(0, val.length()-1);
-                } else if (val.endsWith("h")) {
-                    factor = 60*60*1000l;
-                    val = val.substring(0, val.length()-1);
-                } else if (val.endsWith("d")) {
-                    factor = 24*60*60*1000l;
-                    val = val.substring(0, val.length()-1);
-                }
-                try { uptimeMs = Long.parseLong(val); } catch (NumberFormatException nfe) {}
-                uptimeMs *= factor;
-
-            long infoAge = ctx.clock().now() - peer.getPublished();
-            if (infoAge < 0) {
-                return false;
-            } else if (infoAge > 5*24*60*60*1000) {
-                // Only exclude long-unseen peers if we haven't just started up
-                if (ctx.router().getUptime() < DONT_EXCLUDE_PERIOD) {
-                    if (log.shouldLog(Log.DEBUG))
-                        log.debug("Not excluding a long-unseen peer, since we just started up.");
-                    return false;
-                } else {
-                    if (log.shouldLog(Log.DEBUG))
-                        log.debug("Excluding a long-unseen peer.");
-                    return true;
-                }
-            } else {
-                if ( (infoAge + uptimeMs < 90*60*1000) && (ctx.router().getUptime() > DONT_EXCLUDE_PERIOD) ) {
-                    // up for less than 90 min (which is really 1h since an uptime of 1h-2h is published as 90m),
-                    // so exclude it
-                    return true;
-                } else {
-                    return false;
-                }
-            }
-        } else {
-            // not publishing an uptime, so exclude it
-            return true;
-        }
-      ******/
         return false;
     }
-    
+
     private static final String PROP_OUTBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE = "router.outboundExploratoryExcludeUnreachable";
     private static final String PROP_OUTBOUND_CLIENT_EXCLUDE_UNREACHABLE = "router.outboundClientExcludeUnreachable";
     private static final String PROP_INBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE = "router.inboundExploratoryExcludeUnreachable";
     private static final String PROP_INBOUND_CLIENT_EXCLUDE_UNREACHABLE = "router.inboundClientExcludeUnreachable";
-    
+
     private static final boolean DEFAULT_OUTBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE = false;
     private static final boolean DEFAULT_OUTBOUND_CLIENT_EXCLUDE_UNREACHABLE = false;
     // see comments at getExclude() above
-    private static final boolean DEFAULT_INBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE = true;
-    private static final boolean DEFAULT_INBOUND_CLIENT_EXCLUDE_UNREACHABLE = true;
-    
+    private static final boolean DEFAULT_INBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE = false;
+    private static final boolean DEFAULT_INBOUND_CLIENT_EXCLUDE_UNREACHABLE = false;
+
     /**
-     * do we want to skip peers who haven't been up for long?
-     * @return true for inbound, false for outbound, unless configured otherwise
+     * do we want to skip unreachable peers?
+     * @return true if yes
      */
-    protected boolean filterUnreachable(boolean isInbound, boolean isExploratory) {
+    private boolean filterUnreachable(boolean isInbound, boolean isExploratory) {
+        if (!isExploratory)
+            return true;
+        // give them some cover without killing our success rate
+        return ctx.random().nextInt(4) != 0;
+/*
+        if (SystemVersion.isSlow() || ctx.router().getUptime() < 65*60*1000)
+            return true;
         if (isExploratory) {
-            if (isInbound)
+            if (isInbound) {
+                if (ctx.router().isHidden())
+                    return true;
                 return ctx.getProperty(PROP_INBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE, DEFAULT_INBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE);
-            else
+            } else {
                 return ctx.getProperty(PROP_OUTBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE, DEFAULT_OUTBOUND_EXPLORATORY_EXCLUDE_UNREACHABLE);
+            }
         } else {
-            if (isInbound)
+            if (isInbound) {
+                if (ctx.router().isHidden())
+                    return true;
                 return ctx.getProperty(PROP_INBOUND_CLIENT_EXCLUDE_UNREACHABLE, DEFAULT_INBOUND_CLIENT_EXCLUDE_UNREACHABLE);
-            else 
+            } else {
                 return ctx.getProperty(PROP_OUTBOUND_CLIENT_EXCLUDE_UNREACHABLE, DEFAULT_OUTBOUND_CLIENT_EXCLUDE_UNREACHABLE);
+            }
         }
+*/
     }
 
-    
+
     private static final String PROP_OUTBOUND_EXPLORATORY_EXCLUDE_SLOW = "router.outboundExploratoryExcludeSlow";
     private static final String PROP_OUTBOUND_CLIENT_EXCLUDE_SLOW = "router.outboundClientExcludeSlow";
     private static final String PROP_INBOUND_EXPLORATORY_EXCLUDE_SLOW = "router.inboundExploratoryExcludeSlow";
     private static final String PROP_INBOUND_CLIENT_EXCLUDE_SLOW = "router.inboundClientExcludeSlow";
-    
+
     /**
      * do we want to skip peers that are slow?
      * @return true unless configured otherwise
      */
     protected boolean filterSlow(boolean isInbound, boolean isExploratory) {
+        return true;
+/*
         if (isExploratory) {
             if (isInbound)
                 return ctx.getProperty(PROP_INBOUND_EXPLORATORY_EXCLUDE_SLOW, true);
@@ -508,42 +468,16 @@ public abstract class TunnelPeerSelector {
         } else {
             if (isInbound)
                 return ctx.getProperty(PROP_INBOUND_CLIENT_EXCLUDE_SLOW, true);
-            else 
-                return ctx.getProperty(PROP_OUTBOUND_CLIENT_EXCLUDE_SLOW, true);
-        }        
-    }
-    
-/****
-    private static final String PROP_OUTBOUND_EXPLORATORY_EXCLUDE_UPTIME = "router.outboundExploratoryExcludeUptime";
-    private static final String PROP_OUTBOUND_CLIENT_EXCLUDE_UPTIME = "router.outboundClientExcludeUptime";
-    private static final String PROP_INBOUND_EXPLORATORY_EXCLUDE_UPTIME = "router.inboundExploratoryExcludeUptime";
-    private static final String PROP_INBOUND_CLIENT_EXCLUDE_UPTIME = "router.inboundClientExcludeUptime";
-****/
-    
-    /**
-     * do we want to skip peers who haven't been up for long?
-     * @return true unless configured otherwise
-     */
-/****
-    protected boolean filterUptime(boolean isInbound, boolean isExploratory) {
-        if (isExploratory) {
-            if (isInbound)
-                return ctx.getProperty(PROP_INBOUND_EXPLORATORY_EXCLUDE_UPTIME, true);
             else
-                return ctx.getProperty(PROP_OUTBOUND_EXPLORATORY_EXCLUDE_UPTIME, true);
-        } else {
-            if (isInbound)
-                return ctx.getProperty(PROP_INBOUND_CLIENT_EXCLUDE_UPTIME, true);
-            else 
-                return ctx.getProperty(PROP_OUTBOUND_CLIENT_EXCLUDE_UPTIME, true);
+                return ctx.getProperty(PROP_OUTBOUND_CLIENT_EXCLUDE_SLOW, true);
         }
+*/
     }
-****/
 
     /** see HashComparator */
-    protected void orderPeers(List<Hash> rv, Hash hash) {
+    protected void orderPeers(List<Hash> rv, SessionKey key) {
         if (rv.size() > 1)
-            Collections.sort(rv, new HashComparator(hash));
+            Collections.sort(rv, new HashComparator(key));
     }
 
     /**
@@ -553,34 +487,229 @@ public abstract class TunnelPeerSelector {
      *  to maximize his chances of those two routers being at opposite
      *  ends of a tunnel.
      *
-     *  Previous:
+     *  Previous Previous:
      *     d(l, h) - d(r, h)
      *
-     *  Now:
+     *  Previous:
      *     d((H(l+h), h) - d(H(r+h), h)
+     *
+     *  Now:
+     *     SipHash using h to generate the SipHash keys
+     *     then siphash(l) - siphash(r)
      */
     private static class HashComparator implements Comparator<Hash>, Serializable {
-        private final Hash _hash, tmp;
-        private final byte[] data;
+        private final long k0, k1;
 
-        /** not thread safe */
-        private HashComparator(Hash h) {
-            _hash = h;
-            tmp = new Hash(new byte[Hash.HASH_LENGTH]);
-            data = new byte[2*Hash.HASH_LENGTH];
-            System.arraycopy(_hash.getData(), 0, data, Hash.HASH_LENGTH, Hash.HASH_LENGTH);
+        /**
+         * not thread safe
+         *
+         * @param k container for sort keys, not used as a Hash
+         */
+        private HashComparator(SessionKey k) {
+            byte[] b = k.getData();
+            // we use the first half of the random key in ProfileOrganizer.getSubTier(),
+            // so use the last half here
+            k0 = DataHelper.fromLong8(b, 16);
+            k1 = DataHelper.fromLong8(b, 24);
         }
 
         public int compare(Hash l, Hash r) {
-            System.arraycopy(l.getData(), 0, data, 0, Hash.HASH_LENGTH);
-            byte[] tb = tmp.getData();
-            // don't use caching version of calculateHash()
-            SHA256Generator.getInstance().calculateHash(data, 0, 2*Hash.HASH_LENGTH, tb, 0);
-            BigInteger ll = HashDistance.getDistance(_hash, tmp);
-            System.arraycopy(r.getData(), 0, data, 0, Hash.HASH_LENGTH);
-            SHA256Generator.getInstance().calculateHash(data, 0, 2*Hash.HASH_LENGTH, tb, 0);
-            BigInteger rr = HashDistance.getDistance(_hash, tmp);
-            return ll.compareTo(rr);
+            long lh = SipHashInline.hash24(k0, k1, l.getData());
+            long rh = SipHashInline.hash24(k0, k1, r.getData());
+            if (lh > rh)
+                return 1;
+            if (lh < rh)
+                return -1;
+            return 0;
+        }
+    }
+
+    /**
+     *  Connectivity check.
+     *  Check that each hop can connect to the next, including us.
+     *  Check that the OBEP is not IPv6-only, and the IBGW is
+     *  reachable and not hidden or IPv6-only.
+     *  Tells the profile manager to blame the hop, and returns false on failure.
+     *
+     *  @param tunnel ENDPOINT FIRST, GATEWAY LAST!!!!, length 2 or greater
+     *  @return ok
+     *  @since 0.9.34
+     */
+    protected boolean checkTunnel(boolean isInbound, boolean isExploratory, List<Hash> tunnel) {
+        if (!checkTunnel(tunnel))
+            return false;
+        // client OBEP/IBGW checks now in CPS
+        if (!isExploratory)
+            return true;
+        if (isInbound) {
+            Hash h = tunnel.get(tunnel.size() - 1);
+            if (!allowAsIBGW(h)) {
+                if (log.shouldWarn())
+                    log.warn("Picked IPv6-only or unreachable peer for IBGW: " + h);
+                // treat as a timeout in the profile
+                // tunnelRejected() would set the last heard from time
+                ctx.profileManager().tunnelTimedOut(h);
+                return false;
+            }
+        } else {
+            Hash h = tunnel.get(0);
+            if (!allowAsOBEP(h)) {
+                if (log.shouldWarn())
+                    log.warn("Picked IPv6-only peer for OBEP: " + h);
+                // treat as a timeout in the profile
+                // tunnelRejected() would set the last heard from time
+                ctx.profileManager().tunnelTimedOut(h);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     *  Connectivity check.
+     *  Check that each hop can connect to the next, including us.
+     *
+     *  @param tunnel ENDPOINT FIRST, GATEWAY LAST!!!!
+     *  @return ok
+     *  @since 0.9.34
+     */
+    private boolean checkTunnel(List<Hash> tunnel) {
+        boolean rv = true;
+        for (int i = 0; i < tunnel.size() - 1; i++) {
+            // order is backwards!
+            Hash hf = tunnel.get(i+1);
+            Hash ht = tunnel.get(i);
+            if (!canConnect(hf, ht)) {
+                if (log.shouldWarn())
+                    log.warn("Connect check fail hop " + (i+1) + " to " + i +
+                             " in tunnel (EP<-GW): " + DataHelper.toString(tunnel));
+                // Blame them both
+                // treat as a timeout in the profile
+                // tunnelRejected() would set the last heard from time
+                Hash us = ctx.routerHash();
+                if (!hf.equals(us))
+                    ctx.profileManager().tunnelTimedOut(hf);
+                if (!ht.equals(us))
+                    ctx.profileManager().tunnelTimedOut(ht);
+                rv = false;
+                break;
+            }
+        }
+        return rv;
+    }
+
+    /**
+     *  A Set of Hashes that automatically adds to the
+     *  Set in the contains() check.
+     *
+     *  So we don't need to generate the exclude set up front.
+     *
+     *  @since 0.9.58
+     */
+    protected class Excluder extends ExcluderBase {
+        private final boolean _isIn, _isExpl;
+
+        /**
+         *  Automatically adds selectPeersInTooManyTunnels(), unless i2np.allowLocal.
+         */
+        public Excluder(boolean isInbound, boolean isExploratory) {
+            super(ctx.getBooleanProperty("i2np.allowLocal") ? new HashSet<Hash>()
+                                                            : ctx.tunnelManager().selectPeersInTooManyTunnels());
+            _isIn = isInbound;
+            _isExpl = isExploratory;
+        }
+
+        /**
+         *  Does not add selectPeersInTooManyTunnels().
+         *  Makes a copy of toAdd
+         *
+         *  @param toAdd initial contents, copied
+         */
+        public Excluder(boolean isInbound, boolean isExploratory, Set<Hash> toAdd) {
+            super(new HashSet<Hash>(toAdd));
+            _isIn = isInbound;
+            _isExpl = isExploratory;
+        }
+
+        /**
+         *  Overridden to automatically check our exclusion criteria
+         *  and add the Hash to the set if the criteria are met.
+         *
+         *  @param o a Hash
+         *  @return true if peer should be excluded
+         */
+        @Override
+        public boolean contains(Object o) {
+            if (s.contains(o))
+                return true;
+            Hash h = (Hash) o;
+            if (shouldExclude(h, _isIn, _isExpl)) {
+                s.add(h);
+                //if (log.shouldDebug())
+                //    log.debug("TPS exclude " + h.toBase64());
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /**
+     *  Only for hidden mode and other tough situations.
+     *  See checkClosestHop boolean.
+     *  Not for hidden inbound; use SANFP instead.
+     *
+     *  @since 0.9.58
+     */
+    private class ClosestHopExcluder extends ExcluderBase {
+        private final boolean isIn;
+        private final int ourMask;
+
+        /**
+         *  Automatically check if peer can connect to us (for inbound)
+         *  or we can connect to it (for outbound)
+         *  and add the Hash to the set if not.
+         *
+         *  @param set not copied, contents will be modified by all methods
+         */
+        public ClosestHopExcluder(boolean isInbound, Set<Hash> set) {
+            super(set);
+            isIn = isInbound;
+            RouterInfo ri = ctx.router().getRouterInfo();
+            if (ri != null)
+                ourMask = isInbound ? getInboundMask(ri) : getOutboundMask(ri);
+            else
+                ourMask = 0xff;
+        }
+
+        /**
+         *  Automatically check if peer can connect to us (for inbound)
+         *  or we can connect to it (for outbound)
+         *  and add the Hash to the set if not.
+         *
+         *  @param o a Hash
+         *  @return true if peer should be excluded
+         */
+        public boolean contains(Object o) {
+            if (s.contains(o))
+                return true;
+            Hash h = (Hash) o;
+            if (ctx.commSystem().isEstablished(h))
+                return false;
+            boolean canConnect;
+            RouterInfo peer = (RouterInfo) ctx.netDb().lookupLocallyWithoutValidation(h);
+            if (peer == null) {
+                canConnect = false;
+            } else if (isIn) {
+                canConnect = canConnect(peer, ourMask);
+            } else {
+                canConnect = canConnect(ourMask, peer);
+            }
+            if (!canConnect) {
+                s.add(h);
+                //if (log.shouldDebug())
+                //    log.debug("TPS closest exclude "  h.toBase64());
+            }
+            return !canConnect;
         }
     }
 }

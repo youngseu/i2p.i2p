@@ -7,14 +7,20 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Reader;
+import java.io.StringReader;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
+import java.net.IDN;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Date;
@@ -30,15 +36,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import net.i2p.I2PAppContext;
+import net.i2p.CoreVersion;
 import net.i2p.client.streaming.I2PSocketException;
 import net.i2p.client.streaming.I2PSocketManager;
 import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
 import net.i2p.data.i2cp.MessageStatusMessage;
+import net.i2p.i2ptunnel.localServer.LocalHTTPServer;
 import net.i2p.util.EepGet;
 import net.i2p.util.EventDispatcher;
 import net.i2p.util.InternalSocket;
+import net.i2p.util.LHMCache;
 import net.i2p.util.Log;
 import net.i2p.util.PasswordManager;
 import net.i2p.util.PortMapper;
@@ -61,18 +70,31 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     private static final int MAX_NONCE_COUNT = 1024;
     /** @since 0.9.11, moved to Base in 0.9.29 */
     public static final String PROP_USE_OUTPROXY_PLUGIN = "i2ptunnel.useLocalOutproxy";
+    /** @since 0.9.11, moved to Base in 0.9.39 */
+    public static final String PROP_SSL_OUTPROXIES = "i2ptunnel.httpclient.SSLOutproxies";
+
+    /**
+     *  This is a standard soTimeout, not a total timeout.
+     *  We have no slowloris protection on the client side.
+     *  See I2PTunnelHTTPServer or SAM's ReadLine if we need that.
+     *  @since 0.9.33
+     */
+    protected static final int INITIAL_SO_TIMEOUT = 15*1000;
+
+    /**
+     *  Failsafe
+     *  @since 0.9.42
+     */
+    protected static final int BROWSER_READ_TIMEOUT = 4*60*60*1000;
 
     private static final String ERR_AUTH1 =
             "HTTP/1.1 407 Proxy Authentication Required\r\n" +
             "Content-Type: text/html; charset=UTF-8\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
-            "Proxy-Connection: close\r\n"+
-            "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.5\r\n" + // try to get a UTF-8-encoded response back for the password
-            "Proxy-Authenticate: ";
+            "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.5\r\n"; // try to get a UTF-8-encoded response back for the password
     // put the auth type and realm in between
     private static final String ERR_AUTH2 =
-            "\r\n" +
             "\r\n" +
             "<html><body><H1>I2P ERROR: PROXY AUTHENTICATION REQUIRED</H1>" +
             "This proxy is configured to require authentication.";
@@ -80,22 +102,20 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     protected final List<String> _proxyList;
 
     protected final static String ERR_NO_OUTPROXY =
-         "HTTP/1.1 503 Service Unavailable\r\n"+
+         "HTTP/1.1 503 No Outproxy Configured\r\n"+
          "Content-Type: text/html; charset=iso-8859-1\r\n"+
-         "Cache-control: no-cache\r\n"+
+         "Cache-Control: no-cache\r\n"+
          "Connection: close\r\n"+
-         "Proxy-Connection: close\r\n"+
          "\r\n"+
          "<html><body><H1>I2P ERROR: No outproxy found</H1>"+
          "Your request was for a site outside of I2P, but you have no "+
-         "HTTP outproxy configured.  Please configure an outproxy in I2PTunnel";
+         "outproxy configured.  Please configure an outproxy in I2PTunnel";
     
     protected final static String ERR_DESTINATION_UNKNOWN =
             "HTTP/1.1 503 Service Unavailable\r\n" +
             "Content-Type: text/html; charset=iso-8859-1\r\n" +
-            "Cache-control: no-cache\r\n" +
+            "Cache-Control: no-cache\r\n" +
             "Connection: close\r\n"+
-            "Proxy-Connection: close\r\n"+
             "\r\n" +
             "<html><body><H1>I2P ERROR: DESTINATION NOT FOUND</H1>" +
             "That I2P Destination was not found. Perhaps you pasted in the " +
@@ -112,22 +132,164 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     private final byte[] _proxyNonce;
     private final ConcurrentHashMap<String, NonceInfo> _nonces;
     private final AtomicInteger _nonceCleanCounter = new AtomicInteger();
+    // clearnet host to proxy
+    private final Map<String, String> _proxyCache = new LHMCache<String, String>(32);
+    // very simple, remember last-failed only
+    private String _lastFailedProxy;
+    // clearnet host to proxy
+    private final Map<String, String> _proxySSLCache = new LHMCache<String, String>(32);
+    // very simple, remember last-failed only
+    private String _lastFailedSSLProxy;
+
+    /** available as of Java 6 and Android API 9 */
+    private static final boolean _haveIDN;
+    static {
+        boolean h;
+        try {
+            Class.forName("java.net.IDN", false, ClassLoader.getSystemClassLoader());
+            h = true;
+        } catch (ClassNotFoundException cnfe) {
+            h = false;
+        }
+        _haveIDN = h;
+    }
 
     protected String getPrefix(long requestId) {
         return "HTTPClient[" + _clientId + '/' + requestId + "]: ";
     }
+
+    // TODO standard proxy config changes require tunnel restart;
+    // SSL proxy config is parsed on the fly;
+    // allow both to be changed and store the SSL proxy list.
+    // TODO should track more than one failed proxy
     
-    protected String selectProxy() {
+    /**
+     *  Simple random selection, with caching by hostname,
+     *  and avoidance of the last one to fail.
+     *
+     *  @param host the clearnet hostname we're targeting
+     *  @return null if none configured
+     */
+    protected String selectProxy(String host) {
+        String rv;
         synchronized (_proxyList) {
             int size = _proxyList.size();
             if (size <= 0)
                 return null;
-            int index = _context.random().nextInt(size);
-            return _proxyList.get(index);
+            if (size == 1)
+                return _proxyList.get(0);
+            rv = _proxyCache.get(host);
+            if (rv == null) {
+                List<String> tmpList;
+                if (_lastFailedProxy != null) {
+                    // don't use last failed one
+                    tmpList = new ArrayList<String>(_proxyList);
+                    tmpList.remove(_lastFailedProxy);
+                    size = tmpList.size();
+                } else {
+                    tmpList = _proxyList;
+                }
+                int index = _context.random().nextInt(size);
+                rv = tmpList.get(index);
+                _proxyCache.put(host, rv);
+            }
         }
+        if (_log.shouldInfo())
+            _log.info("Selected proxy for " + host + ": " + rv);
+        return rv;
     }
 
-    protected static final int DEFAULT_READ_TIMEOUT = 5*60*1000;
+    /**
+     *  Only for SSL via HTTPClient. ConnectClient should use selectProxy()
+     *
+     *  Unlike selectProxy(), we parse the option on the fly so it
+     *  can be changed. selectProxy() requires restart...
+     *
+     *  @return null if none configured
+     *  @since 0.9.11, moved from I2PTunnelHTTPClient in 0.9.39
+     */
+    protected String selectSSLProxy(String host) {
+        String s = getTunnel().getClientOptions().getProperty(PROP_SSL_OUTPROXIES);
+        if (s == null)
+            return null;
+        // default config typo fix
+        s = s.replace("exit.storymcloud.i2p", "exit.stormycloud.i2p");
+        String[] p = DataHelper.split(s, "[,; \r\n\t]");
+        int size = p.length;
+        if (size == 0)
+            return null;
+        // todo doesn't check for ""
+        if (size == 1)
+            return p[0];
+        String rv;
+        synchronized (_proxySSLCache) {
+            rv = _proxySSLCache.get(host);
+            if (rv == null) {
+                List<String> tmpList;
+                if (_lastFailedSSLProxy != null) {
+                    // don't use last failed one
+                    tmpList = new ArrayList<String>(Arrays.asList(p));
+                    tmpList.remove(_lastFailedSSLProxy);
+                    size = tmpList.size();
+                } else {
+                    tmpList = Arrays.asList(p);
+                }
+                int index = _context.random().nextInt(size);
+                rv = tmpList.get(index);
+                _proxySSLCache.put(host, rv);
+            }
+        }
+        if (_log.shouldInfo())
+            _log.info("Selected SSL proxy for " + host + ": " + rv);
+        return rv;
+    }
+    
+    /**
+     *  Update the cache and note if failed.
+     *
+     *  @param proxy which
+     *  @param host clearnet hostname targeted
+     *  @param isSSL set to FALSE for ConnectClient
+     *  @param ok success or failure
+     *  @since 0.9.39
+     */
+    protected void noteProxyResult(String proxy, String host, boolean isSSL, boolean ok) {
+        if (isSSL) {
+            synchronized (_proxySSLCache) {
+                if (ok) {
+                    if (proxy.equals(_lastFailedSSLProxy))
+                        _lastFailedSSLProxy = null;
+                    _proxySSLCache.put(host, proxy);
+                } else {
+                    _lastFailedSSLProxy = proxy;
+                    if (proxy.equals(_proxySSLCache.get(host)))
+                        _proxySSLCache.remove(host);
+                }
+            }
+        } else {
+            synchronized (_proxyList) {
+                if (_proxyList.size() > 1) {
+                    if (ok) {
+                        if (proxy.equals(_lastFailedProxy))
+                            _lastFailedProxy = null;
+                        _proxyCache.put(host, proxy);
+                    } else {
+                        _lastFailedProxy = proxy;
+                        if (proxy.equals(_proxyCache.get(host)))
+                            _proxyCache.remove(host);
+                    }
+                }
+            }
+        }
+        if (_log.shouldInfo())
+            _log.info("Proxy result: to " + host + " through " + proxy + " SSL? " + isSSL + " success? " + ok);
+    }
+
+    /**
+     *  -1 (forever) as of 0.9.36,
+     *  so that large POSTs won't timeout on the read side
+     */
+    protected static final int DEFAULT_READ_TIMEOUT = -1;
     
     protected static final AtomicLong __requestId = new AtomicLong();
 
@@ -135,6 +297,10 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
                                EventDispatcher notifyThis, String handlerName, 
                                I2PTunnel tunnel) throws IllegalArgumentException {
         super(localPort, ownDest, l, notifyThis, handlerName, tunnel);
+        // force connect delay and bulk profile
+        Properties opts = tunnel.getClientOptions();
+        opts.setProperty("i2p.streaming.connectDelay", "200");
+        opts.remove("i2p.streaming.maxWindowSize");
         _proxyList = new ArrayList<String>(4);
         _proxyNonce = new byte[PROXYNONCE_BYTES];
         _context.random().nextBytes(_proxyNonce);
@@ -151,6 +317,10 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
             I2PTunnel tunnel, EventDispatcher notifyThis, long clientId )
             throws IllegalArgumentException {
         super(localPort, l, sktMgr, tunnel, notifyThis, clientId);
+        // force connect delay and bulk profile
+        Properties opts = tunnel.getClientOptions();
+        opts.setProperty("i2p.streaming.connectDelay", "200");
+        opts.remove("i2p.streaming.maxWindowSize");
         _proxyList = new ArrayList<String>(4);
         _proxyNonce = new byte[PROXYNONCE_BYTES];
         _context.random().nextBytes(_proxyNonce);
@@ -174,6 +344,7 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     /** new style MD5 auth */
     public static final String PROP_PROXY_DIGEST_PREFIX = "proxy.auth.";
     public static final String PROP_PROXY_DIGEST_SUFFIX = ".md5";
+    public static final String PROP_PROXY_DIGEST_SHA256_SUFFIX = ".sha256";
     public static final String BASIC_AUTH = "basic";
     public static final String DIGEST_AUTH = "digest";
 
@@ -283,7 +454,7 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
             authorization = authorization.substring(6);
 
             // hmm safeDecode(foo, true) to use standard alphabet is private in Base64
-            byte[] decoded = Base64.decode(authorization.replace("/", "~").replace("+", "="));
+            byte[] decoded = Base64.decode(authorization.replace('/', '~').replace('+', '='));
             if (decoded != null) {
                 // We send Accept-Charset: UTF-8 in the 407 so hopefully it comes back that way inside the B64 ?
                 try {
@@ -300,13 +471,14 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
                             configPW = getTunnel().getClientOptions().getProperty(PROP_PW);
                     }
                     if (configPW != null) {
-                        if (pw.equals(configPW)) {
+                        if (DataHelper.eqCT(pw, configPW)) {
                             if (_log.shouldLog(Log.INFO))
                                 _log.info(getPrefix(requestId) + "Good auth - user: " + user + " pw: " + pw);
                             return AuthResult.AUTH_GOOD;
                         }
                     }
-                    _log.logAlways(Log.WARN, "HTTP proxy authentication failed, user: " + user);
+                    _log.logAlways(Log.WARN, "HTTP proxy authentication failed, user: " + user + " IP: " + s.getInetAddress());
+                    try { Thread.sleep(3000); } catch (InterruptedException ie) {}
                 } catch (UnsupportedEncodingException uee) {
                     _log.error(getPrefix(requestId) + "No UTF-8 support? B64: " + authorization, uee);
                 } catch (ArrayIndexOutOfBoundsException aioobe) {
@@ -326,7 +498,7 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
                 return AuthResult.AUTH_BAD;
             authorization = authorization.substring(7);
             Map<String, String> args = parseArgs(authorization);
-            AuthResult rv = validateDigest(method, args);
+            AuthResult rv = validateDigest(method, args, s);
             return rv;
         } else {
             _log.error("Unknown proxy authorization type configured: " + authRequired);
@@ -337,9 +509,11 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     /**
      *  Verify all of it.
      *  Ref: RFC 2617
+     *
+     *  @param s just to log the IP on failure
      *  @since 0.9.4
      */
-    private AuthResult validateDigest(String method, Map<String, String> args) {
+    private AuthResult validateDigest(String method, Map<String, String> args, Socket s) {
         String user = args.get("username");
         String realm = args.get("realm");
         String nonce = args.get("nonce");
@@ -354,6 +528,19 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
                 _log.info("Bad digest request: " + DataHelper.toString(args));
             return AuthResult.AUTH_BAD_REQ;
         }
+        // RFC 7616
+        String algorithm = args.get("algorithm");
+        boolean isSHA256 = false;
+        if (algorithm != null) {
+            algorithm = algorithm.toLowerCase(Locale.US);
+            if (algorithm.equals("sha-256")) {
+                isSHA256 = true;
+            } else if (!algorithm.equals("md5")) {
+                if (_log.shouldLog(Log.INFO))
+                    _log.info("Bad digest request: " + DataHelper.toString(args));
+                return AuthResult.AUTH_BAD_REQ;
+            }
+        }
         // nonce check
         AuthResult check = verifyNonce(nonce, nc);
         if (check != AuthResult.AUTH_GOOD) {
@@ -363,21 +550,23 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
         }
         // get H(A1) == stored password
         String ha1 = getTunnel().getClientOptions().getProperty(PROP_PROXY_DIGEST_PREFIX + user +
-                                                                PROP_PROXY_DIGEST_SUFFIX);
+                                                                (isSHA256 ? PROP_PROXY_DIGEST_SHA256_SUFFIX : PROP_PROXY_DIGEST_SUFFIX));
         if (ha1 == null) {
-            _log.logAlways(Log.WARN, "HTTP proxy authentication failed, user: " + user);
+            _log.logAlways(Log.WARN, "HTTP proxy authentication failed, user: " + user + " IP: " + s.getInetAddress());
+            try { Thread.sleep(3000); } catch (InterruptedException ie) {}
             return AuthResult.AUTH_BAD;
         }
         // get H(A2)
         String a2 = method + ':' + uri;
-        String ha2 = PasswordManager.md5Hex(a2);
+        String ha2 = isSHA256 ? PasswordManager.sha256Hex(a2) : PasswordManager.md5Hex(a2);
         // response check
         String kd = ha1 + ':' + nonce + ':' + nc + ':' + cnonce + ':' + qop + ':' + ha2;
-        String hkd = PasswordManager.md5Hex(kd);
-        if (!response.equals(hkd)) {
-            _log.logAlways(Log.WARN, "HTTP proxy authentication failed, user: " + user);
+        String hkd = isSHA256 ? PasswordManager.sha256Hex(kd) : PasswordManager.md5Hex(kd);
+        if (!DataHelper.eqCT(response, hkd)) {
+            _log.logAlways(Log.WARN, "HTTP proxy authentication failed, user: " + user + " IP: " + s.getInetAddress());
             if (_log.shouldLog(Log.INFO))
                 _log.info("Bad digest auth: " + DataHelper.toString(args));
+            try { Thread.sleep(3000); } catch (InterruptedException ie) {}
             return AuthResult.AUTH_BAD;
         }
         if (_log.shouldLog(Log.INFO))
@@ -459,17 +648,43 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
      */
     protected String getAuthError(boolean isStale) {
         boolean isDigest = isDigestAuthRequired();
-        return
-            ERR_AUTH1 +
-            (isDigest ? "Digest" : "Basic") +
-            " realm=\"" + getRealm() + '"' +
-            (isDigest ? ", nonce=\"" + getNonce() + "\"," +
-                        " algorithm=MD5," +
-                        " charset=UTF-8," +     // RFC 7616/7617
-                        " qop=\"auth\"" +
-                        (isStale ? ", stale=true" : "")
-                      : "") +
-            ERR_AUTH2;
+        StringBuilder buf = new StringBuilder(512);
+        buf.append(ERR_AUTH1)
+           .append("Proxy-Authenticate: ")
+           .append(isDigest ? "Digest" : "Basic")
+           .append(" realm=\"" + getRealm() + '"');
+        if (isDigest) {
+            String nonce = getNonce();
+            // RFC 7616 most-preferred first, client accepts first that he supports
+            // This is also compatible with eepget < 0.9.56 that will use the last one
+            // Do we have a SHA256 hash for any user?
+            for (String k : getTunnel().getClientOptions().stringPropertyNames()) {
+                if (k.startsWith(PROP_PROXY_DIGEST_PREFIX) &&
+                    k.endsWith(PROP_PROXY_DIGEST_SHA256_SUFFIX)) {
+                    // SHA-256, RFC 7616
+                    buf.append(", nonce=\"" + nonce + "\"," +
+                               " algorithm=SHA-256," +
+                               " charset=UTF-8," +
+                               " qop=\"auth\"");
+                    if (isStale)
+                        buf.append(", stale=true");
+                    buf.append("\r\n" +
+                               "Proxy-Authenticate: Digest" +
+                               " realm=\"" + getRealm() + '"');
+                    break;
+                }
+            }
+
+            buf.append(", nonce=\"" + nonce + "\"," +
+                       " algorithm=MD5," +
+                       " charset=UTF-8," +     // RFC 7616/7617
+                       " qop=\"auth\"");
+            if (isStale)
+                buf.append(", stale=true");
+        }
+        buf.append("\r\n")
+           .append(ERR_AUTH2);
+        return buf.toString();
     }
 
     /**
@@ -514,8 +729,7 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
      *  @since 0.9.4 moved from I2PTunnelHTTPClient
      */
     protected static String getErrorPage(I2PAppContext ctx, String base, String backup) {
-        File errorDir = new File(ctx.getBaseDir(), "docs");
-        File file = new File(errorDir, base + "-header.ht");
+        String file = "proxy/" + base + "-header.ht";
         try {
             return readFile(ctx, file);
         } catch(IOException ioe) {
@@ -527,37 +741,64 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     private static final String BUNDLE_NAME = "net.i2p.i2ptunnel.proxy.messages";
 
     /**
+     *  As of 0.9.49, loads the error pages from the jar, not the file system.
      *  @since 0.9.4 moved from I2PTunnelHTTPClient
      */
-    private static String readFile(I2PAppContext ctx, File file) throws IOException {
+    private static String readFile(I2PAppContext ctx, String file) throws IOException {
         Reader reader = null;
         char[] buf = new char[512];
         StringBuilder out = new StringBuilder(2048);
+        InputStream in = LocalHTTPServer.getResource(file);
+        if (in == null)
+            throw new IOException();
         try {
+            boolean hasSusiDNS = ctx.portMapper().isRegistered(PortMapper.SVC_SUSIDNS);
+            boolean hasI2PTunnel = ctx.portMapper().isRegistered(PortMapper.SVC_I2PTUNNEL);
+            if (hasSusiDNS && hasI2PTunnel) {
+                reader = new TranslateReader(ctx, BUNDLE_NAME, in);
+            } else {
+                // strip out the addressbook links
+                reader = new InputStreamReader(in, "UTF-8");
+                int len;
+                while((len = reader.read(buf)) > 0) {
+                    out.append(buf, 0, len);
+                }
+                reader.close();
+                if (!hasSusiDNS) {
+                    DataHelper.replace(out, "<a href=\"http://127.0.0.1:7657/dns\">_(\"Addressbook\")</a>", "");
+                }
+                if (!hasI2PTunnel) {
+                    // there are also a couple in auth-header.ht that aren't worth stripping, for auth only
+                    DataHelper.replace(out,
+                                       "<span class=\"script\">_(\"You may want to {0}retry{1} as this will randomly reselect an outproxy from the pool you have defined {2}here{3} (if you have more than one configured).\", \"<a href=\\\"javascript:parent.window.location.reload()\\\">\", \"</a>\", \"<a href=\\\"http://127.0.0.1:7657/i2ptunnel/index.jsp\\\">\", \"</a>\")</span>",
+                                       "");
+                    DataHelper.replace(out,
+                                       "<noscript>_(\"You may want to retry as this will randomly reselect an outproxy from the pool you have defined {0}here{1} (if you have more than one configured).\", \"<a href=\\\"http://127.0.0.1:7657/i2ptunnel/index.jsp\\\">\", \"</a>\")</noscript>",
+                                       "");
+                    DataHelper.replace(out,
+                                       "_(\"If you continue to have trouble you may want to edit your outproxy list {0}here{1}.\", \"<a href=\\\"http://127.0.0.1:7657/i2ptunnel/edit.jsp?tunnel=0\\\">\", \"</a>\")",
+                                       "");
+                }
+                String s = out.toString();
+                out.setLength(0);
+                reader = new TranslateReader(ctx, BUNDLE_NAME, new StringReader(s));
+            }
             int len;
-            reader = new TranslateReader(ctx, BUNDLE_NAME, new FileInputStream(file));
             while((len = reader.read(buf)) > 0) {
                 out.append(buf, 0, len);
             }
-            String rv = out.toString();
             // Do we need to replace http://127.0.0.1:7657 console links in the error page?
             // Get the registered host and port from the PortMapper.
-            final String unset = "*unset*";
-            final String httpHost = ctx.portMapper().getActualHost(PortMapper.SVC_CONSOLE, unset);
-            final String httpsHost = ctx.portMapper().getActualHost(PortMapper.SVC_HTTPS_CONSOLE, unset);
-            final int httpPort = ctx.portMapper().getPort(PortMapper.SVC_CONSOLE, 7657);
-            final int httpsPort = ctx.portMapper().getPort(PortMapper.SVC_HTTPS_CONSOLE, -1);
-            final boolean httpsOnly = httpsPort > 0 && httpHost.equals(unset) && !httpsHost.equals(unset);
-            final int port = httpsOnly ? httpsPort : httpPort;
-            String host = httpsOnly ? httpsHost : httpHost;
-            if (host.equals(unset))
-                host = "127.0.0.1";
-            if (httpsOnly || port != 7657 || !host.equals("127.0.0.1")) {
-                String url = (httpsOnly ? "https://" : "http://") + host + ':' + port;
-                rv = rv.replace("http://127.0.0.1:7657", url);
+            String url = ctx.portMapper().getConsoleURL();
+            if (!url.equals("http://127.0.0.1:7657/")) {
+                DataHelper.replace(out, "http://127.0.0.1:7657/", url);
             }
+            // version the CSS
+            DataHelper.replace(out, "/proxy.css\"", "/proxy.css?" + CoreVersion.VERSION + '"');
+            String rv = out.toString();
             return rv;
         } finally {
+            try { in.close(); } catch (IOException ioe) {}
             try {
                 if(reader != null)
                     reader.close();
@@ -576,7 +817,12 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
         private final boolean _usingProxy;
         private final String _wwwProxy;
         private final long _requestId;
+        private final String _targetHost;
+        private final boolean _isSSL;
 
+        /**
+         *  @param target the URI for an HTTP request, or the hostname for CONNECT
+         */
         public OnTimeout(Socket s, OutputStream out, String target, boolean usingProxy, String wwwProxy, long id) {
             _socket = s;
             _out = out;
@@ -584,12 +830,35 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
             _usingProxy = usingProxy;
             _wwwProxy = wwwProxy;
             _requestId = id;
+            _targetHost = null;
+            _isSSL = false;
+        }
+
+        /**
+         *  @param target the URI for an HTTP request, or the hostname for CONNECT
+         *  @param targetHost if non-null, call noteProxyResult() with this as host
+         *  @param isSSL to pass to noteProxyResult(). FALSE for ConnectClient.
+         *  @since 0.9.39
+         */
+        public OnTimeout(Socket s, OutputStream out, String target, boolean usingProxy,
+                         String wwwProxy, long id, String targetHost, boolean isSSL) {
+            _socket = s;
+            _out = out;
+            _target = target;
+            _usingProxy = usingProxy;
+            _wwwProxy = wwwProxy;
+            _requestId = id;
+            _targetHost = targetHost;
+            _isSSL = isSSL;
         }
 
         /**
          *  @param ex may be null
          */
         public void onFail(Exception ex) {
+            if (_usingProxy && _targetHost != null) {
+                noteProxyResult(_wwwProxy, _targetHost, _isSSL, false);
+            }
             Throwable cause = ex != null ? ex.getCause() : null;
             if (cause != null && cause instanceof I2PSocketException) {
                 I2PSocketException ise = (I2PSocketException) cause;
@@ -602,6 +871,23 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     }
 
     /**
+     *  @since 0.9.39
+     */
+    protected class OnProxySuccess implements I2PTunnelRunner.SuccessCallback {
+        private final String _proxy, _host;
+        private final boolean _isSSL;
+
+        /** @param isSSL FALSE for ConnectClient */
+        public OnProxySuccess(String proxy, String host, boolean isSSL) {
+            _proxy = proxy; _host = host; _isSSL = isSSL;
+        }
+
+        public void onSuccess() {
+            noteProxyResult(_proxy, _host, _isSSL, true);
+        }
+    }
+
+    /**
      *  @param ex may be null
      *  @since 0.9.14 moved from subclasses
      */
@@ -610,7 +896,9 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
         if (out == null)
             return;
         String header;
-        if (usingWWWProxy)
+        if (ex instanceof SocketTimeoutException)
+            header = I2PTunnelHTTPServer.ERR_REQUEST_TIMEOUT;
+        else if (usingWWWProxy)
             header = getErrorPage(I2PAppContext.getGlobalContext(), "dnfp", ERR_DESTINATION_UNKNOWN);
         else
             header = getErrorPage(I2PAppContext.getGlobalContext(), "dnf", ERR_DESTINATION_UNKNOWN);
@@ -692,16 +980,15 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
         if (outs == null)
             return;
         Writer out = new BufferedWriter(new OutputStreamWriter(outs, "UTF-8"));
-        out.write(errMessage);
         if (targetRequest != null) {
             String uri = DataHelper.escapeHTML(targetRequest);
+            errMessage = errMessage.replace("<a href=\"\">", "<a href=\"" + uri + "\">");
+            out.write(errMessage);
             out.write("<a href=\"");
             out.write(uri);
             out.write("\">");
-            if (targetRequest.length() > 80)
-                out.write(DataHelper.escapeHTML(targetRequest.substring(0, 75)) + "&hellip;");
-            else
-                out.write(uri);
+            // Long URLs are handled in CSS
+            out.write(decodeIDNURI(uri));
             out.write("</a>");
             if (usingWWWProxy) {
                 out.write("<br><br><b>");
@@ -743,9 +1030,9 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
 
                     if (first) {
                         first = false;
-                        out.write("<br><br>\n<div id=\"jumplinks\">\n<h4>");
+                        out.write("<br>\n<div id=\"jumplinks\">\n<h4>");
                         out.write(_t("Click a link below for an address helper from a jump service"));
-                        out.write("</h4>\n");
+                        out.write(":</h4>\n");
                     } else {
                         out.write("<br>");
                     }
@@ -753,7 +1040,7 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
                     out.write(jurl);
                     out.write(uri);
                     out.write("\">");
-                    // Translators: parameter is a host name
+                    // Translators: parameter is a hostname
                     out.write(_t("{0} jump service", jumphost));
                     out.write("</a>\n");
                 }
@@ -761,9 +1048,50 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
                     out.write("</div>\n");
                 }
             }
+        } else {
+            out.write(errMessage);
         }
         out.write("</div>\n");
         writeFooter(out);
+    }
+
+    /**
+     *  Decode the host part of a URI for display.
+     *  Returns original string on any error.
+     *
+     *  @since 0.9.50
+     */
+    private static String decodeIDNURI(String uri) {
+        if (!_haveIDN)
+             return uri;
+        if (!uri.contains("xn--"))
+             return uri;
+        try {
+            URI u = new URI(uri);
+            String h = u.getHost();
+            String hu = IDN.toUnicode(h, IDN.ALLOW_UNASSIGNED);
+            if (hu == null || h.equals(hu))
+                return uri;
+            int idx = uri.indexOf(h);
+            if (idx < 0)
+                return uri;
+            return uri.substring(0, idx) + hu + uri.substring(idx + h.length(), uri.length());
+         } catch(URISyntaxException use) {}
+         return uri;
+    }
+
+    /**
+     *  Decode a hostname for display.
+     *  Returns original string on any error.
+     *
+     *  @since 0.9.50
+     */
+    public static String decodeIDNHost(String host) {
+        if (!_haveIDN)
+             return host;
+        if (!host.contains("xn--"))
+             return host;
+        return IDN.toUnicode(host, IDN.ALLOW_UNASSIGNED);
     }
 
     /**
@@ -791,11 +1119,12 @@ public abstract class I2PTunnelHTTPClientBase extends I2PTunnelClientBase implem
     private static String getFooter() {
         // The css is hiding this div for now, but we'll keep it here anyway
         // Tag the strings below for translation if we unhide it.
-        StringBuilder buf = new StringBuilder(128);
-        buf.append("<div class=\"proxyfooter\"><p><i>I2P HTTP Proxy Server<br>Generated on: ")
-           .append(new Date().toString())
-           .append("</i></div>\n</body>\n</html>\n");
-        return buf.toString();
+        //StringBuilder buf = new StringBuilder(128);
+        //buf.append("<div class=\"proxyfooter\"><p><i>I2P HTTP Proxy Server<br>Generated on: ")
+        //   .append(new Date().toString())
+        //   .append("</i></div>\n</body>\n</html>\n");
+        //return buf.toString();
+        return "</body>\n</html>\n";
     }
 
     /**

@@ -11,7 +11,6 @@ package net.i2p.router.transport;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.List;
-import java.util.Vector;
 
 import net.i2p.data.Hash;
 import net.i2p.data.router.RouterAddress;
@@ -25,9 +24,20 @@ import net.i2p.router.OutNetMessage;
  * To implement a new or pluggable I2P transport, implement this interface,
  * and add it to TransportManager.startListening().
  *
+ * API is subject to change.
+ * Please contact us if you're writing a new transport or transport plugin.
  */
 public interface Transport {
-    public TransportBid bid(RouterInfo toAddress, long dataSize);
+
+    /**
+     *
+     * @param dataSize assumes full 16-byte header, transports should
+     *        adjust as necessary
+     * @return a bid or null if unwilling to send
+     *
+     */
+    public TransportBid bid(RouterInfo toAddress, int dataSize);
+
     /**
      * Asynchronously send the message as requested in the message and, if the
      * send is successful, queue up any msg.getOnSendJob job, and register it
@@ -46,6 +56,18 @@ public interface Transport {
      *  @since IPv6
      */
     public List<RouterAddress> getCurrentAddresses();
+
+    /**
+     *  What address are we currently listening to?
+     *  Replaces getCurrentAddress()
+     *
+     *  Note: An address without a host is considered IPv4.
+     *
+     *  @param ipv6 true for IPv6 only; false for IPv4 only
+     *  @return first matching address or null
+     *  @since 0.9.50 lifted from TransportImpl
+     */
+    public RouterAddress getCurrentAddress(boolean ipv6);
 
     /**
      *  Do we have any current address?
@@ -141,12 +163,37 @@ public interface Transport {
     /** The unique identity of this Transport */
     public String getStyle();
     
+    /**
+     * @return may or may not be modifiable; check implementation
+     * @since 0.9.34
+     */
+    public List<Hash> getEstablished();
+
     public int countPeers();    
     public int countActivePeers();    
     public int countActiveSendPeers();
+
+    /**
+     *  @since 0.9.69 added to interface
+     */
+    public int getMaxConnections();
+
+    /**
+     * @return 8 bytes:
+     *         version 1 ipv4 in/out, ipv6 in/out
+     *         version 2 ipv4 in/out, ipv6 in/out
+     * @since 0.9.57
+     */
+    public int[] getPeerCounts();
+
     public boolean haveCapacity();
     public boolean haveCapacity(int pct);
-    public Vector<Long> getClockSkews();
+
+    /**
+     *  Previously returned Vector, now List as of 0.9.46.
+     */
+    public List<Long> getClockSkews();
+
     public List<String> getMostRecentErrorMessages();
     
     public void renderStatusHTML(Writer out, String urlBase, int sortFlags) throws IOException;
@@ -161,6 +208,25 @@ public interface Transport {
      */
     @Deprecated
     public void recheckReachability();
+
+    /**
+     *  @since 0.9.50 added to interface
+     */
+    public TransportUtil.IPv6Config getIPv6Config();
+
+    /**
+     *  This returns true if the force-firewalled setting is configured, false otherwise.
+     *
+     *  @since 0.9.50 added to interface
+     */
+    public boolean isIPv4Firewalled();
+
+    /**
+     *  This returns true if the force-firewalled setting is configured, false otherwise.
+     *
+     *  @since 0.9.50 added to interface
+     */
+    public boolean isIPv6Firewalled();
 
     public boolean isBacklogged(Hash peer);
 
@@ -180,4 +246,11 @@ public interface Transport {
      * @since 0.9.24
      */
     public void mayDisconnect(Hash peer);
+
+    /**
+     * Tell the transport to disconnect from this peer.
+     *
+     * @since 0.9.38
+     */
+    public void forceDisconnect(Hash peer);
 }

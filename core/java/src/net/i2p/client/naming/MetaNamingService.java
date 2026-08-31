@@ -103,7 +103,7 @@ public class MetaNamingService extends DummyNamingService {
         if (d != null)
             return d;
         // Base32 failed?
-        if (hostname.length() == BASE32_HASH_LENGTH + 8 && hostname.toLowerCase(Locale.US).endsWith(".b32.i2p"))
+        if (hostname.length() >= BASE32_HASH_LENGTH + 8 && hostname.toLowerCase(Locale.US).endsWith(".b32.i2p"))
             return null;
 
         for (NamingService ns : _services) { 
@@ -213,7 +213,7 @@ public class MetaNamingService extends DummyNamingService {
      */
     public void export(Writer out, Properties options) throws IOException {
         for (NamingService ns : _services) { 
-             export(out, options);
+             ns.export(out, options);
         }
     }
 

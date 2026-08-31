@@ -14,26 +14,35 @@
 
 package net.i2p.jetty; 
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
-import java.io.Writer;
+import java.text.SimpleDateFormat;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.zip.GZIPOutputStream;
 
 import javax.servlet.http.Cookie;
 
-import org.eclipse.jetty.http.PathMap;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.RequestLog;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.DateCache;
 import org.eclipse.jetty.util.RolloverFileOutputStream;
 import org.eclipse.jetty.util.StringUtil;
-import org.eclipse.jetty.util.Utf8StringBuilder;
 import org.eclipse.jetty.util.component.AbstractLifeCycle;
-import org.eclipse.jetty.util.log.Log;
+
+import net.i2p.data.DataHelper;
+
 
 /** 
  * This {@link RequestLog} implementation outputs logs in the pseudo-standard NCSA common log format.
@@ -54,6 +63,11 @@ import org.eclipse.jetty.util.log.Log;
  *
  * So that we will work with system Jetty 6 packages, we just copy the whole thing
  * and modify log() as required.
+ *
+ * Gzip features as of 0.9.70:
+ * in jetty.xml requestLog section,
+ * set gzip to true,
+ * optionally set gzipMinSize (default 64KB)
  *
  * @author Greg Wilkins
  * @author Nigel Canonizado
@@ -80,11 +94,12 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
     private transient OutputStream _out;
     private transient OutputStream _fileOut;
     private transient DateCache _logDateCache;
-    private transient PathMap<String> _ignorePathMap;
-    private transient Writer _writer;
-    private transient ArrayList<Utf8StringBuilder> _buffers;
-    private transient char[] _copy;
+    private transient java.io.Writer _writer;
 
+    private final static boolean DEFAULT_GZIP = false;
+    private static final int DEFAULT_MIN_GZIP_SIZE = 64*1024;
+    private boolean _gzip = DEFAULT_GZIP;
+    private long _minGzipSize = DEFAULT_MIN_GZIP_SIZE;
     
     public I2PRequestLog()
     {
@@ -251,6 +266,24 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
         _b64 = b64;
     }
 
+    /**
+     * @param gzip true to gzip log files on rollover, default false
+     * @since 0.9.70
+     */
+    public void setGzip(boolean gzip)
+    {
+        _gzip = gzip;
+    }
+
+    /**
+     * @param size min size of a file before gzipping it, default 65536
+     * @since 0.9.70
+     */
+    public void setMinGzipSize(int size)
+    {
+        _minGzipSize = size;
+    }
+
     /* ------------------------------------------------------------ */
     public void log(Request request, Response response)
     {
@@ -259,68 +292,56 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
         
         try 
         {
-            if (_ignorePathMap != null && _ignorePathMap.getMatch(request.getRequestURI()) != null)
-                return;
-            
             if (_fileOut == null)
                 return;
 
-            Utf8StringBuilder u8buf;
-            StringBuilder buf;
-            synchronized(_writer)
-            {
-                int size=_buffers.size();
-                u8buf = size==0?new Utf8StringBuilder(160):_buffers.remove(size-1);
-                buf = u8buf.getStringBuilder();
-            }
-            
-            synchronized(buf) // for efficiency until we can use StringBuilder
-            {
+            StringBuilder buf = new StringBuilder(160);
+
                 if (_logServer)
                 {
-                    buf.append(request.getServerName());
+                    buf.append(Request.getServerName(request));
                     buf.append(' ');
                 }
 
                 String addr = null;
                 if (_preferProxiedForAddress) 
                 {
-                    addr = request.getHeader("X-Forwarded-For");
+                    addr = request.getHeaders().get("X-Forwarded-For");
                 }
 
                 if (addr == null) {
                     if (_b64) {
-                        addr = request.getHeader("X-I2P-DestHash");
+                        addr = request.getHeaders().get("X-I2P-DestHash");
                         if (addr != null)
                             addr += ".i2p";
                     } else {
                         // 52chars.b32.i2p
-                        addr = request.getHeader("X-I2P-DestB32");
+                        addr = request.getHeaders().get("X-I2P-DestB32");
                     }
                     if (addr == null)
-                        addr = request.getRemoteAddr();
+                        addr = Request.getRemoteAddr(request);
                 }
 
                 buf.append(addr);
                 buf.append(" - ");
-                String user = request.getRemoteUser();
+                String user = request.getHttpURI().getUser();
                 buf.append((user == null)? " - " : user);
                 buf.append(" [");
                 if (_logDateCache!=null)
-                    buf.append(_logDateCache.format(request.getTimeStamp()));
+                    buf.append(_logDateCache.format(Request.getTimeStamp(request)));
                 else
                     //buf.append(request.getTimeStampBuffer().toString());
                     // TODO SimpleDateFormat or something
-                    buf.append(request.getTimeStamp());
+                    buf.append(Request.getTimeStamp(request));
                     
                 buf.append("] \"");
                 buf.append(request.getMethod());
                 buf.append(' ');
                 
-                request.getUri().writeTo(u8buf);
+                buf.append(request.getHttpURI().getPathQuery());
                 
                 buf.append(' ');
-                buf.append(request.getProtocol());
+                buf.append(request.getConnectionMetaData().getProtocol());
                 buf.append("\" ");
                 int status = response.getStatus();
                 if (status<=0)
@@ -330,7 +351,7 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
                 buf.append((char)('0'+(status%10)));
 
 
-                long responseLength=response.getContentCount();
+                long responseLength = Response.getContentBytesWritten(response);
                 if (responseLength >=0)
                 {
                     buf.append(' ');
@@ -353,64 +374,30 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
                 else 
                     buf.append(" - ");
 
-            }
 
             if (!_extended && !_logCookies && !_logLatency)
             {
                 synchronized(_writer)
                 {
                     buf.append(System.getProperty("line.separator", "\n"));
-                    int l=buf.length();
-                    if (l>_copy.length)
-                        l=_copy.length;  
-                    buf.getChars(0,l,_copy,0); 
-                    _writer.write(_copy,0,l);
+                    _writer.write(buf.toString());
                     _writer.flush();
-                    u8buf.reset();
-                    _buffers.add(u8buf); 
                 }
             }
             else
             {
                 synchronized(_writer)
                 {
-                    int l=buf.length();
-                    if (l>_copy.length)
-                        l=_copy.length;  
-                    buf.getChars(0,l,_copy,0); 
-                    _writer.write(_copy,0,l);
-                    u8buf.reset();
-                    _buffers.add(u8buf); 
+                    _writer.write(buf.toString());
 
                     // TODO do outside synchronized scope
                     if (_extended)
                         logExtended(request, response, _writer);
 
-                    // TODO do outside synchronized scope
-                    if (_logCookies)
-                    {
-                        Cookie[] cookies = request.getCookies(); 
-                        if (cookies == null || cookies.length == 0)
-                            _writer.write(" -");
-                        else
-                        {
-                            _writer.write(" \"");
-                            for (int i = 0; i < cookies.length; i++) 
-                            {
-                                if (i != 0)
-                                    _writer.write(';');
-                                _writer.write(cookies[i].getName());
-                                _writer.write('=');
-                                _writer.write(cookies[i].getValue());
-                            }
-                            _writer.write('\"');
-                        }
-                    }
-
                     if (_logLatency)
                     {
                         _writer.write(' ');
-                        _writer.write(Long.toString(System.currentTimeMillis() - request.getTimeStamp()));
+                        _writer.write(Long.toString(System.currentTimeMillis() - Request.getTimeStamp(request)));
                     }
 
                     _writer.write(System.getProperty("line.separator", "\n"));
@@ -420,7 +407,8 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
         } 
         catch (IOException e) 
         {
-            Log.getLogger((String)null).warn(e);
+            System.out.println(e.toString());
+            e.printStackTrace();
         }
         
     }
@@ -428,9 +416,9 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
     /* ------------------------------------------------------------ */
     protected void logExtended(Request request, 
                                Response response, 
-                               Writer writer) throws IOException 
+                               java.io.Writer writer) throws IOException 
     {
-        String referer = request.getHeader("Referer");
+        String referer = request.getHeaders().get("Referer");
         if (referer == null) 
             writer.write("\"-\" ");
         else 
@@ -440,7 +428,7 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
             writer.write("\" ");
         }
         
-        String agent = request.getHeader("User-Agent");
+        String agent = request.getHeaders().get("User-Agent");
         if (agent == null)
             writer.write("\"-\" ");
         else
@@ -461,27 +449,18 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
         
         if (_filename != null) 
         {
-            _fileOut = new RolloverFileOutputStream(_filename,_append,_retainDays,TimeZone.getTimeZone(_logTimeZone),_filenameDateFormat,null);
+            if (_gzip)
+                _fileOut = new GzipRFOS(_filename,_append,_retainDays,TimeZone.getTimeZone(_logTimeZone),_filenameDateFormat,null, _minGzipSize);
+            else
+                _fileOut = new RolloverFileOutputStream(_filename,_append,_retainDays,TimeZone.getTimeZone(_logTimeZone),_filenameDateFormat,null);
             _closeOut = true;
-            Log.getLogger((String)null).info("Opened "+getDatedFilename());
         }
         else 
             _fileOut = System.err;
         
         _out = _fileOut;
         
-        if (_ignorePaths != null && _ignorePaths.length > 0)
-        {
-            _ignorePathMap = new PathMap<String>();
-            for (int i = 0; i < _ignorePaths.length; i++) 
-                _ignorePathMap.put(_ignorePaths[i], _ignorePaths[i]);
-        }
-        else 
-            _ignorePathMap = null;
-        
         _writer = new OutputStreamWriter(_out, "UTF-8");
-        _buffers = new ArrayList<Utf8StringBuilder>();
-        _copy = new char[1024];
         super.doStart();
     }
 
@@ -489,17 +468,15 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
     protected void doStop() throws Exception
     {
         super.doStop();
-        try {if (_writer != null) _writer.flush();} catch (IOException e) {Log.getLogger((String)null).ignore(e);}
+        try {if (_writer != null) _writer.flush();} catch (IOException e) {}
         if (_out != null && _closeOut) 
-            try {_out.close();} catch (IOException e) {Log.getLogger((String)null).ignore(e);}
+            try {_out.close();} catch (IOException e) {}
             
         _out = null;
         _fileOut = null;
         _closeOut = false;
         _logDateCache = null;
         _writer = null;
-        _buffers = null;
-        _copy = null;
     }
 
     /* ------------------------------------------------------------ */
@@ -521,4 +498,113 @@ public class I2PRequestLog extends AbstractLifeCycle implements RequestLog
         _filenameDateFormat=logFileDateFormat;
     }
 
+    /**
+     *  Gzip old log on rollover
+     *
+     *  @since 0.9.70
+     */
+    private static class GzipRFOS extends RolloverFileOutputStream {
+        // following are inaccessible in super
+        private final SimpleDateFormat _fdf;
+        private static final String YYYY_MM_DD = "yyyy_mm_dd";
+        private static final String ROLLOVER_FILE_DATE_FORMAT = "yyyy_MM_dd";
+        private final long _minGzSize;
+
+        public GzipRFOS(String filename, boolean append, int retainDays,
+                        TimeZone zone, String dateFormat, String backupFormat,
+                        long minGzipSize) throws IOException {
+            super(filename, append, retainDays, zone, dateFormat, backupFormat);
+            if (dateFormat == null)
+                dateFormat = ROLLOVER_FILE_DATE_FORMAT;
+            _fdf = new SimpleDateFormat(dateFormat);
+            _minGzSize = minGzipSize;
+        }
+
+        /**
+         * This method is called whenever a log file is rolled over
+         *
+         * @param oldFile The original filename or null if this is the first creation
+         * @param backupFile The backup filename or null if the filename is dated.
+         * @param newFile The new filename that is now being used for logging
+         */
+        @Override
+        protected void rollover(File oldFile, File backupFile, File newFile) {
+            if (oldFile == null || backupFile != null)
+                return;
+            long sz = oldFile.length();
+            if (sz < _minGzSize)
+                return;
+            // we are called from a timer thread, so do this inline
+            int pri = Thread.currentThread().getPriority();
+            Thread.currentThread().setPriority(Thread.MIN_PRIORITY);
+            gzip(oldFile);
+            removeOldGZFiles();
+            Thread.currentThread().setPriority(pri);
+        }
+
+        /**
+         * adapted from net.i2p.util.FileLogWriter
+         */
+        private static void gzip(File f) {
+            File to = new File(f.getPath() + ".gz");
+            InputStream in = null;
+            OutputStream out = null;
+            boolean ok = false;
+            try {
+                in = new BufferedInputStream(new FileInputStream(f));
+                out = new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(to)));
+                DataHelper.copy(in, out);
+                ok = true;
+            } catch (IOException ioe) {
+                System.out.println("Error compressing log file " + f);
+            } finally {
+                if (in != null) try { in.close(); } catch (IOException ioe) {}
+                if (out != null) try { out.close(); } catch (IOException ioe) {}
+                if (ok) {
+                    to.setLastModified(f.lastModified());
+                    f.delete();
+                } else {
+                    to.delete();
+                }
+            }
+        }
+
+        /**
+         *  super.removeOldFiles() is pkg private,
+         *  so we can't override, we call this from rollover().
+         *  Adapted from removeOldFiles()
+         */
+        private void removeOldGZFiles()
+        {
+            int retainDays = getRetainDays();
+            if (retainDays <= 0)
+                return;
+            // Establish expiration time, based on configured TimeZone
+            ZonedDateTime now = ZonedDateTime.now(_fdf.getTimeZone().toZoneId());
+            long expired = now.minus(retainDays, ChronoUnit.DAYS).toInstant().toEpochMilli();
+
+            File file = new File(getFilename() + ".gz");
+            File dir = new File(file.getParent());
+            String fn = file.getName();
+            int s = fn.toLowerCase(Locale.ENGLISH).indexOf(YYYY_MM_DD);
+            if (s < 0)
+                return;
+            String prefix = fn.substring(0, s);
+            String suffix = fn.substring(s + YYYY_MM_DD.length());
+
+            String[] logList = dir.list();
+            for (int i = 0; i < logList.length; i++)
+            {
+                fn = logList[i];
+                if (fn.startsWith(prefix) && fn.indexOf(suffix, prefix.length()) >= 0)
+                {
+                    File f = new File(dir, fn);
+                    if (f.lastModified() < expired)
+                    {
+                        f.delete();
+                    }
+                }
+            }
+        }
+    }
 }

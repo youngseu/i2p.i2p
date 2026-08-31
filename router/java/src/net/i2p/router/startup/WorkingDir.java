@@ -19,7 +19,7 @@ import net.i2p.util.SystemVersion;
  * Get a working directory for i2p.
  *
  * For the location, first try the system property i2p.dir.config
- * Next try $HOME/.i2p on linux or %APPDATA%\I2P on Windows.
+ * Next try $HOME/.i2p on linux or %LOCALAPPDATA%\I2P on Windows.
  *
  * If the dir exists, return it.
  * Otherwise, attempt to create it, and copy files from the base directory.
@@ -80,14 +80,40 @@ public class WorkingDir {
         } else {
             String home = System.getProperty("user.home");
             if (isWindows) {
+                String localappdata = System.getenv("LOCALAPPDATA");
+                if (localappdata != null) {
+                    home = localappdata;
+                }
+                // Don't mess with existing Roaming Application Data installs,
+                // in case somebody is using roaming appdata for a reason
+                // already. In new installs, use local appdata by default. -idk
                 String appdata = System.getenv("APPDATA");
-                if (appdata != null)
-                    home = appdata;
+                if (appdata != null) {
+                    File checkOld = new File(appdata, WORKING_DIR_DEFAULT_WINDOWS);
+                    if (checkOld.exists() && checkOld.isDirectory()){
+                        File routerConfig = new File(checkOld.getAbsolutePath(), "router.config");
+                        // The Firefox profile installer was mistakenly using the Roaming application data
+                        // which is synced between devices on some Windows machines using MS cloud services,
+                        // instead of the local application data which is used by default.
+                        // It would create the router.config file in an empty directory, which the router would
+                        // then attempt to use, resulting in a router with no client applications. Checking
+                        // for clients.config.d determines if the directory is "Real" or not.
+                        File clientAppsConfig = new File(checkOld.getAbsolutePath(), "clients.config.d");
+                        if (routerConfig.exists() && clientAppsConfig.exists() && clientAppsConfig.isDirectory()) {
+                            home = appdata;
+                        } else {
+                            clientAppsConfig = new File(checkOld.getAbsolutePath(), "clients.config");
+                            if (routerConfig.exists() && clientAppsConfig.exists())
+                                home = appdata;
+                        }
+                        System.err.println("System is Windows: " + home);
+                    }
+                }
                 dirf = new SecureDirectory(home, WORKING_DIR_DEFAULT_WINDOWS);
             } else if (SystemVersion.isMac()) {
                 String appdata = "/Library/Application Support/";
-		File old = new File(home,WORKING_DIR_DEFAULT);
-		if (old.exists() && old.isDirectory()) 
+                File old = new File(home,WORKING_DIR_DEFAULT);
+                if (old.exists() && old.isDirectory())
                     dirf = new SecureDirectory(home, WORKING_DIR_DEFAULT);
                 else {
                     home = home+appdata;
@@ -220,7 +246,8 @@ public class WorkingDir {
         success &= migrateJettyXml(oldEep, newEep, "jetty.xml", "./eepsite/", newPath);
         success &= migrateJettyXml(oldEep, newEep, "jetty-ssl.xml", "./eepsite/", newPath);
         success &= migrateJettyXml(oldEep, newEep, "contexts/base-context.xml", "./eepsite/", newPath);
-        success &= migrateJettyXml(oldEep, newEep, "contexts/cgi-context.xml", "./eepsite/", newPath);
+        // FCGI requires additional libs
+        //success &= migrateJettyXml(oldEep, newEep, "contexts/cgi-context.xml", "./eepsite/", newPath);
         success &= migrateClientsConfig(oldDirf, dirf);
         // for later news.xml updates (we don't copy initialNews.xml over anymore)
         success &= (new SecureDirectory(dirf, "docs")).mkdir();
@@ -341,6 +368,8 @@ public class WorkingDir {
      */
     private static boolean migrateClientsConfig(File olddir, File todir) {
         File oldFile = new File(olddir, "clients.config");
+        if (!oldFile.exists())
+            return true;
         File newFile = new File(todir, "clients.config");
         FileInputStream in = null;
         PrintWriter out = null;
@@ -364,14 +393,12 @@ public class WorkingDir {
                 }
                 out.println(s);
             }
-            System.err.println("Copied " + oldFile + " with modifications");
+            System.err.println("Copied file " + oldFile + " with modifications");
             if (out.checkError())
                 throw new IOException("Failed write to " + newFile);
             return true;
         } catch (IOException ioe) {
-            if (in != null) {
-                System.err.println("FAILED copy " + oldFile + ": " + ioe);
-            }
+            System.err.println("FAILED copy " + oldFile + ": " + ioe);
             return false;
         } finally {
             if (in != null) try { in.close(); } catch (IOException ioe) {}
@@ -383,10 +410,40 @@ public class WorkingDir {
      *  Copy over the jetty.xml file with modifications
      *  It was already copied over once in migrate(), throw that out and
      *  do it again with modifications.
+     *
+     *  @return success
      */
     static boolean migrateJettyXml(File olddir, File todir, String filename, String oldString, String newString) {
         File oldFile = new File(olddir, filename);
+        if (!oldFile.exists())
+            return true;
         File newFile = new File(todir, filename);
+        FileInputStream in = null;
+        PrintWriter out = null;
+        try {
+            migrateFileXML(oldFile, newFile, oldString, newString, null, null);
+            System.err.println("Copied " + oldFile + " with modifications");
+            return true;
+        } catch (IOException ioe) {
+            System.err.println("FAILED copy " + oldFile + ": " + ioe);
+            return false;
+        }
+    }
+
+
+    /**
+     *  Copy over a XML file with modifications.
+     *  Will overwrite any existing newFile.
+     *
+     *  @param oldString to replace
+     *  @param newString replacement
+     *  @param oldString2 to replace, or null
+     *  @param newString2 replacement, or null
+     *  @throws IOException on all errors
+     *  @since 0.9.66
+     */
+    static void migrateFileXML(File oldFile, File newFile, String oldString, String newString,
+                               String oldString2, String newString2) throws IOException {
         FileInputStream in = null;
         PrintWriter out = null;
         try {
@@ -400,16 +457,13 @@ public class WorkingDir {
                 if (s.indexOf(oldString) >= 0) {
                     s = s.replace(oldString, newString);
                 }
+                if (oldString2 != null && s.indexOf(oldString2) >= 0) {
+                    s = s.replace(oldString2, newString2);
+                }
                 out.println(s);
             }
             out.println("<!-- Modified by I2P User dir migration script -->");
             System.err.println("Copied " + oldFile + " with modifications");
-            return true;
-        } catch (IOException ioe) {
-            if (in != null) {
-                System.err.println("FAILED copy " + oldFile + ": " + ioe);
-            }
-            return false;
         } finally {
             if (in != null) try { in.close(); } catch (IOException ioe) {}
             if (out != null) out.close();
@@ -418,7 +472,7 @@ public class WorkingDir {
 
     /**
      * Recursive copy a file or dir to a dir
-     * 
+     *
      * @param src file or directory, need not exist
      * @param targetDir the directory to copy to, will be created if it doesn't exist
      * @return true for success OR if src does not exist
@@ -431,7 +485,7 @@ public class WorkingDir {
                 System.err.println("FAILED copy " + src.getPath());
                 return false;
             }
-            System.err.println("Created " + targetDir.getPath());
+            System.err.println("Created Directory " + targetDir.getPath());
         }
         // SecureDirectory is a File so this works for non-directories too
         File targetFile = new SecureDirectory(targetDir, src.getName());
@@ -448,7 +502,7 @@ public class WorkingDir {
                 System.err.println("FAILED copy " + src.getPath());
                 return false;
             }
-            System.err.println("Created " + targetFile.getPath());
+            System.err.println("Created File " + targetFile.getPath());
         }
         boolean rv = true;
         for (int i = 0; i < children.length; i++) {
@@ -456,7 +510,7 @@ public class WorkingDir {
         }
         return rv;
     }
-    
+
     /**
      * @param src not a directory, must exist
      * @param dst not a directory, will be overwritten if existing, will be mode 600
@@ -472,7 +526,7 @@ public class WorkingDir {
             in = new FileInputStream(src);
             out = new SecureFileOutputStream(dst);
             DataHelper.copy(in, out);
-            System.err.println("Copied " + src.getPath());
+            System.err.println("Copied File " + src.getPath());
         } catch (IOException ioe) {
             System.err.println("FAILED copy " + src.getPath() + ": " + ioe);
             rv = false;
@@ -487,7 +541,7 @@ public class WorkingDir {
 
     /**
      * Recursive touch all files in a dir to a given time
-     * 
+     *
      * @param target the directory or file to touch, must exist
      * @param time the timestamp
      * @since 0.8.13
@@ -508,5 +562,5 @@ public class WorkingDir {
             touchRecursive(children[i], time);
         }
     }
-    
+
 }

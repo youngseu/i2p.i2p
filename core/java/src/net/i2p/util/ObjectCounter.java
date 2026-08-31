@@ -2,6 +2,7 @@ package net.i2p.util;
 
 import java.io.Serializable;
 import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -34,6 +35,14 @@ public class ObjectCounter<K> implements Serializable {
     }
 
     /**
+     *  Set a high value
+     *  @since 0.9.56
+     */
+    public void max(K h) {
+        map.put(h, new AtomicInteger(Integer.MAX_VALUE / 2));
+    }
+
+    /**
      *  @return current count
      */
     public int count(K h) {
@@ -51,11 +60,19 @@ public class ObjectCounter<K> implements Serializable {
     }
 
     /**
-     *  start over
+     *  Start over. Reset the count for all keys to zero.
      *  @since 0.7.11
      */
     public void clear() {
         this.map.clear();
+    }
+
+    /**
+     *  Reset the count for this key to zero
+     *  @since 0.9.36
+     */
+    public void clear(K h) {
+        this.map.remove(h);
     }
 }
 

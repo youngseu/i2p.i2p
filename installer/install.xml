@@ -4,12 +4,12 @@
 
     <info>
         <appname>i2p</appname>
-        <appversion>0.9.31</appversion>
+        <appversion>2.13.0</appversion>
         <authors>
-            <author name="I2P" email="https://geti2p.net/"/>
+            <author name="I2P" email="https://i2p.net/"/>
         </authors>
-        <url>https://geti2p.net/</url>
-        <javaversion>1.7</javaversion>
+        <url>https://i2p.net/</url>
+        <javaversion>17</javaversion>
 
         <!-- use pack200 compression, saves about 33%
              see http://java.sun.com/j2se/1.5.0/docs/guide/deployment/deployment-guide/pack200.html
@@ -19,21 +19,6 @@
          -->
 
         <!-- adding this element will make the installer attempt to launch itself with administrator permissions,
-             but see http://www.nabble.com/Classpath-security-issues-on-Vista-td22456230.html
-             which says it isn't sufficient:
-
-		Just to let you know that I managed to identify and resolve the problem (in
-		case anyone else has it).  The default installation directory for Vista is
-		under "Program Files" which is a "special" directory which can only be
-		written to (create sub-directories) by administrators.  However, stupid
-		Vista downgrades an administrator to a normal user when the program is run
-		via the application shortcut menu.  As you suggested, I added a script which
-		runs ICACLS which resolved the problem, i.e.
-
-		icacls %1 /grant Users:F /T > priv.log
-
-		The command needs to be run as a Process rather than as an executable tag in
-		order to pass $INSTALL_PATH as a parameter.
          -->
         <run-privileged condition="izpack.windowsinstall.vista|izpack.windowsinstall.7"/>
     </info>
@@ -102,6 +87,17 @@
         <res id="XInfoPanel.info" src="installer/resources/start-i2p.txt" />
     </resources>
 
+    <dynamicvariables>
+        <variable name="datamodel" value="${SYSTEM_sun_arch_data_model}"/>
+    </dynamicvariables>
+
+    <conditions>
+        <condition type="variable" id="is64bit">
+            <name>datamodel</name>
+            <value>64</value>
+        </condition>
+    </conditions>
+
     <panels>
         <panel classname="HelloPanel"/>
         <panel classname="InfoPanel"/>
@@ -115,9 +111,9 @@
         <!--
          Using the condition this way, the panel is shown on everything *but* Windows.
          -->
-    <panel classname="XInfoPanel" condition="!izpack.windowsinstall" />
-    <panel classname="SimpleFinishPanel"/>
-</panels>
+        <panel classname="XInfoPanel" condition="!izpack.windowsinstall" />
+        <panel classname="SimpleFinishPanel"/>
+    </panels>
 
     <packs>
         <pack name="Base" required="yes">
@@ -129,19 +125,11 @@
               and the izpack docs for some guidance.
              -->
             <parsable targetfile="$INSTALL_PATH/wrapper.config" type="plain" />
-            <parsable targetfile="$INSTALL_PATH/scripts/home.i2p.i2prouter" type="plain"> <os family="unix" /> </parsable>
             <parsable targetfile="$INSTALL_PATH/i2prouter" type="shell"> <os family="unix" /> </parsable>
             <parsable targetfile="$INSTALL_PATH/eepget" type="shell"> <os family="unix" /> </parsable>
             <parsable targetfile="$INSTALL_PATH/eepget.bat" type="shell" os="windows" />
             <parsable targetfile="$INSTALL_PATH/runplain.sh" type="shell"> <os family="unix" /> </parsable>
             <parsable targetfile="$INSTALL_PATH/Start I2P Router.app/Contents/MacOS/i2prouter" type="shell" os="mac" />
-
-            <conditions>
-                <condition type="variable" id="is64bit">
-                    <name>SYSTEM_sun_arch_data_model</name>
-                    <value>64</value>
-                </condition>
-            </conditions>
 
             <!-- postinstall stuff for windows -->
             <!-- Wrapper for 32bit Windows JVM -->
@@ -260,7 +248,7 @@
                 </args>
             </executable>
 
-            <!-- workaround for vista permission problems - see comments above -->
+            <!-- change owner to %username% so updates will work -->
             <executable targetfile="$INSTALL_PATH/fixperms.bat" type="bin" stage="postinstall" keep="true" failure="warn"
                 condition="!izpack.windowsinstall.xp+!izpack.windowsinstall.2003" >
                 <os family="windows" />

@@ -51,7 +51,7 @@ public class InstallUpdate {
                 // carry on
                 return;
             }
-            System.out.println("INFO: Update file exists [" + Router.UPDATE_FILE + "] - installing");
+            System.out.println("INFO: Update file exists [" + updateFile + "] - installing");
             // verify the whole thing first
             // we could remember this fails, and not bother restarting, but who cares...
             boolean ok = FileUtil.verifyZip(updateFile);
@@ -135,7 +135,7 @@ public class InstallUpdate {
         boolean goodOS = isWin || isMac ||
                          osName.contains("linux") || osName.contains("freebsd");
 
-        File jbigiJar = new File(context.getBaseDir(), "lib/jbigi.jar");
+        File jbigiJar = new File(context.getLibDir(), "jbigi.jar");
         if (goodOS && jbigiJar.exists()) {
             String libPrefix = (isWin ? "" : "lib");
             String libSuffix = (isWin ? ".dll" : isMac ? ".jnilib" : ".so");

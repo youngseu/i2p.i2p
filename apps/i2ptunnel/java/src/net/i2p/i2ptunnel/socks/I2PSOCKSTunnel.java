@@ -6,7 +6,9 @@
  */
 package net.i2p.i2ptunnel.socks;
 
+import java.io.IOException;
 import java.net.Socket;
+import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -14,6 +16,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.StringTokenizer;
 
+import net.i2p.client.naming.NamingService;
 import net.i2p.client.streaming.I2PSocket;
 import net.i2p.client.streaming.I2PSocketOptions;
 import net.i2p.data.Destination;
@@ -21,12 +24,27 @@ import net.i2p.i2ptunnel.I2PTunnel;
 import net.i2p.i2ptunnel.I2PTunnelClientBase;
 import net.i2p.i2ptunnel.I2PTunnelRunner;
 import net.i2p.i2ptunnel.Logging;
+import net.i2p.i2ptunnel.TunnelController;
+import net.i2p.socks.SOCKSException;
 import net.i2p.util.EventDispatcher;
 import net.i2p.util.Log;
 
 public class I2PSOCKSTunnel extends I2PTunnelClientBase {
 
-    private HashMap<String, List<String>> proxies = null;  // port# + "" or "default" -> hostname list
+    /**
+     *  This is a standard soTimeout, not a total timeout.
+     *  We have no slowloris protection on the client side.
+     *  See I2PTunnelHTTPServer or SAM's ReadLine if we need that.
+     *  @since 0.9.33
+     */
+    protected static final int INITIAL_SO_TIMEOUT = 15*1000;
+
+    private final HashMap<String, List<String>> proxies;  // port# + "" or "default" -> hostname list
+
+    /** @since 0.9.57 for storing passwords */
+    public static final String AUTH_REALM = "I2P SOCKS Proxy";
+    /** @since 0.9.57 */
+    public static final String PROP_OUTPROXY_TYPE = "outproxyType";
 
     //public I2PSOCKSTunnel(int localPort, Logging l, boolean ownDest) {
     //	  I2PSOCKSTunnel(localPort, l, ownDest, (EventDispatcher)null);
@@ -40,17 +58,29 @@ public class I2PSOCKSTunnel extends I2PTunnelClientBase {
      */
     public I2PSOCKSTunnel(int localPort, Logging l, boolean ownDest, EventDispatcher notifyThis, I2PTunnel tunnel, String pkf) {
         super(localPort, ownDest, l, notifyThis, "SOCKS Proxy on " + tunnel.listenHost + ':' + localPort, tunnel, pkf);
+        // force connect delay and bulk profile
+        Properties opts = tunnel.getClientOptions();
+        opts.setProperty("i2p.streaming.connectDelay", "200");
+        opts.remove("i2p.streaming.maxWindowSize");
 
         setName("SOCKS Proxy on " + tunnel.listenHost + ':' + localPort);
+        proxies = new HashMap<String, List<String>>(1);
         parseOptions();
         notifyEvent("openSOCKSTunnelResult", "ok");
     }
 
     protected void clientConnectionRun(Socket s) {
+        I2PSocket destSock = null;
         try {
+            try {
+                s.setSoTimeout(INITIAL_SO_TIMEOUT);
+            } catch (SocketException ioe) {}
             SOCKSServer serv = SOCKSServerFactory.createSOCKSServer(_context, s, getTunnel().getClientOptions());
             Socket clientSock = serv.getClientSocket();
-            I2PSocket destSock = serv.getDestinationI2PSocket(this);
+            try {
+                s.setSoTimeout(0);
+            } catch (SocketException ioe) {}
+            destSock = serv.getDestinationI2PSocket(this);
             Thread t = new I2PTunnelRunner(clientSock, destSock, sockLock, null, null, mySockets,
                                            (I2PTunnelRunner.FailCallback) null);
             // we are called from an unlimited thread pool, so run inline
@@ -59,7 +89,10 @@ public class I2PSOCKSTunnel extends I2PTunnelClientBase {
         } catch (SOCKSException e) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Error from SOCKS connection", e);
+        } finally {
+            // only because we are running it inline
             closeSocket(s);
+            if (destSock != null) try { destSock.close(); } catch (IOException ioe) {}
         }
     }
 
@@ -68,9 +101,27 @@ public class I2PSOCKSTunnel extends I2PTunnelClientBase {
     public static final String DEFAULT = "default";
     public static final String PROP_PROXY_DEFAULT = PROP_PROXY_PREFIX + DEFAULT;
 
+    /**
+     *  Update the outproxy list then call super.
+     *
+     *  @since 0.9.57
+     */
+    @Override
+    public void optionsUpdated(I2PTunnel tunnel) {
+        if (getTunnel() != tunnel)
+            return;
+        proxies.clear();
+        parseOptions();
+        super.optionsUpdated(tunnel);
+    }
+
     private void parseOptions() {
         Properties opts = getTunnel().getClientOptions();
-        proxies = new HashMap<String, List<String>>(1);
+        if (!opts.containsKey(PROP_PROXY_DEFAULT)) {
+            String proxyList = opts.getProperty(TunnelController.PROP_PROXIES);
+            if (proxyList != null)
+                opts.setProperty(PROP_PROXY_DEFAULT, proxyList);
+        }
         for (Map.Entry<Object, Object> e : opts.entrySet()) {
            String prop = (String)e.getKey();
            if ((!prop.startsWith(PROP_PROXY_PREFIX)) || prop.length() <= PROP_PROXY_PREFIX.length())
@@ -80,10 +131,17 @@ public class I2PSOCKSTunnel extends I2PTunnelClientBase {
            StringTokenizer tok = new StringTokenizer((String)e.getValue(), ", \t");
            while (tok.hasMoreTokens()) {
                String proxy = tok.nextToken().trim();
-               if (proxy.endsWith(".i2p"))
+               String host = proxy;
+               int colon = proxy.indexOf(':');
+               if (colon > 0)
+                   host = host.substring(0, colon);
+               if (NamingService.isI2PHost(host)) {
                    proxyList.add(proxy);
-               else
-                   _log.error("Non-i2p SOCKS outproxy: " + proxy);
+               } else {
+                   String m = "Non-i2p SOCKS outproxy: " + proxy;
+                   l.log(m);
+                   _log.error(m);
+               }
            }
            proxies.put(port, proxyList);
         }
@@ -94,7 +152,7 @@ public class I2PSOCKSTunnel extends I2PTunnelClientBase {
     }
 
     public List<String> getProxies(int port) {
-        List<String> rv = proxies.get(port + "");
+        List<String> rv = proxies.get(Integer.toString(port));
         if (rv == null)
             rv = getDefaultProxies();
         return rv;
@@ -107,6 +165,8 @@ public class I2PSOCKSTunnel extends I2PTunnelClientBase {
     /** 
      * Because getDefaultOptions() in super() is protected
      * @since 0.8.2
+     *
+     * This will throw IAE on tunnel build failure
      */
     public I2PSocketOptions buildOptions(Properties overrides) {
         Properties defaultOpts = getTunnel().getClientOptions();

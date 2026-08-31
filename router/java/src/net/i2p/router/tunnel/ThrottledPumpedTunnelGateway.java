@@ -4,6 +4,7 @@ import net.i2p.data.Hash;
 import net.i2p.data.TunnelId;
 import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.router.RouterContext;
+import net.i2p.util.SyntheticREDQueue;
 
 /**
  * Same as PTG, but check to see if a message should be dropped before queueing it.
@@ -14,11 +15,18 @@ import net.i2p.router.RouterContext;
 class ThrottledPumpedTunnelGateway extends PumpedTunnelGateway {
     /** saved so we can note messages that get dropped */
     private final HopConfig _config;
+    private final SyntheticREDQueue _partBWE;
     
     public ThrottledPumpedTunnelGateway(RouterContext context, QueuePreprocessor preprocessor, Sender sender,
                                         Receiver receiver, TunnelGatewayPumper pumper, HopConfig config) {
         super(context, preprocessor, sender, receiver, pumper);
         _config = config;
+        int max = _config.getAllocatedBW();
+        if (max <= TunnelParticipant.DEFAULT_BW_PER_TUNNEL_ESTIMATE) {
+            max = _context.tunnelDispatcher().getMaxPerTunnelBandwidth(TunnelDispatcher.Location.IBGW);
+            _config.setAllocatedBW(max);
+        }
+        _partBWE = new SyntheticREDQueue(_context, max);
     }
     
     /**
@@ -34,8 +42,16 @@ class ThrottledPumpedTunnelGateway extends PumpedTunnelGateway {
         // Hard to do this exactly, but we'll assume 2:1 batching
         // for the purpose of estimating outgoing size.
         // We assume that it's the outbound bandwidth that is the issue...
-        int size = Math.max(msg.getMessageSize(), 1024/2);
-        if (_context.tunnelDispatcher().shouldDropParticipatingMessage(TunnelDispatcher.Location.IBGW, msg.getType(), size)) {
+        // first frag. overhead
+        int size = msg.getMessageSize() + 60;
+        if (size > 1024) {
+            // additional frag. overhead
+            size += 28 * (size / 1024);
+        } else if (size < 512) {
+            // 2:1 batching of small messages
+            size = 512;
+        }
+        if (_context.tunnelDispatcher().shouldDropParticipatingMessage(TunnelDispatcher.Location.IBGW, msg.getType(), size, _partBWE)) {
             // this overstates the stat somewhat, but ok for now
             int kb = (size + 1023) / 1024;
             for (int i = 0; i < kb; i++)
@@ -48,6 +64,6 @@ class ThrottledPumpedTunnelGateway extends PumpedTunnelGateway {
     /** @since 0.9.8 */
     @Override
     public String toString() {
-        return "IBGW " + _config.getReceiveTunnel();
+        return "IBGW " + _config.getReceiveTunnelId();
     }
 }

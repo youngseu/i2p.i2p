@@ -1,23 +1,20 @@
 <%@page contentType="text/html"%>
 <%@page trimDirectiveWhitespaces="true"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("config logging")%>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
-<jsp:useBean class="net.i2p.router.web.ConfigLoggingHelper" id="logginghelper" scope="request" />
-<jsp:setProperty name="logginghelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
-
+</head><body>
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigLoggingHelper" id="logginghelper" scope="request" />
+<jsp:setProperty name="logginghelper" property="contextId" value="<%=i2pcontextId%>" />
 <%@include file="summary.jsi" %>
-<h1><%=intl._t("I2P Logging Configuration")%></h1>
+<h1><%=intl._t("Configuration")%></h1>
 <div class="main" id="config_logging">
  <%@include file="confignav.jsi" %>
 
- <jsp:useBean class="net.i2p.router.web.ConfigLoggingHandler" id="formhandler" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.ConfigLoggingHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
  <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>" >
@@ -39,6 +36,15 @@
         </tr><tr><td align="right"><b><%=intl._t("Max log file size")%>:</b></td>
           <td><input type="text" name="logfilesize" size="10" value="<jsp:getProperty name="logginghelper" property="maxFileSize" />" ></td>
           <td></td>
+<%
+   if (logginghelper.isAdvanced()) {
+%>
+        </tr><tr><td align="right"><b><%=intl._t("Compress logs?")%>:</b></td>
+          <td><input type="checkbox" class="optbox" name="logcompress" value="true" <jsp:getProperty name="logginghelper" property="logCompress" /> ></td>
+          <td></td>
+<%
+   }
+%>
         </tr><tr><td align="right"><b><%=intl._t("Default log level")%>:</b></td>
           <td><jsp:getProperty name="logginghelper" property="defaultLogLevelBox" /></td>
           <td><%=intl._t("(DEBUG and INFO are not recommended defaults, as they will drastically slow down your router)")%></td>

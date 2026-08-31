@@ -30,18 +30,16 @@ import net.i2p.router.Router;
  *  <li>router.configLocation=rN/router.config</li>
  * </ul>
  * (where "rN" is an instance number, such as r0 or r9).
- * Additionally, two other properties might be useful:<ul>
- *  <li>i2p.vmCommSystem=true</li>
- *  <li>i2p.encryption=off</li>
- * </ul>
- * The first line tells the router to use an in-VM comm system for sending 
- * messages back and forth between routers (see net.i2p.transport.VMCommSystem),
- * and the second tells the router to stub out ElGamal, AES, and DSA code, reducing
- * the CPU load (but obviously making the router incapable of talking to things 
- * that need the encryption enabled).  To run a client app through a router that
- * has i2p.encryption=off, you should also add that line to the client's JVM
- * (for example, <code>java -Di2p.encryption=off -jar lib/i2ptunnel.jar</code>).<p>
+ *
+ * Optionally, i2p.vmCommSystem=true can be enabled.
  * 
+ * i2p.vmCommSystem=true tells the router to use an in-VM comm system for sending
+ * messages back and forth between routers (see net.i2p.transport.VMCommSystem).
+ *
+ * However, the default comm system implementation is usually preferred since
+ * enabling the VMCommSystem will bypass UDP and TCP, and therefore will not
+ * provide a test bed for many important I2P systems.
+ *
  * To make the router console work, either run from a directory containing 
  * lib/, webapps/, docs/, etc., or point i2p.dir.base to a directory containing the
  * above.
@@ -64,19 +62,21 @@ public class MultiRouter {
             usage();
             return;
         }
-        Scanner scan = new Scanner(args[0]);
-        if (!scan.hasNextInt()) {
-            usage();
-            scan.close();
-            return;
+        Scanner scan = null;
+        try {
+            scan = new Scanner(args[0]);
+            if (!scan.hasNextInt()) {
+                usage();
+                return;
+            }
+            nbrRouters = scan.nextInt();
+            if (nbrRouters < 0) {
+                usage();
+                return;
+            }
+        } finally {
+            if (scan != null) scan.close();
         }
-        nbrRouters = scan.nextInt();
-        if (nbrRouters < 0) {
-            usage();
-            scan.close();
-            return;
-        }
-        scan.close();
         
         _out = System.out;
 

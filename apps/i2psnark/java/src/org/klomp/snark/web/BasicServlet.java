@@ -36,9 +36,13 @@ import javax.servlet.http.HttpServletResponse;
 import net.i2p.I2PAppContext;
 import net.i2p.data.ByteArray;
 import net.i2p.data.DataHelper;
+import net.i2p.servlet.util.WriterOutputStream;
 import net.i2p.util.ByteCache;
 import net.i2p.util.Log;
+import net.i2p.util.SecureFile;
 import net.i2p.util.SystemVersion;
+
+import org.klomp.snark.URIUtil;
 
 
 /* ------------------------------------------------------------ */
@@ -112,7 +116,7 @@ class BasicServlet extends HttpServlet
         String rb=getInitParameter("resourceBase");
         if (rb!=null)
         {
-            File f = new File(rb);
+            File f = new SecureFile(rb);
             setResourceBase(f);
         }
         String wb = getInitParameter("warBase");
@@ -123,10 +127,10 @@ class BasicServlet extends HttpServlet
     /**
      *  Files are served from here
      */
-    protected void setResourceBase(File base) throws UnavailableException {
+    protected synchronized void setResourceBase(File base) throws UnavailableException {
         if (!base.isDirectory()) {
-            _log.log(Log.CRIT, "Configured i2psnark directory " + base + " does not exist");
-            throw new UnavailableException("Resource base does not exist: " + base);
+            _log.error("Configured i2psnark directory " + base + " does not exist");
+            //throw new UnavailableException("Resource base does not exist: " + base);
         }
         _resourceBase = base;
         if (_log.shouldLog(Log.INFO))
@@ -155,12 +159,15 @@ class BasicServlet extends HttpServlet
      */
     public File getResource(String pathInContext)
     {
-        if (_resourceBase==null)
-            return null;
         File r = null;
         if (!pathInContext.contains("..") &&
                    !pathInContext.endsWith("/")) {
-            File f = new File(_resourceBase, pathInContext);
+            File f;
+            synchronized (this) {
+                if (_resourceBase==null)
+                    return null;
+                f = new File(_resourceBase, pathInContext);
+            }
             if (f.exists())
                 r = f;
         }
@@ -174,18 +181,20 @@ class BasicServlet extends HttpServlet
      * @param pathInContext The path to find a resource for.
      * @return The resource to serve or null. Returns null for directories
      */
-    public HttpContent getContent(String pathInContext)
+    public HttpContent getContent(String pathInContext, long limit)
     {
-        if (_resourceBase==null)
-            return null;
         HttpContent r = null;
         if (_warBase != null && pathInContext.startsWith(_warBase)) {
             r = new JarContent(pathInContext);
         } else {
             File f = getResource(pathInContext);
             // exists && !directory
-            if (f != null && f.isFile())
-                r = new FileContent(f);
+            if (f != null && f.isFile()) {
+                if (limit > 0)
+                    r = new LimitFileContent(f, limit);
+                else
+                    r = new FileContent(f);
+            }
         }
         return r;
     }
@@ -199,10 +208,17 @@ class BasicServlet extends HttpServlet
         String pathInfo=request.getPathInfo();
         // ??? right??
         String pathInContext = addPaths(servletpath, pathInfo);        
+        long limit = 0;
+        String slimit = request.getParameter("limit");
+        if (slimit != null) {
+            try {
+                limit = Long.parseLong(slimit);
+            } catch (NumberFormatException nfe) {}
+        }
 
         // Find the resource and content
         try {
-            HttpContent content = getContent(pathInContext);
+            HttpContent content = getContent(pathInContext, limit);
             
             // Handle resource
             if (content == null) {
@@ -229,10 +245,10 @@ class BasicServlet extends HttpServlet
         }
         catch(IOException e)
         {
-            if (_log.shouldLog(Log.WARN))
+            if (_log.shouldInfo())
                 // typical browser abort
                 //_log.warn("Error sending", e);
-                _log.warn("Error sending " + pathInContext + ": " + e);
+                _log.info("Error sending " + pathInContext + ": " + e);
             throw e;
         }
     }
@@ -289,7 +305,7 @@ class BasicServlet extends HttpServlet
                             return true;
                         }
                         response.setStatus(304);
-                        response.flushBuffer();
+                        response.getOutputStream().close();
                         return false;
                     }
                 }
@@ -376,19 +392,29 @@ class BasicServlet extends HttpServlet
     protected void writeHeaders(HttpServletResponse response,HttpContent content,long count)
         throws IOException
     {   
-        if (content.getContentType()!=null && response.getContentType()==null)
-            response.setContentType(content.getContentType());
+        String rtype = response.getContentType();
+        String ctype = content.getContentType();
+        if (rtype != null) {
+            if (rtype.contains("javascript"))
+                response.setCharacterEncoding("ISO-8859-1");
+        } else if (ctype != null) {
+            response.setContentType(ctype);
+            if (ctype.contains("javascript"))
+                response.setCharacterEncoding("ISO-8859-1");
+        }
         response.setHeader("X-Content-Type-Options", "nosniff");
         long lml = content.getLastModified();
         if (lml > 0)
             response.setDateHeader("Last-Modified",lml);
 
-        if (count != -1)
-        {
-            if (count<Integer.MAX_VALUE)
+        if (count != -1) {
+            if (count <= Integer.MAX_VALUE)
                 response.setContentLength((int)count);
             else 
                 response.setHeader("Content-Length", Long.toString(count));
+            response.setHeader("Accept-Ranges", "bytes");
+        } else {
+            response.setHeader("Accept-Ranges", "none");
         }
 
         long ct = content.getCacheTime();
@@ -448,11 +474,36 @@ class BasicServlet extends HttpServlet
         /* ------------------------------------------------------------ */
         public InputStream getInputStream() throws IOException
         {
+            if (getContentLength() > 4*1024*1024)
+                return new BufferedInputStream(new FileInputStream(_file), 64*1024);
             return new BufferedInputStream(new FileInputStream(_file));
         }
 
         @Override
         public String toString() { return "File \"" + _file + '"'; }
+    }
+
+    /**
+     *  @since 0.9.45
+     */
+    private class LimitFileContent extends FileContent
+    {
+        private final long _limit;
+
+        /**
+         *  @param limit must be less than file length
+         */
+        public LimitFileContent(File file, long limit)
+        {
+            super(file);
+            _limit = Math.min(limit, file.length());
+        }
+
+        @Override
+        public long getContentLength()
+        {
+            return _limit;
+        }
     }
 
     private class JarContent implements HttpContent
@@ -475,7 +526,7 @@ class BasicServlet extends HttpServlet
         {
             String cpath = getServletContext().getContextPath();
             // this won't work if we aren't at top level
-            String cname = "".equals(cpath) ? "i2psnark" : cpath.substring(1).replace("/", "_");
+            String cname = "".equals(cpath) ? "i2psnark" : cpath.substring(1).replace('/', '_');
             return (new File(_context.getBaseDir(), "webapps/" + cname + ".war")).lastModified();
         }
 
@@ -535,9 +586,20 @@ class BasicServlet extends HttpServlet
     protected static String addPaths(String base, String path) {
         if (path == null)
             return base;
+        if (path.equals("/")) {
+            // Java 17 and below:
+            // (new File("foo", "/")).toString() = "foo/"
+            // (new File("foo/", "/")).toString() = "foo/"
+            // Java 21:
+            // (new File("foo", "/")).toString() = "foo"
+            // (new File("foo/", "/")).toString() = "foo"
+            if (base.endsWith("/"))
+                return base;
+            return base + path;
+        }
         String rv = (new File(base, path)).toString();
         if (SystemVersion.isWindows())
-            rv = rv.replace("\\", "/");
+            rv = rv.replace('\\', '/');
         return rv;
     }
 

@@ -13,17 +13,6 @@ cd `dirname $0`/../..
 
 XMLFILES="\
 ./apps/addressbook/build.xml \
-./apps/BOB/build.xml \
-./apps/BOB/Demos/echo/echoclient/build.xml \
-./apps/BOB/Demos/echo/echoclient/nbproject/build-impl.xml \
-./apps/BOB/Demos/echo/echoclient/nbproject/private/private.xml \
-./apps/BOB/Demos/echo/echoclient/nbproject/project.xml \
-./apps/BOB/Demos/echo/echoserver/build.xml \
-./apps/BOB/Demos/echo/echoserver/nbproject/build-impl.xml \
-./apps/BOB/Demos/echo/echoserver/nbproject/private/private.xml \
-./apps/BOB/Demos/echo/echoserver/nbproject/project.xml \
-./apps/BOB/nbproject/build-impl.xml \
-./apps/BOB/nbproject/project.xml \
 ./apps/desktopgui/build.xml \
 ./apps/i2psnark/java/build.xml \
 ./apps/i2psnark/jetty-i2psnark.xml \
@@ -48,7 +37,7 @@ XMLFILES="\
 ./installer/i2pstandalone.xml \
 ./installer/install.xml \
 ./installer/resources/eepsite/jetty-ssl.xml
-./installer/resources/eepsite/contexts/cgi-context.xml
+./installer/resources/eepsite/contexts/cgi-context.xml.disabled
 ./installer/resources/eepsite/contexts/base-context.xml
 ./installer/resources/eepsite/jetty-rewrite.xml
 ./installer/resources/eepsite/etc/webdefault.xml
@@ -59,11 +48,10 @@ XMLFILES="\
 ./Slackware/i2p/build.xml"
 
 HTMLFILES="\
-./installer/resources/initialNews/*.xml \
-./apps/BOB/src/net/i2p/BOB/package.html \
+./apps/routerconsole/resources-news/docs/initialNews/*.xml \
 ./apps/desktopgui/src/net/i2p/desktopgui/package.html \
 ./apps/ministreaming/java/src/net/i2p/client/streaming/package.html \
-./apps/susidns/src/index.html \
+./apps/routerconsole/resources/docs/readme*.html \
 ./apps/susimail/src/index.html \
 ./core/java/src/net/i2p/client/datagram/package.html \
 ./core/java/src/net/i2p/client/naming/package.html \
@@ -76,25 +64,9 @@ HTMLFILES="\
 ./core/java/src/net/i2p/stat/package.html \
 ./core/java/src/net/i2p/time/package.html \
 ./core/java/src/net/i2p/util/package.html \
-./installer/resources/eepsite/docroot/help/index_de.html \
-./installer/resources/eepsite/docroot/help/index_fr.html \
-./installer/resources/eepsite/docroot/help/index.html \
-./installer/resources/eepsite/docroot/help/index_na.html \
-./installer/resources/eepsite/docroot/help/index_nl.html \
-./installer/resources/eepsite/docroot/help/index_ru.html \
-./installer/resources/eepsite/docroot/help/index_sv.html \
+./installer/resources/eepsite/docroot/help/index*.html \
 ./installer/resources/eepsite/docroot/help/pagetemplate.html \
 ./installer/resources/eepsite/docroot/index.html \
-./installer/resources/readme/readme_ar.html \
-./installer/resources/readme/readme_de.html \
-./installer/resources/readme/readme_es.html \
-./installer/resources/readme/readme_fr.html \
-./installer/resources/readme/readme.html \
-./installer/resources/readme/readme_nl.html \
-./installer/resources/readme/readme_pt.html \
-./installer/resources/readme/readme_ru.html \
-./installer/resources/readme/readme_sv.html \
-./installer/resources/readme/readme_zh.html \
 ./installer/resources/small/toolbar.html \
 ./installer/resources/startconsole.html \
 ./router/java/src/net/i2p/data/i2np/package.html \
@@ -109,7 +81,7 @@ HTMLFILES="\
 echo 'Checking XML files....................'
 for i in $XMLFILES
 do
-	echo "Checking $i ..."
+	#echo "Checking $i ..."
 	xmllint --noout $i
         if [ $? -ne 0 ]
 	then
@@ -121,7 +93,7 @@ done
 echo 'Checking HTML files....................'
 for i in $HTMLFILES
 do
-	echo "Checking $i ..."
+	#echo "Checking $i ..."
 	xmllint --html --noout $i
 	# FIXME html mode never exits with an error code
 	# ... but it does output errors

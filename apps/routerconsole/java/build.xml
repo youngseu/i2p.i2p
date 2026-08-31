@@ -22,6 +22,7 @@
             <!-- Depend on classes instead of jars where available -->
             <classpath>
                 <pathelement location="../../../core/java/build/obj" />
+                <pathelement location="../../../core/java/build/gnu-getopt.jar" />
                 <pathelement location="../../../router/java/build/obj" />
                 <pathelement location="../../jetty/jettylib/org.mortbay.jetty.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-util.jar" />
@@ -46,8 +47,11 @@
         </dependset>
     </target>
 
+    <!-- only used if not set by a higher build.xml -->
     <property name="javac.compilerargs" value="" />
-    <property name="javac.version" value="1.7" />
+    <property name="javac.version" value="1.8" />
+    <property name="javac.release" value="8" />
+    <property name="manifest.classpath.name" value="Class-Path" />
 
     <target name="compile" depends="prepare, depend, dependVersion">
         <mkdir dir="./build" />
@@ -55,18 +59,24 @@
         <javac 
             srcdir="./src" 
             debug="true" deprecation="on" source="${javac.version}" target="${javac.version}" 
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./build/obj">
             <compilerarg line="${javac.compilerargs}" />
             <classpath>
                 <pathelement location="../../../core/java/build/i2p.jar" />
+                <!-- gnu-getopt.jar only present for debian builds -->
+                <pathelement location="../../../core/java/build/gnu-getopt.jar" />
                 <pathelement location="../../../router/java/build/router.jar" />
                 <pathelement location="../../jetty/jettylib/org.mortbay.jetty.jar" />
+                <pathelement location="../../jetty/jettylib/jetty-extra.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-http.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-io.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-security.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-servlet.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-servlets.jar" />
+                <pathelement location="../../jetty/jettylib/jetty-session.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-util.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-webapp.jar" />
                 <pathelement location="../../jetty/jettylib/javax.servlet.jar" />
@@ -78,7 +88,9 @@
                 <pathelement location="../../jrobin/java/build/jrobin.jar" />
 
                 <!-- following jars only present for debian builds -->
+                <pathelement location="../../jetty/jettylib/jetty-ee.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-api.jar" />
+                <pathelement location="../../../core/java/build/json-simple.jar" />
             </classpath>
         </javac>
     </target>
@@ -91,7 +103,9 @@
             srcdir="./src" 
             includes="net/i2p/router/news/*.java"
             debug="true" deprecation="on" source="${javac.version}" target="${javac.version}" 
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./build/obj">
             <compilerarg line="${javac.compilerargs}" />
             <classpath>
@@ -106,14 +120,21 @@
 
     <!-- the jar without the latest message classes from the jsps -->
     <target name="listChangedFiles" depends="jarUpToDate" if="shouldListChanges" >
-        <exec executable="mtn" outputproperty="workspace.changes.j" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes.j" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="." />
             <arg value="../locale" />
         </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes.j}" outputproperty="workspace.changes.j.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
+        </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes.j}" outputproperty="workspace.changes.j.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.j.sed}" outputproperty="workspace.changes.j.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
@@ -123,12 +144,25 @@
     <target name="jar1" depends="compile, bundle-news, bundle-countries, jarUpToDate, listChangedFiles" unless="jar.uptodate" >
         <!-- set if unset -->
         <property name="workspace.changes.j.tr" value="" />
-        <jar destfile="./build/routerconsole.jar" basedir="./build/obj" includes="**/*.class">
+        <!-- copy the NDT translations, strip the countries -->
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_en_US.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_ca_ES.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_ca.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_el_GR.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_el.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_fr_FR.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_fr.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_nb_NO.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_nb.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_nl_NL.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_nl.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_pt_BR.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_pt.properties" />
+        <copy file="src/edu/internet2/ndt/locale/Tcpbw100_msgs_ru_RU.properties" tofile="build/obj/edu/internet2/ndt/locale/Tcpbw100_msgs_ru.properties" />
+        <mkdir dir="build/obj/net/i2p/router/news/resources" />
+        <copy todir="build/obj/net/i2p/router/news/resources" >
+            <fileset dir="../resources-news" />
+        </copy>
+        <jar destfile="./build/routerconsole.jar" basedir="./build/obj" excludes="net/i2p/router/web/helpers/**/* net/i2p/router/web/servlets/**/* net/i2p/router/web/resources/**/*">
             <manifest>
                 <!-- DTG added in 0.8.4, not in the classpath for very old installs, before we changed wrapper.config to specify * -->
                 <!-- very old installs don't have i2psnark,jstl,standard in the classpath... not added in WebAppConfiguration any more -->
                 <!-- All new jetty 7 jars should have been in 0.9.6, added in 0.9.7 -->
-                <attribute name="Class-Path" value="i2p.jar router.jar jrobin.jar desktopgui.jar i2psnark.jar jstl.jar standard.jar jetty-continuation.jar jetty-http.jar jetty-io.jar jetty-security.jar jetty-servlet.jar jetty-servlets.jar jetty-util.jar jetty-webapp.jar" />
+                <attribute name="${manifest.classpath.name}" value="i2p.jar router.jar jrobin.jar desktopgui.jar i2psnark.jar jstl.jar standard.jar jstlel.jar jetty-continuation.jar jetty-http.jar jetty-io.jar jetty-security.jar jetty-servlet.jar jetty-servlets.jar jetty-util.jar jetty-webapp.jar" />
                 <attribute name="Implementation-Version" value="${full.version}" />
                 <attribute name="Built-By" value="${build.built-by}" />
                 <attribute name="Build-Date" value="${build.timestamp}" />
@@ -143,7 +177,11 @@
 
     <!-- newsxml.jar only (subset of routerconsole, no war) for Android -->
     <target name="newsxmljar" depends="compileNewsOnly" >
-        <jar destfile="./build/newsxml.jar" basedir="./build/obj" includes="**/*.class">
+        <mkdir dir="build/obj/net/i2p/router/news/resources" />
+        <copy todir="build/obj/net/i2p/router/news/resources" >
+            <fileset dir="../resources-news" />
+        </copy>
+        <jar destfile="./build/newsxml.jar" basedir="./build/obj" includes="net/i2p/router/news/**/*" >
         </jar>
     </target>
 
@@ -164,12 +202,14 @@
             <arg value="./bundle-messages.sh" />
         </exec>
         <javac source="${javac.version}" target="${javac.version}" 
+               release="${javac.release}"
                includeAntRuntime="false"
+               encoding="UTF-8"
                srcdir="build/messages-src" destdir="build/obj">
             <compilerarg line="${javac.compilerargs}" />
         </javac>
         <!-- jar again to get the latest messages_*.class files -->
-        <jar destfile="./build/routerconsole.jar" basedir="./build/obj" includes="**/*.class" update="true" />
+        <jar destfile="./build/routerconsole.jar" basedir="./build/obj" includes="**/messages_*.class" update="true" />
     </target>
 
     <target name="jarUpToDate">
@@ -181,7 +221,7 @@
                 <not>
                     <isset property="jar.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>
@@ -189,15 +229,20 @@
     <target name="poupdate" depends="precompilejsp">
         <!-- Update the messages_*.po files.
              We need to supply the bat file for windows, and then change the fail property to true -->
+        <!-- set if unset -->
+        <property name="lg2" value="" />
         <exec executable="sh" osfamily="unix" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="mac" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="windows" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages.sh" />
             <arg value="-p" />
         </exec>
@@ -216,7 +261,9 @@
             <arg value="./bundle-messages-news.sh" />
         </exec>
         <javac source="${javac.version}" target="${javac.version}" 
+               release="${javac.release}"
                includeAntRuntime="false"
+               encoding="UTF-8"
                srcdir="build/messages-news-src" destdir="build/obj">
             <compilerarg line="${javac.compilerargs}" />
         </javac>
@@ -235,7 +282,9 @@
             <arg value="./bundle-messages-countries.sh" />
         </exec>
         <javac source="${javac.version}" target="${javac.version}" 
+               release="${javac.release}"
                includeAntRuntime="false"
+               encoding="UTF-8"
                srcdir="build/messages-countries-src" destdir="build/obj">
             <compilerarg line="${javac.compilerargs}" />
         </javac>
@@ -247,49 +296,69 @@
                 <pathelement location="../../../build/i2p.jar" />
             </classpath>
             <arg value="tag" />
-            <arg value="../../../installer/resources/initialNews/initialNews.xml" />
+            <arg value="../resources-news/docs/initialNews/initialNews.xml" />
             <arg value="build/News.java" />
         </java>
     </target>
 
     <target name="poupdate-news" depends="extractProxyTags">
+        <!-- set if unset -->
+        <property name="lg2" value="" />
         <exec executable="sh" osfamily="unix" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages-news.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="mac" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages-news.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="windows" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages-news.sh" />
             <arg value="-p" />
         </exec>
     </target>
 
     <target name="poupdate-countries" depends="extractProxyTags">
+        <!-- set if unset -->
+        <property name="lg2" value="" />
         <exec executable="sh" osfamily="unix" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages-countries.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="mac" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages-countries.sh" />
             <arg value="-p" />
         </exec>
         <exec executable="sh" osfamily="windows" failifexecutionfails="true" failonerror="true" >
+            <env key="LG2" value="${lg2}" />
             <arg value="./bundle-messages-countries.sh" />
             <arg value="-p" />
         </exec>
     </target>
 
     <target name="listChangedFiles2" depends="warUpToDate" if="shouldListChanges2" >
-        <exec executable="mtn" outputproperty="workspace.changes.w" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes.w" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="../jsp" />
+            <arg value="../resources" />
+            <arg value="src/net/i2p/router/web/helpers" />
+            <arg value="src/net/i2p/router/web/servlets" />
+        </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes.w}" outputproperty="workspace.changes.w.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
         </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes.w}" outputproperty="workspace.changes.w.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.w.sed}" outputproperty="workspace.changes.w.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
@@ -300,9 +369,13 @@
     <target name="war" depends="precompilejsp, warUpToDate, listChangedFiles2" unless="war.uptodate" >
         <!-- set if unset -->
         <property name="workspace.changes.w.tr" value="" />
-        <!-- Don't include the css in the war, the main build.xml will copy it to docs/themes/console/ -->
+        <copy file="../jsp/themes/console/images/favicon.ico" tofile="../jsp/favicon.ico" />
+        <mkdir dir="build/obj/net/i2p/router/web/resources" />
+        <copy todir="build/obj/net/i2p/router/web/resources" >
+            <fileset dir="../resources" />
+        </copy>
         <war destfile="build/routerconsole.war" webxml="../jsp/web-out.xml"
-             basedir="../jsp/" excludes="web.xml, *.css, **/*.java, *.jsp, *.jsi, web-fragment.xml, web-out.xml">
+             basedir="../jsp/" excludes="web.xml, **/*.java, *.jsp, *.jsi, web-fragment.xml, web-out.xml">
             <manifest>
                 <attribute name="Implementation-Version" value="${full.version}" />
                 <attribute name="Built-By" value="${build.built-by}" />
@@ -312,19 +385,23 @@
                 <attribute name="X-Compile-Source-JDK" value="${javac.version}" />
                 <attribute name="X-Compile-Target-JDK" value="${javac.version}" />
             </manifest>
+            <classes dir="./build/obj" includes="net/i2p/router/web/helpers/* net/i2p/router/web/servlets/* net/i2p/router/web/resources/**/*" />
         </war>
+        <delete file="../jsp/favicon.ico" />
     </target>
 
     <target name="warUpToDate">
         <uptodate property="war.uptodate" targetfile="build/routerconsole.war" >
             <srcfiles dir= "../jsp" excludes="web.xml, web-fragment.xml, *.css, **/*.java, *.jsp, *.jsi" />
+            <srcfiles dir= "build/obj" includes="net/i2p/router/web/helpers/*.class net/i2p/router/web/servlets/*.class" />
+            <srcfiles dir= "../resources" />
         </uptodate>
-        <condition property="shouldListChanges" >
+        <condition property="shouldListChanges2" >
             <and>
                 <not>
-                    <isset property="jar.uptodate" />
+                    <isset property="war.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>
@@ -336,7 +413,13 @@
         <mkdir dir="../jsp/WEB-INF/" />
         <mkdir dir="../jsp/WEB-INF/classes" />
 
-        <!-- there are various jspc ant tasks, but they all seem a bit flakey -->
+        <!-- There are various jspc ant tasks, but they all seem a bit flakey.
+             Warning - jspC will fail on unknown options,
+             check oldest libtomcat8-java distro package version we use.
+             Jessie has 8.0.14; xenial has 8.0.32; we bundle for precise/trusty.
+             Add below to get supported options:
+                <arg value="-help" />
+          -->
         <!--
            **     Usage: jspc <options> <jsp files>
            **     where jsp files is
@@ -364,31 +447,59 @@
            **         -classpath <path>  Overrides java.class.path system property
            **         -xpoweredBy        Add X-Powered-By response header
            **         -trimSpaces        Trim spaces in template text between actions, directives
+           **     Following as of ?.?.??:
+           **         -javaEncoding <enc> Set the encoding charset for Java classes (default UTF-8)
+           **         -source <version>   Set the -source argument to the compiler (default 1.7)
+           **         -target <version>   Set the -target argument to the compiler (default 1.7)
+           **     Following as of 8.5.33:
+           **         -threadCount <count>  Number of threads to use for compilation.
+           **                               (default one per core)
+           **                               ("2.0C" means two threads per core)
         -->
-        <java classname="org.apache.jasper.JspC" fork="true" failonerror="true">
+        <!--
+           **  Simply call org.apache.jasper.JspC, then exit.
+           **
+           **  As of Tomcat 8.5.33, forking their JspC won't complete,
+           **  because the JspC compilation is now threaded and the thread pool workers aren't daemons.
+           **  Will be fixed in 8.5.35, but we don't know what version distros may have.
+           **
+           **  https://tomcat.apache.org/tomcat-8.5-doc/changelog.html
+           **  https://bz.apache.org/bugzilla/show_bug.cgi?id=53492
+           **  http://trac.i2p2.i2p/ticket/2307
+           **  https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=908884
+           **  https://bz.apache.org/bugzilla/show_bug.cgi?id=62674
+           **
+           **  We could set fork=false in build.xml, but then the paths are all wrong.
+        -->
+        <java classname="net.i2p.servlet.util.JspC" fork="true" failonerror="true">
             <!-- this prevents tomcat from complaining in debian builds -->
             <jvmarg value="-Dtomcat.util.scan.StandardJarScanFilter.jarsToSkip=commons-collections.jar,junit.jar,junit4.jar" />
+            <!-- these are to detect tomcat version and reproducible build setting -->
+            <jvmarg value="-Dbuild.reproducible=${build.reproducible}" />
+            <jvmarg value="-Dwith-libtomcat9-java=${with-libtomcat9-java}" />
+            <jvmarg value="-Djasper.jar=../../jetty/jettylib/jasper-runtime.jar" />
             <classpath>
                 <pathelement location="../../jetty/jettylib/jasper-runtime.jar" />
                 <pathelement location="../../jetty/jettylib/javax.servlet.jar" />
 
                 <!-- following jars only present for debian builds -->
+                <pathelement location="../../jetty/jettylib/commons-logging.jar" />
+                <pathelement location="../../jetty/jettylib/jetty-ee.jar" />
                 <pathelement location="../../jetty/jettylib/jsp-api.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-api.jar" />
                 <pathelement location="../../jetty/jettylib/jasper-el.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-util.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-util-scan.jar" />
 
-                <pathelement location="../../jetty/jettylib/commons-logging.jar" />
                 <pathelement location="../../jetty/jettylib/commons-el.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-util.jar" />
                 <pathelement location="${ant.home}/lib/ant.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-i2p.jar" />
+                <pathelement location="../../jetty/jettylib/jspc.jar" />
                 <pathelement location="../../systray/java/build/obj" />
                 <pathelement location="../../desktopgui/dist/desktopgui.jar" />
                 <pathelement location="../../../installer/lib/wrapper/all/wrapper.jar" />
-                <pathelement location="build/routerconsole.jar" />
-                <pathelement location="build/" />
+                <pathelement location="build/obj/" />
                 <pathelement location="../../../router/java/build/router.jar" />
                 <pathelement location="../../../core/java/build/i2p.jar" />
             </classpath>
@@ -401,9 +512,11 @@
             <arg value="../jsp/web-fragment.xml" />
             <arg value="-webapp" />
             <arg value="../jsp/" />
+            <arg value="-die" />
         </java>
         
         <javac debug="true" deprecation="on" source="${javac.version}" target="${javac.version}" 
+               release="${javac.release}"
                encoding="UTF-8"
                includeAntRuntime="false"
                destdir="../jsp/WEB-INF/classes/" 
@@ -414,12 +527,12 @@
                 <pathelement location="../../jetty/jettylib/javax.servlet.jar" />
 
                 <!-- following jars only present for debian builds -->
+                <pathelement location="../../jetty/jettylib/jetty-ee.jar" />
                 <pathelement location="../../jetty/jettylib/jsp-api.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-api.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-util.jar" />
                 <pathelement location="../../jetty/jettylib/tomcat-util-scan.jar" />
 
-                <pathelement location="../../jetty/jettylib/commons-logging.jar" />
                 <pathelement location="../../jetty/jettylib/commons-el.jar" />
                 <pathelement location="../../jetty/jettylib/org.mortbay.jetty.jar" />
                 <pathelement location="../../jetty/jettylib/jetty-util.jar" />
@@ -427,8 +540,7 @@
                 <pathelement location="../../systray/java/build/obj" />
                 <pathelement location="../../desktopgui/dist/desktopgui.jar" />
                 <pathelement location="../../../installer/lib/wrapper/all/wrapper.jar" />
-                <pathelement location="build/routerconsole.jar" />
-                <pathelement location="build" />
+                <pathelement location="build/obj/" />
                 <pathelement location="../../../router/java/build/router.jar" />
                 <pathelement location="../../../core/java/build/i2p.jar" />
             </classpath>
@@ -444,6 +556,23 @@
         <loadfile property="jspc.web.fragment" srcfile="../jsp/web-fragment.xml" />
         <replace file="../jsp/web-out.xml">
             <replacefilter token="&lt;!-- precompiled servlets --&gt;" value="${jspc.web.fragment}" />
+        </replace>
+        <!-- Add multipart config to servlets that need them -->
+        <property name="__match1" value="&lt;servlet-class&gt;net.i2p.router.web.jsp." />
+        <property name="__match2" value="_jsp&lt;/servlet-class&gt;" />
+        <property name="__class1" value="${__match1}configplugins${__match2}" />
+        <property name="__class2" value="${__match1}configfamily${__match2}" />
+        <property name="__class3" value="${__match1}configreseed${__match2}" />
+        <property name="__multipart" value="&#10;
+       &lt;multipart-config&gt;&#10;
+           &lt;max-file-size&gt;134217728&lt;/max-file-size&gt;&#10;
+           &lt;max-request-size&gt;134217728&lt;/max-request-size&gt;&#10;
+           &lt;file-size-threshold&gt;262144&lt;/file-size-threshold&gt;&#10;
+       &lt;/multipart-config&gt;" />
+        <replace file="../jsp/web-out.xml">
+            <replacefilter token="${__class1}" value="${__class1}${__multipart}" />
+            <replacefilter token="${__class2}" value="${__class2}${__multipart}" />
+            <replacefilter token="${__class3}" value="${__class3}${__multipart}" />
         </replace>
     </target>
 
@@ -589,6 +718,7 @@
         <delete dir="../jsp/WEB-INF/" />
         <delete file="../jsp/web-fragment.xml" />
         <delete file="../jsp/web-out.xml" />
+        <delete file="../jsp/favicon.ico" />
     </target>
     <target name="cleandep" depends="clean">
     </target>

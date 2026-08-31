@@ -3,7 +3,9 @@ package net.i2p.router.dummy;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import net.i2p.data.Hash;
@@ -14,19 +16,35 @@ import net.i2p.router.CommSystemFacade;
 import net.i2p.router.JobImpl;
 import net.i2p.router.OutNetMessage;
 import net.i2p.router.RouterContext;
+import net.i2p.router.transport.crypto.X25519KeyFactory;
 import net.i2p.util.Log;
 
 /**
- * Hacked up in-VM comm system for talking between contexts.  It doesn't even
- * generate any routerAddresses, but instead tracks the peers through a singleton.
+ * Hacked up in-VM comm system for talking between contexts within the same Java
+ * virtual machine.  It doesn't  generate any routerAddresses, but instead tracks
+ * the peers through a singleton.  It cannot connect to anything outside of its
+ * own Java VM.  It does not implement TCP, UDP, and therefore no NTCP or SSU.
  * Currently, the comm system doesn't even inject any lag, though it could (later).
- * It does honor the standard transport stats though, but not the TCP specific ones.
+ * It does honor the standard transport stats though, but no TCP or UDP specific
+ * ones (since UDP and TCP are not implemented).
+ *
+ * Typically, VMCommSystem is enabled by developers when it is desirable to
+ * test the router without enabling a real comm system.  For a variety of
+ * testing purposes, it can be advantageous to start the router in a mode
+ * where contact with the actual network is disabled.
+ *
+ * VMCommSystem can be enabled with the following setting in the
+ * router.config file:
+ *
+ * i2p.vmCommSystem=true
  *
  * FOR DEBUGGING AND LOCAL TESTING ONLY.
  */
 public class VMCommSystem extends CommSystemFacade {
     private final Log _log;
     private final RouterContext _context;
+    private final X25519KeyFactory _xdhThread;
+
     /**
      * Mapping from Hash to VMCommSystem for all routers hooked together
      */
@@ -36,17 +54,43 @@ public class VMCommSystem extends CommSystemFacade {
         _context = context;
         _log = context.logManager().getLog(VMCommSystem.class);
         _context.statManager().createFrequencyStat("transport.sendMessageFailureFrequency", "How often do we fail to send messages?", "Transport", new long[] { 60*1000l, 60*60*1000l, 24*60*60*1000l });
-        _context.statManager().createRequiredRateStat("transport.sendMessageSize", "Size of sent messages (bytes)", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
-        _context.statManager().createRequiredRateStat("transport.receiveMessageSize", "Size of received messages (bytes)", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
+        _context.statManager().createRequiredRateStat("transport.sendMessageSize", "Size of sent messages (bytes)", "Transport", new long[] { 60*1000l });
+        _context.statManager().createRequiredRateStat("transport.receiveMessageSize", "Size of received messages (bytes)", "Transport", new long[] { 60*1000l });
         _context.statManager().createRateStat("transport.sendMessageSmall", "How many messages under 1KB are sent?", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
         _context.statManager().createRateStat("transport.receiveMessageSmall", "How many messages under 1KB are received?", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
         _context.statManager().createRateStat("transport.sendMessageMedium", "How many messages between 1KB and 4KB are sent?", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
         _context.statManager().createRateStat("transport.receiveMessageMedium", "How many messages between 1KB and 4KB are received?", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
         _context.statManager().createRateStat("transport.sendMessageLarge", "How many messages over 4KB are sent?", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
         _context.statManager().createRateStat("transport.receiveMessageLarge", "How many messages over 4KB are received?", "Transport", new long[] { 60*1000l, 5*60*1000l, 60*60*1000l, 24*60*60*1000l });
-        _context.statManager().createRequiredRateStat("transport.sendProcessingTime", "Time to process and send a message (ms)", "Transport", new long[] { 60*1000l, 10*60*1000l, 60*60*1000l, 24*60*60*1000l });
+        _context.statManager().createRequiredRateStat("transport.sendProcessingTime", "Time to process and send a message (ms)", "Transport", new long[] { 60*1000l });
+        // we do NOT start the thread, all keys will be generated inline
+        _xdhThread = new X25519KeyFactory(context);
     }
+
+    /**
+     *  Factory for making X25519 key pairs.
+     *  @since 0.9.49 so some tests don't NPE
+     */
+    @Override
+    public X25519KeyFactory getXDHFactory() { return _xdhThread; }
     
+    public int countActivePeers() { return Math.max(_commSystemFacades.size() - 1, 0); }
+
+    public int countActiveSendPeers()  { return Math.max(_commSystemFacades.size() - 1, 0); }
+
+    public boolean isEstablished(Hash peer) { return _commSystemFacades.containsKey(peer); }
+
+    public List<Hash> getEstablished() {
+        List<Hash> rv;
+        synchronized (_commSystemFacades) {
+            rv = new ArrayList<Hash>(_commSystemFacades.keySet());
+        }
+        Hash us = _context.routerHash();
+        if (us != null)
+            rv.remove(us);
+        return rv;
+    }
+
     /**
      * The router wants us to send the given message to the peer.  Do so, or fire 
      * off the failing job.
@@ -67,7 +111,7 @@ public class VMCommSystem extends CommSystemFacade {
         } else {
             _context.jobQueue().addJob(msg.getOnSendJob());
             _context.profileManager().messageSent(msg.getTarget().getIdentity().getHash(), "vm", sendTime, msg.getMessageSize());
-            byte data[] = new byte[(int)msg.getMessageSize()];
+            byte data[] = new byte[msg.getMessageSize()];
             msg.getMessageData(data);
             _context.statManager().addRateData("transport.sendMessageSize", data.length, sendTime);
 
@@ -121,7 +165,7 @@ public class VMCommSystem extends CommSystemFacade {
                 else
                     ReceiveJob.this.getContext().statManager().addRateData("transport.receiveMessageLarge", 1, 1);
 
-                _ctx.inNetMessagePool().add(msg, null, _from);
+                _ctx.inNetMessagePool().add(msg, null, _from, 0);
             } catch (I2NPMessageException e) {
                 _log.error("Error reading/formatting a VM message? Something is not right...", e);
             }

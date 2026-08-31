@@ -39,26 +39,16 @@ class StoreMessageSelector implements MessageSelector {
     public long getExpiration() { return _expiration; }
 
     public boolean isMatch(I2NPMessage message) {
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug(_storeJobId + ": isMatch("+message.getClass().getName() + ") [want deliveryStatusMessage from " 
-                       + _peer + "]");
-        if (message instanceof DeliveryStatusMessage) {
+        if (message.getType() == DeliveryStatusMessage.MESSAGE_TYPE) {
             DeliveryStatusMessage msg = (DeliveryStatusMessage)message;
             if (msg.getMessageId() == _waitingForId) {
-                if (_log.shouldLog(Log.INFO))
+                if (_log.shouldInfo())
                     _log.info(_storeJobId + ": Found match for the key we're waiting for: " + _waitingForId);
                 _found = true;
                 return true;
-            } else {
-                if (_log.shouldLog(Log.DEBUG))
-                    _log.debug(_storeJobId + ": DeliveryStatusMessage of a key we're not looking for");
-                return false;
             }
-        } else {
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug(_storeJobId + ": Not a DeliveryStatusMessage");
-            return false;
         }
+        return false;
     }
 
     @Override

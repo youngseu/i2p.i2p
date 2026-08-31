@@ -1,16 +1,26 @@
 package org.klomp.snark;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import net.i2p.I2PAppContext;
 import net.i2p.I2PException;
@@ -21,10 +31,12 @@ import net.i2p.client.streaming.I2PServerSocket;
 import net.i2p.client.streaming.I2PSocket;
 import net.i2p.client.streaming.I2PSocketEepGet;
 import net.i2p.client.streaming.I2PSocketManager;
+import net.i2p.client.streaming.I2PSocketManager.DisconnectListener;
 import net.i2p.client.streaming.I2PSocketManagerFactory;
 import net.i2p.client.streaming.I2PSocketOptions;
 import net.i2p.data.Base32;
 import net.i2p.data.DataFormatException;
+import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
 import net.i2p.data.Hash;
 import net.i2p.util.ConcurrentHashSet;
@@ -33,7 +45,9 @@ import net.i2p.util.FileUtil;
 import net.i2p.util.Log;
 import net.i2p.util.SecureDirectory;
 import net.i2p.util.SecureFile;
+import net.i2p.util.SecureFileOutputStream;
 import net.i2p.util.SimpleTimer;
+import net.i2p.util.SystemVersion;
 import net.i2p.util.Translate;
 
 import org.klomp.snark.dht.DHT;
@@ -45,7 +59,7 @@ import org.klomp.snark.dht.KRPC;
  * so we can run multiple instances of single Snarks
  * (but not multiple SnarkManagers, it is still static)
  */
-public class I2PSnarkUtil {
+public class I2PSnarkUtil implements DisconnectListener {
     private final I2PAppContext _context;
     private final Log _log;
     private final String _baseName;
@@ -57,7 +71,6 @@ public class I2PSnarkUtil {
     private int _i2cpPort;
     private final Map<String, String> _opts;
     private volatile I2PSocketManager _manager;
-    private boolean _configured;
     private volatile boolean _connecting;
     private final Set<Hash> _banlist;
     private int _maxUploaders;
@@ -65,6 +78,7 @@ public class I2PSnarkUtil {
     private int _maxConnections;
     private final File _tmpDir;
     private int _startupDelay;
+    private boolean _collapsePanels;
     private boolean _shouldUseOT;
     private boolean _shouldUseDHT;
     private boolean _enableRatings, _enableComments;
@@ -72,32 +86,43 @@ public class I2PSnarkUtil {
     private boolean _areFilesPublic;
     private List<String> _openTrackers;
     private DHT _dht;
+    private boolean _enableUDP = ENABLE_UDP_TRACKER;
+    private UDPTrackerClient _udpTracker;
     private long _startedTime;
+    private final DisconnectListener _discon;
+    private int _maxFilesPerTorrent = SnarkManager.DEFAULT_MAX_FILES_PER_TORRENT;
 
     private static final int EEPGET_CONNECT_TIMEOUT = 45*1000;
     private static final int EEPGET_CONNECT_TIMEOUT_SHORT = 5*1000;
     public static final int DEFAULT_STARTUP_DELAY = 3;
+    public static final boolean DEFAULT_COLLAPSE_PANELS = true;
     public static final boolean DEFAULT_USE_OPENTRACKERS = true;
     public static final int MAX_CONNECTIONS = 24; // per torrent
     public static final String PROP_MAX_BW = "i2cp.outboundBytesPerSecond";
     public static final boolean DEFAULT_USE_DHT = true;
     public static final String EEPGET_USER_AGENT = "I2PSnark";
+    private static final boolean ENABLE_UDP_TRACKER = true;
+    private static final List<String> HIDDEN_I2CP_OPTS = Arrays.asList(new String[] {
+        PROP_MAX_BW, "inbound.length", "outbound.length", "inbound.quantity", "outbound.quantity"
+    });
+
 
     public I2PSnarkUtil(I2PAppContext ctx) {
-        this(ctx, "i2psnark");
+        this(ctx, "i2psnark", null);
     }
 
     /**
      *  @param baseName generally "i2psnark"
      *  @since Jetty 7
      */
-    public I2PSnarkUtil(I2PAppContext ctx, String baseName) {
+    public I2PSnarkUtil(I2PAppContext ctx, String baseName, DisconnectListener discon) {
         _context = ctx;
-        _log = _context.logManager().getLog(Snark.class);
+        _log = _context.logManager().getLog(I2PSnarkUtil.class);
         _baseName = baseName;
+        _discon = discon;
         _opts = new HashMap<String, String>();
         //setProxy("127.0.0.1", 4444);
-        setI2CPConfig("127.0.0.1", 7654, null);
+        setI2CPConfig("127.0.0.1", I2PClient.DEFAULT_LISTEN_PORT, null);
         _banlist = new ConcurrentHashSet<Hash>();
         _maxUploaders = Snark.MAX_TOTAL_UPLOADERS;
         _maxUpBW = SnarkManager.DEFAULT_MAX_UP_BW;
@@ -106,6 +131,7 @@ public class I2PSnarkUtil {
         _shouldUseOT = DEFAULT_USE_OPENTRACKERS;
         _openTrackers = Collections.emptyList();
         _shouldUseDHT = DEFAULT_USE_DHT;
+        _collapsePanels = DEFAULT_COLLAPSE_PANELS;
         _enableRatings = _enableComments = true;
         _commentsName = "";
         // This is used for both announce replies and .torrent file downloads,
@@ -139,25 +165,34 @@ public class I2PSnarkUtil {
     /** @since 0.9.1 */
     public I2PAppContext getContext() { return _context; }
     
-    public boolean configured() { return _configured; }
-    
+    /**
+     *  @param i2cpHost may be null for no change
+     *  @param i2cpPort may be 0 for no change
+     *  @param opts may be null for no change
+     */
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void setI2CPConfig(String i2cpHost, int i2cpPort, Map opts) {
         if (i2cpHost != null)
             _i2cpHost = i2cpHost;
         if (i2cpPort > 0)
             _i2cpPort = i2cpPort;
-        // can't remove any options this way...
-        if (opts != null)
-            _opts.putAll(opts);
+        if (opts != null) {
+            synchronized(_opts) {
+                // removed options...
+                for (Iterator<String> iter = _opts.keySet().iterator(); iter.hasNext(); ) {
+                    String k = iter.next();
+                    if (!HIDDEN_I2CP_OPTS.contains(k) && !opts.containsKey(k))
+                        iter.remove();
+                }
+                _opts.putAll(opts);
+            }
+        }
         // this updates the session options and tells the router
         setMaxUpBW(_maxUpBW);
-        _configured = true;
     }
     
     public void setMaxUploaders(int limit) {
         _maxUploaders = limit;
-        _configured = true;
     }
     
     /**
@@ -166,13 +201,20 @@ public class I2PSnarkUtil {
      */
     public void setMaxUpBW(int limit) {
         _maxUpBW = limit;
-        _opts.put(PROP_MAX_BW, Integer.toString(limit * (1024 * 6 / 5)));   // add a little for overhead
-        _configured = true;
+        // This enables the bw limiter in I2CPMessageProducer.
+        // For now, disable it, since we now have good bandwidth limiting
+        // here in snark, we don't need the additional throttling/drops in I2CP
+        // causing more streaming issues.
+        //synchronized(_opts) {
+        //    _opts.put(PROP_MAX_BW, Integer.toString(limit * (1024 * 6 / 5)));   // add a little for overhead
+        //}
         if (_manager != null) {
             I2PSession sess = _manager.getSession();
             if (sess != null) {
                 Properties newProps = new Properties();
-                newProps.putAll(_opts);
+                synchronized(_opts) {
+                    newProps.putAll(_opts);
+                }
                 sess.updateOptions(newProps);
             }
         }
@@ -180,17 +222,24 @@ public class I2PSnarkUtil {
     
     public void setMaxConnections(int limit) {
         _maxConnections = limit;
-        _configured = true;
     }
 
     public void setStartupDelay(int minutes) {
 	_startupDelay = minutes;
-	_configured = true;
     }
     
     public String getI2CPHost() { return _i2cpHost; }
     public int getI2CPPort() { return _i2cpPort; }
-    public Map<String, String> getI2CPOptions() { return _opts; }
+
+    /**
+     *  @return a copy
+     */
+    public Map<String, String> getI2CPOptions() {
+        synchronized(_opts) {
+            return new HashMap<String, String>(_opts);
+        }
+    }
+
     public String getEepProxyHost() { return _proxyHost; }
     public int getEepProxyPort() { return _proxyPort; }
     public boolean getEepProxySet() { return _shouldProxy; }
@@ -212,6 +261,11 @@ public class I2PSnarkUtil {
     /** @since 0.9.1 */
     public File getTempDir() { return _tmpDir; }
 
+    /** @since 0.9.58 */
+    public int getMaxFilesPerTorrent() { return _maxFilesPerTorrent; }
+    /** @since 0.9.58 */
+    public void setMaxFilesPerTorrent(int max) { _maxFilesPerTorrent = Math.max(max, 1); }
+
     /**
      * Connect to the router, if we aren't already
      */
@@ -222,10 +276,37 @@ public class I2PSnarkUtil {
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("Connecting to I2P", new Exception("I did it"));
             Properties opts = _context.getProperties();
-            if (_opts != null) {
-                for (Map.Entry<String, String> entry : _opts.entrySet() )
-                    opts.setProperty(entry.getKey(), entry.getValue());
+            synchronized(_opts) {
+                opts.putAll(_opts);
             }
+            // override preference and start with two tunnels. IdleChecker will ramp up/down as necessary
+            String sin = opts.getProperty("inbound.quantity");
+            if (sin != null) {
+                int in;
+                try {
+                   in = Integer.parseInt(sin);
+                } catch (NumberFormatException nfe) {
+                   in = 3;
+                }
+                if (in > 2)
+                    opts.setProperty("inbound.quantity", "2");
+            }
+            String sout = opts.getProperty("outbound.quantity");
+            if (sout != null) {
+                int out;
+                try {
+                   out = Integer.parseInt(sout);
+                } catch (NumberFormatException nfe) {
+                   out = 3;
+                }
+                if (out > 2)
+                    opts.setProperty("outbound.quantity", "2");
+            }
+            if (opts.containsKey("inbound.backupQuantity"))
+                opts.setProperty("inbound.backupQuantity", "0");
+            if (opts.containsKey("outbound.backupQuantity"))
+                opts.setProperty("outbound.backupQuantity", "0");
+
             if (opts.getProperty("inbound.nickname") == null)
                 opts.setProperty("inbound.nickname", _baseName.replace("i2psnark", "I2PSnark"));
             if (opts.getProperty("outbound.nickname") == null)
@@ -262,23 +343,62 @@ public class I2PSnarkUtil {
                 opts.setProperty("i2p.streaming.disableRejectLogging", "true");
             if (opts.getProperty("i2p.streaming.answerPings") == null)
                 opts.setProperty("i2p.streaming.answerPings", "false");
+            if (opts.getProperty(I2PSocketOptions.PROP_PROFILE) == null)
+                opts.setProperty(I2PSocketOptions.PROP_PROFILE, Integer.toString(I2PSocketOptions.PROFILE_BULK));
             if (opts.getProperty(I2PClient.PROP_SIGTYPE) == null)
                 opts.setProperty(I2PClient.PROP_SIGTYPE, "EdDSA_SHA512_Ed25519");
+            String et = opts.getProperty("i2cp.leaseSetEncType");
+            if (et == null || et.equals("4,0") || et.equals("4") || et.equals("0"))
+                opts.setProperty("i2cp.leaseSetEncType", "6,4");
+            // assume compressed content
+            if (opts.getProperty(I2PClient.PROP_GZIP) == null)
+                opts.setProperty(I2PClient.PROP_GZIP, "false");
             _manager = I2PSocketManagerFactory.createManager(_i2cpHost, _i2cpPort, opts);
-            if (_manager != null)
+            if (_manager != null) {
                 _startedTime = _context.clock().now();
+                if (_discon != null)
+                    _manager.addDisconnectListener(this);
+            }
             _connecting = false;
         }
         if (_shouldUseDHT && _manager != null && _dht == null)
             _dht = new KRPC(_context, _baseName, _manager.getSession());
+        if (_enableUDP &&_manager != null) {
+            if (_udpTracker == null)
+                _udpTracker = new UDPTrackerClient(_context, _manager.getSession(), this);
+            _udpTracker.start();
+        }
         return (_manager != null);
     }
     
+    /**
+     * DisconnectListener interface
+     * @since 0.9.53
+     */
+    public void sessionDisconnected() {
+        synchronized(this) {
+            _manager = null;
+            _connecting = false;
+            if (_dht != null) {
+                _dht.stop();
+                _dht = null;
+            }
+        }
+        if (_discon != null)
+            _discon.sessionDisconnected();
+    }
+
     /**
      * @return null if disabled or not started
      * @since 0.8.4
      */
     public DHT getDHT() { return _dht; }
+
+    /**
+     * @return null if disabled or not started
+     * @since 0.9.14
+     */
+    public UDPTrackerClient getUDPTrackerClient() { return _udpTracker; }
 
     public boolean connected() { return _manager != null; }
 
@@ -301,6 +421,10 @@ public class I2PSnarkUtil {
         if (_dht != null) {
             _dht.stop();
             _dht = null;
+        }
+        if (_udpTracker != null) {
+            _udpTracker.stop();
+            _udpTracker = null;
         }
         _startedTime = 0;
         I2PSocketManager mgr = _manager;
@@ -478,6 +602,9 @@ public class I2PSnarkUtil {
             return null;
     }
     
+    /**
+     * Full Base64 of Destination
+     */
     public String getOurIPString() {
         Destination dest = getMyDestination();
         if (dest != null)
@@ -649,6 +776,16 @@ public class I2PSnarkUtil {
         return _shouldUseDHT;
     }
 
+    /** @since 0.9.67 */
+    public void setUDPEnabled(boolean yes) {
+        _enableUDP = yes;
+    }
+
+    /** @since 0.9.67 */
+    public boolean udpEnabled() {
+        return _enableUDP;
+    }
+
     /** @since 0.9.31 */
     public void setRatingsEnabled(boolean yes) {
         _enableRatings = yes;
@@ -685,6 +822,16 @@ public class I2PSnarkUtil {
     /** @since 0.9.31 */
     public boolean utCommentsEnabled() {
         return _enableRatings || _enableComments;
+    }
+
+    /** @since 0.9.32 */
+    public boolean collapsePanels() {
+        return _collapsePanels;
+    }
+
+    /** @since 0.9.32 */
+    public void setCollapsePanels(boolean yes) {
+        _collapsePanels = yes;
     }
 
     /**
@@ -733,5 +880,91 @@ public class I2PSnarkUtil {
     /** ngettext @since 0.7.14 */
     public String getString(int n, String s, String p) {
         return Translate.getString(n, s, p, _context, BUNDLE_NAME);
+    }
+
+    private static final boolean SHOULD_SYNC = !(SystemVersion.isAndroid() || SystemVersion.isARM());
+    private static final Pattern ILLEGAL_KEY =  Pattern.compile("[#=\\r\\n;]");
+    private static final Pattern ILLEGAL_VALUE =  Pattern.compile("[\\r\\n]");
+
+    /**
+     *  Same as DataHelper.loadProps() but allows '#' in values,
+     *  so we can have filenames with '#' in them in torrent config files.
+     *  '#' must be in column 1 for a comment.
+     *
+     *  @since 0.9.58
+     */
+    static void loadProps(Properties props, File f) throws IOException {
+        BufferedReader in = null;
+        try {
+            in = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"), 1024);
+            String line = null;
+            while ( (line = in.readLine()) != null) {
+                if (line.trim().length() <= 0) continue;
+                if (line.charAt(0) == '#') continue;
+                if (line.charAt(0) == ';') continue;
+                int split = line.indexOf('=');
+                if (split <= 0) continue;
+                String key = line.substring(0, split);
+                String val = line.substring(split+1).trim();
+                props.setProperty(key, val);
+            }
+        } finally {
+            if (in != null) try { in.close(); } catch (IOException ioe) {}
+        }
+    }
+    
+    /**
+     *  Same as DataHelper.loadProps() but allows '#' in values,
+     *  so we can have filenames with '#' in them in torrent config files.
+     *  '#' must be in column 1 for a comment.
+     *
+     *  @since 0.9.58
+     */
+    static void storeProps(Properties props, File file) throws IOException {
+        FileOutputStream fos = null;
+        PrintWriter out = null;
+        IOException ioe = null;
+        File tmpFile = new File(file.getPath() + ".tmp");
+        try {
+            fos = new SecureFileOutputStream(tmpFile);
+            out = new PrintWriter(new BufferedWriter(new OutputStreamWriter(fos, "UTF-8")));
+            out.println("# NOTE: This I2P config file must use UTF-8 encoding");
+            out.println("# Last saved: " + DataHelper.formatTimeNormalSpaces(System.currentTimeMillis()));
+            for (Map.Entry<Object, Object> entry : props.entrySet()) {
+                String name = (String) entry.getKey();
+                String val = (String) entry.getValue();
+                if (ILLEGAL_KEY.matcher(name).find()) {
+                    if (ioe == null)
+                        ioe = new IOException("Invalid character (one of \"#;=\\r\\n\") in key: \"" +
+                                              name + "\" = \"" + val + '\"');
+                    continue;
+                }
+                if (ILLEGAL_VALUE.matcher(val).find()) {
+                    if (ioe == null)
+                        ioe = new IOException("Invalid character (one of \"\\r\\n\") in value: \"" +
+                                              name + "\" = \"" + val + '\"');
+                    continue;
+                }
+                out.println(name + "=" + val);
+            }
+            if (SHOULD_SYNC) {
+                out.flush();
+                fos.getFD().sync();
+            }
+            out.close();
+            if (out.checkError()) {
+                out = null;
+                tmpFile.delete();
+                throw new IOException("Failed to write properties to " + tmpFile);
+            }
+            out = null;
+            if (!FileUtil.rename(tmpFile, file))
+                throw new IOException("Failed rename from " + tmpFile + " to " + file);
+        } finally {
+            if (out != null) out.close();
+            if (fos != null) try { fos.close(); } catch (IOException e) {}
+        }
+        if (ioe != null)
+            throw ioe;
     }
 }

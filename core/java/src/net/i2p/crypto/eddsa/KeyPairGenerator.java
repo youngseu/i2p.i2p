@@ -1,3 +1,14 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa;
 
 import java.security.InvalidAlgorithmParameterException;
@@ -6,7 +17,8 @@ import java.security.KeyPair;
 import java.security.KeyPairGeneratorSpi;
 import java.security.SecureRandom;
 import java.security.spec.AlgorithmParameterSpec;
-import java.util.Hashtable;
+import java.util.HashMap;
+import java.util.Map;
 
 import net.i2p.crypto.eddsa.spec.EdDSAGenParameterSpec;
 import net.i2p.crypto.eddsa.spec.EdDSANamedCurveSpec;
@@ -17,26 +29,26 @@ import net.i2p.crypto.eddsa.spec.EdDSAPublicKeySpec;
 import net.i2p.util.RandomSource;
 
 /**
- *  Default strength is 256
+ *  Default keysize is 256 (Ed25519)
  *
  *  @since 0.9.15
  */
-public final class KeyPairGenerator extends KeyPairGeneratorSpi {
-    private static final int DEFAULT_STRENGTH = 256;
-    private EdDSAParameterSpec edParams;
-    private SecureRandom random;
-    private boolean initialized;
+public class KeyPairGenerator extends KeyPairGeneratorSpi {
+    protected static final int DEFAULT_KEYSIZE = 256;
+    protected EdDSAParameterSpec edParams;
+    protected SecureRandom random;
+    protected boolean initialized;
 
-    private static final Hashtable<Integer, AlgorithmParameterSpec> edParameters;
+    private static final Map<Integer, AlgorithmParameterSpec> edParameters;
 
     static {
-        edParameters = new Hashtable<Integer, AlgorithmParameterSpec>();
+        edParameters = new HashMap<Integer, AlgorithmParameterSpec>();
 
-        edParameters.put(Integer.valueOf(DEFAULT_STRENGTH), new EdDSAGenParameterSpec(EdDSANamedCurveTable.CURVE_ED25519_SHA512));
+        edParameters.put(Integer.valueOf(256), new EdDSAGenParameterSpec(EdDSANamedCurveTable.ED_25519));
     }
 
-    public void initialize(int strength, SecureRandom random) {
-        AlgorithmParameterSpec edParams = edParameters.get(Integer.valueOf(strength));
+    public void initialize(int keysize, SecureRandom random) {
+        AlgorithmParameterSpec edParams = edParameters.get(Integer.valueOf(keysize));
         if (edParams == null)
             throw new InvalidParameterException("unknown key type.");
         try {
@@ -61,7 +73,7 @@ public final class KeyPairGenerator extends KeyPairGeneratorSpi {
 
     public KeyPair generateKeyPair() {
         if (!initialized)
-            initialize(DEFAULT_STRENGTH, RandomSource.getInstance());
+            initialize(DEFAULT_KEYSIZE, RandomSource.getInstance());
 
         byte[] seed = new byte[edParams.getCurve().getField().getb()/8];
         random.nextBytes(seed);

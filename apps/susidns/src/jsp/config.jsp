@@ -1,9 +1,9 @@
 <%
 /*
  * Created on Sep 02, 2005
- * 
+ *
  *  This file is part of susidns project, see http://susi.i2p/
- *  
+ *
  *  Copyright (C) 2005 <susi23@mail.i2p>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -19,50 +19,40 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *  
+ *
  * $Revision: 1.1 $
  */
-
-    // http://www.crazysquirrel.com/computing/general/form-encoding.jspx
-    if (request.getCharacterEncoding() == null)
-        request.setCharacterEncoding("UTF-8");
-
-    response.setHeader("X-Frame-Options", "SAMEORIGIN");
-    response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'");
-    response.setHeader("X-XSS-Protection", "1; mode=block");
-    response.setHeader("X-Content-Type-Options", "nosniff");
-    response.setHeader("Referrer-Policy", "no-referrer");
-
 %>
+<%@include file="headers.jsi" %>
 <%@page pageEncoding="UTF-8"%>
 <%@ page contentType="text/html" %>
-<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>
 <jsp:useBean id="version" class="i2p.susi.dns.VersionBean" scope="application"/>
 <jsp:useBean id="cfg" class="i2p.susi.dns.ConfigBean" scope="session"/>
 <jsp:useBean id="base" class="i2p.susi.dns.BaseBean" scope="session" />
 <jsp:useBean id="intl" class="i2p.susi.dns.Messages" scope="application" />
 <jsp:setProperty name="cfg" property="*" />
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<% cfg.storeMethod(request.getMethod()); %>
+<!DOCTYPE html>
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <title><%=intl._t("configuration")%> - susidns</title>
 <link rel="stylesheet" type="text/css" href="<%=base.getTheme()%>susidns.css?<%=net.i2p.CoreVersion.VERSION%>">
+<script src="/js/iframeResizer.contentWindow.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<script src="js/messages.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
 </head>
 <body>
 <div class="page">
-<div id="logo">
-<a href="index"><img src="<%=base.getTheme()%>images/logo.png" alt="" title="<%=intl._t("Overview")%>" border="0"/></a>
-</div>
 <hr>
 <div id="navi">
 <a id="overview" href="index"><%=intl._t("Overview")%></a>&nbsp;
-<a class="abook" href="addressbook?book=private"><%=intl._t("Private")%></a>&nbsp;
-<a class="abook" href="addressbook?book=master"><%=intl._t("Master")%></a>&nbsp;
-<a class="abook" href="addressbook?book=router"><%=intl._t("Router")%></a>&nbsp;
-<a class="abook" href="addressbook?book=published"><%=intl._t("Published")%></a>&nbsp;
+<a class="abook" href="addressbook?book=private&amp;filter=none"><%=intl._t("Private")%></a>&nbsp;
+<a class="abook" href="addressbook?book=local&amp;filter=none"><%=intl._t("Local")%></a>&nbsp;
+<a class="abook" href="addressbook?book=router&amp;filter=none"><%=intl._t("Router")%></a>&nbsp;
+<a class="abook" href="addressbook?book=conflicts&amp;filter=none"><%=intl._t("Conflicts")%></a>&nbsp;
+<a class="abook" href="addressbook?book=published&amp;filter=none"><%=intl._t("Published")%></a>&nbsp;
 <a id="subs" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
-<a id="config" href="config"><%=intl._t("Configuration")%></a>
+<a id="config" class="active" href="config"><%=intl._t("Configuration")%></a>
 </div>
 <hr>
 <div class="headline" id="configure">
@@ -84,15 +74,15 @@
 <h3><%=intl._t("Hints")%></h3>
 <ol>
 <li>
-<%=intl._t("File and directory paths here are relative to the addressbook's working directory, which is normally ~/.i2p/addressbook/ (Linux) or %APPDATA%\\I2P\\addressbook\\ (Windows).")%>
+<%=intl._t("File and directory paths here are relative to the address book's working directory, which is normally ~/.i2p/addressbook/ (Linux) or %LOCALAPPDATA%\\I2P\\addressbook\\ (Windows).")%>
 </li>
 <li>
-<%=intl._t("If you want to manually add lines to an addressbook, add them to the private or master addressbooks.")%>
-<%=intl._t("The router addressbook and the published addressbook are updated by the addressbook application.")%>
+<%=intl._t("If you want to manually add lines to an address book, add them to the private or local address books.")%>
+<%=intl._t("The router address book and the published address book are updated by the address book application.")%>
 </li>
 <li>
-<%=intl._t("When you publish your addressbook, ALL destinations from the master and router addressbooks appear there.")%>
-<%=intl._t("Use the private addressbook for private destinations, these are not published.")%>
+<%=intl._t("When you publish your address book, ALL destinations from the local and router address books appear there.")%>
+<%=intl._t("Use the private address book for private destinations, these are not published.")%>
 </li>
 </ol>
 <h3><%=intl._t("Options")%></h3>
@@ -109,11 +99,11 @@
 <li><b>router_addressbook</b> -
 <%=intl._t("Your hosts.txt (don't change)")%>
 </li>
-<li><b>master_addressbook</b> -
-<%=intl._t("Your personal addressbook, these hosts will be published")%>
+<li><b>local_addressbook</b> -
+<%=intl._t("Your personal address book, these hosts will be published")%>
 </li>
 <li><b>private_addressbook</b> -
-<%=intl._t("Your private addressbook, it is never published")%>
+<%=intl._t("Your private address book, it is never published")%>
 </li>
 <li><b>proxy_port</b> -
 <%=intl._t("Port for your eepProxy (no need to change)")%>
@@ -122,7 +112,7 @@
 <%=intl._t("Hostname for your eepProxy (no need to change)")%>
 </li>
 <li><b>should_publish</b> -
-<%=intl._t("Whether to update the published addressbook")%>
+<%=intl._t("Whether to update the published address book")%>
 </li>
 <li><b>etags</b> -
 <%=intl._t("File containing the etags header from the fetched subscription URLs (no need to change)")%>

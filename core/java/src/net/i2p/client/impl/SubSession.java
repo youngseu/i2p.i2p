@@ -47,8 +47,8 @@ class SubSession extends I2PSessionMuxedImpl {
     public SubSession(I2PSession primary, InputStream destKeyStream, Properties options) throws I2PSessionException {
         super((I2PSessionMuxedImpl)primary, destKeyStream, options);
         _primary = (I2PSessionMuxedImpl) primary;
-        if (!getDecryptionKey().equals(_primary.getDecryptionKey()))
-            throw new I2PSessionException("encryption key mismatch");
+        //if (!getDecryptionKey().equals(_primary.getDecryptionKey()))
+        //    throw new I2PSessionException("encryption key mismatch");
         if (getPrivateKey().equals(_primary.getPrivateKey()))
             throw new I2PSessionException("signing key must differ");
         // state management
@@ -84,6 +84,13 @@ class SubSession extends I2PSessionMuxedImpl {
      */
     @Override
     public void updateOptions(Properties options) {}
+
+    /**
+     *  @since 0.9.33
+     */
+    public Properties getPrimaryOptions() {
+        return _primary.getOptions();
+    }
 
     /**
      * Connect to the router and establish a session.  This call blocks until 
@@ -122,7 +129,7 @@ class SubSession extends I2PSessionMuxedImpl {
             }
             synchronized(_stateLock) {
                 if (_state != State.OPEN) {
-                    Thread notifier = new I2PAppThread(_availabilityNotifier, "ClientNotifier " + getPrefix(), true);
+                    Thread notifier = new I2PAppThread(_availabilityNotifier, "ClientNotifier " + getName(), true);
                     notifier.start();
                     changeState(State.OPEN);
                 }
@@ -193,15 +200,18 @@ class SubSession extends I2PSessionMuxedImpl {
 
     /**
      * Tear down the session, and do NOT reconnect.
+     * As of 0.9.67, this does NOT destroy the primary session.
      *
      * Blocks if session has not been fully started.
      */
     @Override
     public void destroySession() {
-        _primary.destroySession();
         if (_availabilityNotifier != null)
             _availabilityNotifier.stopNotifying();
         if (_sessionListener != null) _sessionListener.disconnected(this);
+        try {
+            _producer.disconnect(this);
+        } catch (I2PSessionException ise) {}
         changeState(State.CLOSED);
     }
 
@@ -247,8 +257,8 @@ class SubSession extends I2PSessionMuxedImpl {
      *  on reception of HostReplyMessage
      *  @param d non-null
      */
-    void destReceived(long nonce, Destination d) {
-        _primary.destReceived(nonce, d);
+    void destReceived(long nonce, Destination d, Properties opts) {
+        _primary.destReceived(nonce, d, opts);
     }
 
     /**
@@ -256,8 +266,8 @@ class SubSession extends I2PSessionMuxedImpl {
      *  on reception of HostReplyMessage
      */
     @Override
-    void destLookupFailed(long nonce) {
-        _primary.destLookupFailed(nonce);
+    void destLookupFailed(long nonce, int code) {
+        _primary.destLookupFailed(nonce, code);
     }
 
     /**
@@ -293,10 +303,10 @@ class SubSession extends I2PSessionMuxedImpl {
     }
 
     /**
-     *  Ask the router to lookup a Destination by host name.
+     *  Ask the router to lookup a Destination by address.
      *  Blocking. Waits a max of 10 seconds by default.
      *
-     *  This only makes sense for a b32 hostname, OR outside router context.
+     *  This only makes sense for a b32 address, OR outside router context.
      *  Inside router context, just query the naming service.
      *  Outside router context, this does NOT query the context naming service.
      *  Do that first if you expect a local addressbook.
@@ -314,7 +324,7 @@ class SubSession extends I2PSessionMuxedImpl {
     }
 
     /**
-     *  Ask the router to lookup a Destination by host name.
+     *  Ask the router to lookup a Destination by hostname.
      *  Blocking. See above for details.
      *  @param maxWait ms
      *  @return null on failure

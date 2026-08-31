@@ -3,7 +3,6 @@ package net.i2p.router;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Queue;
@@ -17,6 +16,7 @@ import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.router.tunnel.HopConfig;
 import net.i2p.util.Log;
 import net.i2p.util.SecureFileOutputStream;
+import net.i2p.util.SystemVersion;
 
 /**
  * Simply act as a pen register of messages sent in and out of the router.
@@ -25,6 +25,7 @@ import net.i2p.util.SecureFileOutputStream;
  * analyze the entire network, if everyone provides their logs honestly)
  *
  * This is always instantiated in the context and the WriteJob runs every minute,
+ * (except on Android, we don't set up the WriteJob)
  * but unless router.keepHistory=true it does nothing.
  * It generates a LARGE log file.
  */
@@ -50,13 +51,9 @@ public class MessageHistory {
     public final static String PROP_MESSAGE_HISTORY_FILENAME = "router.historyFilename";
     public final static String DEFAULT_MESSAGE_HISTORY_FILENAME = "messageHistory.txt";
 
-    private final SimpleDateFormat _fmt;
-
     public MessageHistory(RouterContext context) {
         _context = context;
         _log = context.logManager().getLog(getClass());
-         _fmt = new SimpleDateFormat("yy/MM/dd.HH:mm:ss.SSS");
-        _fmt.setTimeZone(TimeZone.getTimeZone("GMT"));
         _unwrittenEntries = new LinkedBlockingQueue<String>();
         _reinitializeJob = new ReinitializeJob();
         _writeJob = new WriteJob();
@@ -92,6 +89,8 @@ public class MessageHistory {
      *
      */
     public synchronized void initialize(boolean forceReinitialize) {
+        if (SystemVersion.isAndroid())
+            return;
         if (!forceReinitialize) return;
         Router router = _context.router();
         if (router == null) {
@@ -597,9 +596,7 @@ public class MessageHistory {
     }
     
     private final String getTime(long when) {
-        synchronized (_fmt) {
-            return _fmt.format(new Date(when));
-        }
+        return DataHelper.formatTime(when);
     }
     
     /**

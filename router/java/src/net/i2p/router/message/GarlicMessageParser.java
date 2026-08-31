@@ -10,7 +10,7 @@ package net.i2p.router.message;
 
 import java.util.Date;
 
-import net.i2p.I2PAppContext;
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.SessionKeyManager;
 import net.i2p.data.Certificate;
 import net.i2p.data.DataFormatException;
@@ -18,6 +18,10 @@ import net.i2p.data.DataHelper;
 import net.i2p.data.PrivateKey;
 import net.i2p.data.i2np.GarlicClove;
 import net.i2p.data.i2np.GarlicMessage;
+import net.i2p.router.RouterContext;
+import net.i2p.router.crypto.ratchet.MuxedPQSKM;
+import net.i2p.router.crypto.ratchet.MuxedSKM;
+import net.i2p.router.crypto.ratchet.RatchetSKM;
 import net.i2p.util.Log;
 
 /**
@@ -27,30 +31,96 @@ import net.i2p.util.Log;
  */
 public class GarlicMessageParser {
     private final Log _log;
-    private final I2PAppContext _context;
-    
+    private final RouterContext _context;
+
     /**
      *  Huge limit just to reduce chance of trouble. Typ. usage is 3.
      *  As of 0.9.12. Was 255.
      */
     private static final int MAX_CLOVES = 32;
 
-    public GarlicMessageParser(I2PAppContext context) { 
+    public GarlicMessageParser(RouterContext context) { 
         _context = context;
         _log = _context.logManager().getLog(GarlicMessageParser.class);
     }
-    
+
     /**
+     *  Supports ELGAMAL_2048, ECIES_X25519, and PQ
+     *
+     *  @param encryptionKey either type
      *  @param skm use tags from this session key manager
      *  @return null on error
      */
-    public CloveSet getGarlicCloves(GarlicMessage message, PrivateKey encryptionKey, SessionKeyManager skm) {
+    CloveSet getGarlicCloves(GarlicMessage message, PrivateKey encryptionKey, SessionKeyManager skm) {
         byte encData[] = message.getData();
         byte decrData[];
         try {
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("Decrypting with private key " + encryptionKey);
-            decrData = _context.elGamalAESEngine().decrypt(encData, encryptionKey, skm);
+            EncType type = encryptionKey.getType();
+            if (type == EncType.ELGAMAL_2048) {
+                decrData = _context.elGamalAESEngine().decrypt(encData, encryptionKey, skm);
+            } else if (type == EncType.ECIES_X25519) {
+                RatchetSKM rskm;
+                switch (skm.getSKMType()) {
+                  case RATCHET:
+                    rskm = (RatchetSKM) skm;
+                    break;
+
+                  case MUXED:
+                    rskm = ((MuxedSKM) skm).getECSKM();
+                    break;
+
+                  case MUXEDPQ:
+                    rskm = ((MuxedPQSKM) skm).getECSKM();
+                    break;
+
+                  default:
+                    if (_log.shouldWarn())
+                        _log.warn("No SKM to decrypt ECIES");
+                    return null;
+                }
+                CloveSet rv = _context.eciesEngine().decrypt(encData, encryptionKey, rskm);
+                if (rv != null) {
+                    if (_log.shouldDebug())
+                        _log.debug("ECIES decrypt success, cloves: " + rv.getCloveCount());
+                    return rv;
+                } else {
+                    if (_log.shouldWarn())
+                        _log.warn("ECIES decrypt fail");
+                    return null;
+                }
+            } else if (type.isPQ()) {
+                RatchetSKM rskm;
+                switch (skm.getSKMType()) {
+                  case RATCHET:
+                    rskm = (RatchetSKM) skm;
+                    break;
+
+                  case MUXEDPQ:
+                    rskm = ((MuxedPQSKM) skm).getPQSKM();
+                    break;
+
+                  default:
+                    if (_log.shouldWarn())
+                        _log.warn("No SKM to decrypt PQ");
+                    return null;
+                }
+                CloveSet rv = _context.eciesEngine().decrypt(encData, encryptionKey, rskm);
+                if (rv != null) {
+                    if (_log.shouldDebug())
+                        _log.debug("PQ decrypt success, cloves: " + rv.getCloveCount());
+                    return rv;
+                } else {
+                    if (_log.shouldWarn())
+                        _log.warn("PQ decrypt fail");
+                    return null;
+                }
+            } else {
+                if (_log.shouldWarn())
+                    _log.warn("Can't decrypt with key type " + type);
+                return null;
+            }
         } catch (DataFormatException dfe) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Error decrypting", dfe);
@@ -63,7 +133,10 @@ public class GarlicMessageParser {
             return null;
         } else {
             try {
-                return readCloveSet(decrData); 
+                CloveSet rv = readCloveSet(decrData, 0); 
+                if (_log.shouldDebug())
+                    _log.debug("Got cloves: " + rv.getCloveCount());
+                return rv; 
             } catch (DataFormatException dfe) {
                 if (_log.shouldLog(Log.WARN))
                     _log.warn("Unable to read cloveSet", dfe);
@@ -71,36 +144,89 @@ public class GarlicMessageParser {
             }
         }
     }
-    
-    private CloveSet readCloveSet(byte data[]) throws DataFormatException {
-        int offset = 0;
-        
-        int numCloves = data[offset] & 0xff;
-        offset++;
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("# cloves to read: " + numCloves);
-        if (numCloves <= 0 || numCloves > MAX_CLOVES)
-            throw new DataFormatException("bad clove count " + numCloves);
-        GarlicClove[] cloves = new GarlicClove[numCloves];
-        for (int i = 0; i < numCloves; i++) {
-            //if (_log.shouldLog(Log.DEBUG))
-            //    _log.debug("Reading clove " + i);
-                GarlicClove clove = new GarlicClove(_context);
-                offset += clove.readBytes(data, offset);
-                cloves[i] = clove;
-            //if (_log.shouldLog(Log.DEBUG))
-            //    _log.debug("After reading clove " + i);
-        }
-        //Certificate cert = new Certificate();
-        //offset += cert.readBytes(data, offset);
-        Certificate cert = Certificate.create(data, offset);
-        offset += cert.size();
-        long msgId = DataHelper.fromLong(data, offset, 4);
-        offset += 4;
-        //Date expiration = DataHelper.fromDate(data, offset);
-        long expiration = DataHelper.fromLong(data, offset, 8);
 
-        CloveSet set = new CloveSet(cloves, cert, msgId, expiration);
-        return set;
+    /**
+     *  Supports both ELGAMAL_2048 and ECIES_X25519.
+     *
+     *  @param elgKey must be ElG OR PQ, non-null
+     *  @param ecKey must be EC, non-null
+     *  @param skm use tags from this session key manager
+     *  @return null on error
+     *  @since 0.9.44
+     */
+    CloveSet getGarlicCloves(GarlicMessage message, PrivateKey elgKey, PrivateKey ecKey, SessionKeyManager skm) {
+        byte encData[] = message.getData();
+        CloveSet rv;
+        try {
+            switch (skm.getSKMType()) {
+              case MUXED: {
+                MuxedSKM mskm = (MuxedSKM) skm;
+                rv = _context.eciesEngine().decrypt(encData, elgKey, ecKey, mskm);
+                break;
+              }
+
+              case MUXEDPQ: {
+                MuxedPQSKM mskm = (MuxedPQSKM) skm;
+                // EC is first
+                rv = _context.eciesEngine().decrypt(encData, ecKey, elgKey, mskm);
+                break;
+              }
+
+              case RATCHET:
+                // unlikely, if we have two keys we should have a MuxedSKM
+                RatchetSKM rskm = (RatchetSKM) skm;
+                rv = _context.eciesEngine().decrypt(encData, ecKey, rskm);
+                break;
+
+              default:
+                // unlikely, if we have two keys we should have a MuxedSKM
+                byte[] decrData = _context.elGamalAESEngine().decrypt(encData, elgKey, skm);
+                if (decrData != null) {
+                    rv = readCloveSet(decrData, 0); 
+                } else {
+                    rv = null; 
+                }
+                break;
+            }
+        } catch (DataFormatException dfe) {
+            if (_log.shouldLog(Log.WARN))
+                _log.warn("Muxed decrypt fail", dfe);
+            rv = null;
+        }
+        if (rv == null &&_log.shouldWarn())
+            _log.warn("Muxed decrypt fail");
+        return rv;
+    }
+
+    /**
+     *  ElGamal only
+     *
+     *  @param offset where in data to start
+     *  @return non-null, throws on all errors
+     *  @since public since 0.9.44
+     */
+    public CloveSet readCloveSet(byte data[], int offset) throws DataFormatException {
+        try {
+            int numCloves = data[offset] & 0xff;
+            offset++;
+            if (numCloves <= 0 || numCloves > MAX_CLOVES)
+                throw new DataFormatException("bad clove count " + numCloves);
+            GarlicClove[] cloves = new GarlicClove[numCloves];
+            for (int i = 0; i < numCloves; i++) {
+                    GarlicClove clove = new GarlicClove(_context);
+                    offset += clove.readBytes(data, offset);
+                    cloves[i] = clove;
+            }
+            Certificate cert = Certificate.create(data, offset);
+            offset += cert.size();
+            long msgId = DataHelper.fromLong(data, offset, 4);
+            offset += 4;
+            long expiration = DataHelper.fromLong(data, offset, 8);
+
+            CloveSet set = new CloveSet(cloves, cert, msgId, expiration);
+            return set;
+        } catch (IndexOutOfBoundsException e) {
+            throw new DataFormatException("corrupt clove set", e);
+        }
     }
 }

@@ -44,6 +44,7 @@ class PacketQueue implements SendMessageStatusListener, Closeable {
     private static final int FINAL_TAG_THRESHOLD = 2;
     private static final long REMOVE_EXPIRED_TIME = 67*1000;
     private static final boolean ENABLE_STATUS_LISTEN = true;
+    private static final long I2CP_EXPIRATION_ADJUST = Math.min(25, Connection.MIN_RESEND_DELAY / 4);
 
     public PacketQueue(I2PAppContext context, SimpleTimer2 timer) {
         _context = context;
@@ -116,25 +117,22 @@ class PacketQueue implements SendMessageStatusListener, Closeable {
             // this should not block!
             begin = _context.clock().now();
             long expires = 0;
-            Connection.ResendPacketEvent rpe = (Connection.ResendPacketEvent) packet.getResendEvent();
-            if (rpe != null)
+            int pktTimeout = packet.getTimeout();
+            if (pktTimeout > 0) {
                 // we want the router to expire it a little before we do,
                 // so if we retransmit it will use a new tunnel/lease combo
-                expires = rpe.getNextSendTime() - 500;
+                // If we are really close to the timeout already,
+                // give this packet a chance to be sent,
+                // but it's likely to be dropped on the router side if we're
+                // running this far behind.
+                expires = Math.max(begin + pktTimeout - I2CP_EXPIRATION_ADJUST, begin + 25);
+            }
             SendMessageOptions options = new SendMessageOptions();
             if (expires > 0)
                 options.setDate(expires);
             boolean listenForStatus = false;
-            if (packet.isFlagSet(FLAGS_INITIAL_TAGS)) {
-                if (con != null) {
-                    if (con.isInbound())
-                        options.setSendLeaseSet(false);
-                    else if (ENABLE_STATUS_LISTEN)
-                        listenForStatus = true;
-                }
-                options.setTagsToSend(INITIAL_TAGS_TO_SEND);
-                options.setTagThreshold(MIN_TAG_THRESHOLD);
-            } else if (packet.isFlagSet(FLAGS_FINAL_TAGS)) {
+            // FINAL trumps INITIAL, in the case of SYN+CLOSE
+            if (packet.isFlagSet(FLAGS_FINAL_TAGS)) {
                 if (packet.isFlagSet(Packet.FLAG_ECHO)) {
                     // Send LS for PING, not for PONG
                     if (packet.getSendStreamId() <= 0)  // pong
@@ -142,16 +140,60 @@ class PacketQueue implements SendMessageStatusListener, Closeable {
                 } else {
                     options.setSendLeaseSet(false);
                 }
-                options.setTagsToSend(FINAL_TAGS_TO_SEND);
-                options.setTagThreshold(FINAL_TAG_THRESHOLD);
+                int sendTags = FINAL_TAGS_TO_SEND;
+                int tagThresh = FINAL_TAG_THRESHOLD;
+                if (con != null) {
+                    ConnectionOptions copts = con.getOptions();
+                    int cSendTags = copts.getTagsToSend();
+                    int cTagThresh = copts.getTagThreshold();
+                    if (cSendTags < sendTags)
+                        sendTags = cSendTags;
+                    if (cTagThresh < tagThresh)
+                        tagThresh = cTagThresh;
+                }
+                options.setTagsToSend(sendTags);
+                options.setTagThreshold(tagThresh);
+                // CLOSE, RESET, and PING packets unlikely to have a large payload
+                // and most of the rest of the packet is
+                // uncompressible: stream ids, signature
+                options.setGzip(packet.getPayloadSize() > 50);
+            } else if (packet.isFlagSet(FLAGS_INITIAL_TAGS)) {
+                if (con != null) {
+                    if (con.isInbound())
+                        options.setSendLeaseSet(false);
+                    else if (ENABLE_STATUS_LISTEN)
+                        listenForStatus = true;
+                }
+                int sendTags = INITIAL_TAGS_TO_SEND;
+                int tagThresh = MIN_TAG_THRESHOLD;
+                if (con != null) {
+                    ConnectionOptions copts = con.getOptions();
+                    int cSendTags = copts.getTagsToSend();
+                    int cTagThresh = copts.getTagThreshold();
+                    if (cSendTags < sendTags)
+                        sendTags = cSendTags;
+                    if (cTagThresh < tagThresh)
+                        tagThresh = cTagThresh;
+                }
+                options.setTagsToSend(sendTags);
+                options.setTagThreshold(tagThresh);
+                // SYN packets are likely to have compressible payload, even if
+                // conn gzip option is false (e.g. snark bitfield, HTTP headers).
+                // If they don't have a large payload, most of the rest of the packet
+                // is uncompressible: stream ids, destination and signature
+                options.setGzip(packet.getPayloadSize() > 50);
             } else {
                 if (con != null) {
                     if (con.isInbound() && con.getLifetime() < 2*60*1000)
                         options.setSendLeaseSet(false);
                     // increase threshold with higher window sizes to prevent stalls
                     // after tag delivery failure
-                    int wdw = con.getOptions().getWindowSize();
+                    ConnectionOptions copts = con.getOptions();
+                    int wdw = copts.getWindowSize();
                     int thresh = Math.max(MIN_TAG_THRESHOLD, wdw * TAG_WINDOW_FACTOR);
+                    int cTagThresh = copts.getTagThreshold();
+                    if (cTagThresh < thresh)
+                        thresh = cTagThresh;
                     options.setTagThreshold(thresh);
                 }
             }
@@ -282,6 +324,7 @@ class PacketQueue implements SendMessageStatusListener, Closeable {
             case MessageStatusMessage.STATUS_SEND_FAILURE_DESTINATION:
             case MessageStatusMessage.STATUS_SEND_FAILURE_BAD_LEASESET:
             case MessageStatusMessage.STATUS_SEND_FAILURE_EXPIRED_LEASESET:
+            case MessageStatusMessage.STATUS_SEND_FAILURE_LOOPBACK:
             case SendMessageStatusListener.STATUS_CANCELLED:
                 if (con.getHighestAckedThrough() >= 0) {
                     // a retxed SYN succeeded before the first SYN failed
@@ -300,6 +343,16 @@ class PacketQueue implements SendMessageStatusListener, Closeable {
                     con.setConnectionError(ioe.getLocalizedMessage());
                     con.disconnect(false);
                 }
+                break;
+
+            case MessageStatusMessage.STATUS_SEND_FAILURE_META_LEASESET:
+                // TODO
+                _messageStatusMap.remove(id);
+                IOException ioe = new I2PSocketException(status);
+                con.getOutputStream().streamErrorOccurred(ioe);
+                con.getInputStream().streamErrorOccurred(ioe);
+                con.setConnectionError(ioe.getLocalizedMessage());
+                con.disconnect(false);
                 break;
 
             case MessageStatusMessage.STATUS_SEND_BEST_EFFORT_SUCCESS:

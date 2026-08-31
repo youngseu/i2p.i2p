@@ -23,11 +23,9 @@ import net.i2p.util.Clock;
  * @author jrandom
  */
 public class Lease extends DataStructureImpl {
-    private Hash _gateway;
-    private TunnelId _tunnelId;
-    private Date _end;
-    //private int _numSuccess;
-    //private int _numFailure;
+    protected Hash _gateway;
+    protected TunnelId _tunnelId;
+    protected long _end;
 
     public Lease() {
     }
@@ -60,11 +58,33 @@ public class Lease extends DataStructureImpl {
         _tunnelId = id;
     }
 
+    /**
+     * @deprecated use getEndTime()
+     */
+    @Deprecated
     public Date getEndDate() {
+        return new Date(_end);
+    }
+
+    /**
+     * @deprecated use setEndDate(long)
+     */
+    @Deprecated
+    public void setEndDate(Date date) {
+        _end = date.getTime();
+    }
+
+    /**
+     * @since 0.9.48
+     */
+    public long getEndTime() {
         return _end;
     }
 
-    public void setEndDate(Date date) {
+    /**
+     * @since 0.9.48
+     */
+    public void setEndDate(long date) {
         _end = date;
     }
 
@@ -72,7 +92,6 @@ public class Lease extends DataStructureImpl {
      * Transient attribute of the lease, used to note how many times messages sent
      * to the destination through the current lease were successful.
      *
-     * @deprecated unused
      */
 /****
     public int getNumSuccess() {
@@ -80,7 +99,6 @@ public class Lease extends DataStructureImpl {
     }
 ****/
 
-    /** @deprecated unused */
 /****
     public void setNumSuccess(int num) {
         _numSuccess = num;
@@ -91,7 +109,6 @@ public class Lease extends DataStructureImpl {
      * Transient attribute of the lease, used to note how many times messages sent
      * to the destination through the current lease failed.
      *
-     * @deprecated unused
      */
 /****
     public int getNumFailure() {
@@ -99,7 +116,6 @@ public class Lease extends DataStructureImpl {
     }
 ****/
 
-    /** @deprecated unused */
 /****
     public void setNumFailure(int num) {
         _numFailure = num;
@@ -113,8 +129,7 @@ public class Lease extends DataStructureImpl {
 
     /** has this lease already expired (giving allowing up the fudgeFactor milliseconds for clock skew)? */
     public boolean isExpired(long fudgeFactor) {
-        if (_end == null) return true;
-        return _end.getTime() < Clock.getInstance().now() - fudgeFactor;
+        return _end < Clock.getInstance().now() - fudgeFactor;
     }
     
     public void readBytes(InputStream in) throws DataFormatException, IOException {
@@ -123,7 +138,7 @@ public class Lease extends DataStructureImpl {
         _gateway = Hash.create(in);
         _tunnelId = new TunnelId();
         _tunnelId.readBytes(in);
-        _end = DataHelper.readDate(in);
+        _end = DataHelper.readLong(in, 8);
     }
     
     public void writeBytes(OutputStream out) throws DataFormatException, IOException {
@@ -132,7 +147,7 @@ public class Lease extends DataStructureImpl {
 
         _gateway.writeBytes(out);
         _tunnelId.writeBytes(out);
-        DataHelper.writeDate(out, _end);
+        DataHelper.writeLong(out, 8, _end);
     }
     
     @Override
@@ -140,7 +155,7 @@ public class Lease extends DataStructureImpl {
         if (object == this) return true;
         if ((object == null) || !(object instanceof Lease)) return false;
         Lease lse = (Lease) object;
-        return DataHelper.eq(_end, lse.getEndDate())
+        return _end == lse.getEndTime()
                && DataHelper.eq(_tunnelId, lse.getTunnelId())
                && DataHelper.eq(_gateway, lse.getGateway());
 
@@ -148,15 +163,15 @@ public class Lease extends DataStructureImpl {
     
     @Override
     public int hashCode() {
-        return DataHelper.hashCode(_end) + DataHelper.hashCode(_gateway)
-               + DataHelper.hashCode(_tunnelId);
+        return (int) _end ^ DataHelper.hashCode(_gateway)
+               ^ DataHelper.hashCode(_tunnelId);
     }
     
     @Override
     public String toString() {
         StringBuilder buf = new StringBuilder(128);
         buf.append("[Lease: ");
-        buf.append("\n\tEnd Date: ").append(_end);
+        buf.append("\n\tEnd Date: ").append(DataHelper.formatTime(_end));
         buf.append("\n\tGateway: ").append(_gateway);
         buf.append("\n\tTunnelId: ").append(_tunnelId);
         buf.append("]");

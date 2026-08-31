@@ -11,8 +11,12 @@ public abstract class HelperBase {
     protected RouterContext _context;
     protected Writer _out;
 
-    static final String PROP_ADVANCED = "routerconsole.advanced";
-    static final String CHECKED = " checked=\"checked\" ";
+    /** @since public since 0.9.33, was package private */
+    public static final String PROP_ADVANCED = "routerconsole.advanced";
+    /** @since public since 0.9.33, was package private */
+    public static final String CHECKED = " checked=\"checked\" ";
+    /** @since 0.9.43 */
+    public static final String SELECTED = " selected=\"selected\" ";
 
     /**
      * Configure this bean to query a particular router context

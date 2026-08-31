@@ -175,7 +175,7 @@ public class BlocklistEntries {
         StringBuilder buf = new StringBuilder();
         long now = System.currentTimeMillis();
         String date = RFC3339Date.to3339Date(now);
-        buf.append(date).append('\n');;
+        buf.append(date).append('\n');
         BufferedReader br = null;
         try {
             br = new BufferedReader(new InputStreamReader(new FileInputStream(inputFile), "UTF-8"));
@@ -196,7 +196,7 @@ public class BlocklistEntries {
                     rlist.add(s.substring(1));
                 } else {
                     elist.add(s);
-                    buf.append(s).append('\n');;
+                    buf.append(s).append('\n');
                 }
             }
         } catch (IOException ioe) {
@@ -207,8 +207,8 @@ public class BlocklistEntries {
             if (br != null) try { br.close(); } catch (IOException ioe) {}
         }
         if (elist.isEmpty() && rlist.isEmpty()) {
-            System.err.println("nothing to sign");
-            System.exit(1);
+            System.err.println("Signing empty blocklist");
+            //System.exit(1);
         }
         if (elist.size() > MAX_ENTRIES) {
             System.err.println("too many blocks, max is " + MAX_ENTRIES);

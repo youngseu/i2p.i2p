@@ -1,7 +1,5 @@
 package net.i2p.client.streaming.impl;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.ConnectException;
@@ -28,14 +26,17 @@ import net.i2p.client.streaming.I2PServerSocket;
 import net.i2p.client.streaming.I2PSocket;
 import net.i2p.client.streaming.I2PSocketManager;
 import net.i2p.client.streaming.I2PSocketOptions;
+import net.i2p.client.streaming.IncomingConnectionFilter;
 import net.i2p.crypto.SigAlgo;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Certificate;
+import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
 import net.i2p.data.Hash;
 import net.i2p.data.PrivateKey;
 import net.i2p.data.PublicKey;
 import net.i2p.data.SimpleDataStructure;
+import net.i2p.util.ByteArrayStream;
 import net.i2p.util.ConvertToHash;
 import net.i2p.util.ConcurrentHashSet;
 import net.i2p.util.Log;
@@ -191,7 +192,8 @@ public class I2PSocketManagerFull implements I2PSocketManager {
      * @param opts may be null
      * @param name non-null
      */
-    public I2PSocketManagerFull(I2PAppContext context, I2PSession session, Properties opts, String name) {
+    public I2PSocketManagerFull(I2PAppContext context, I2PSession session, Properties opts, String name,
+                IncomingConnectionFilter connectionFilter) {
         _context = context;
         _session = session;
         _subsessions = new ConcurrentHashSet<I2PSession>(4);
@@ -200,7 +202,28 @@ public class I2PSocketManagerFull implements I2PSocketManager {
         _name = name + " " + (__managerId.incrementAndGet());
         _acceptTimeout = ACCEPT_TIMEOUT_DEFAULT;
         _defaultOptions = new ConnectionOptions(opts);
-        _connectionManager = new ConnectionManager(_context, _session, _defaultOptions);
+        if (opts != null && opts.getProperty(ConnectionOptions.PROP_MAX_MESSAGE_SIZE) == null) {
+            // set higher MTU for ECIES
+            String senc = opts.getProperty("i2cp.leaseSetEncType");
+            if (senc != null && !senc.equals("0")) {
+                String[] senca = DataHelper.split(senc, ",");
+                boolean has0 = false;
+                boolean has4 = false;
+                for (int i = 0; i < senca.length; i++) {
+                    if (senca[i].equals("0")) {
+                        has0 = true;
+                    } else if (senca[i].equals("4")) {
+                        has4 = true;
+                    }
+                }
+                if (has4) {
+                    _defaultOptions.setMaxMessageSize(ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE_RATCHET);
+                    if (!has0)
+                        _defaultOptions.setMaxInitialMessageSize(ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE_RATCHET);
+                }
+            }
+        }
+        _connectionManager = new ConnectionManager(_context, _session, _defaultOptions, connectionFilter);
         _serverSocket = new I2PServerSocketFull(this);
         
         if (_log.shouldLog(Log.INFO)) {
@@ -251,7 +274,7 @@ public class I2PSocketManagerFull implements I2PSocketManager {
             // We don't actually need the same pubkey in the dest, just in the LS.
             // The dest one is unused. But this is how we find the LS keys
             // to reuse in RequestLeaseSetMessageHandler.
-            ByteArrayOutputStream keyStream = new ByteArrayOutputStream(1024);
+            ByteArrayStream keyStream = new ByteArrayStream(1024);
             try {
                 SigType type = getSigType(opts);
                 if (type != SigType.DSA_SHA1) {
@@ -275,7 +298,7 @@ public class I2PSocketManagerFull implements I2PSocketManager {
             } catch (RuntimeException e) {
                 throw new I2PSessionException("Error creating keys", e);
             }
-            privateKeyStream = new ByteArrayInputStream(keyStream.toByteArray());
+            privateKeyStream = keyStream.asInputStream();
         }
         I2PSession rv = _session.addSubsession(privateKeyStream, opts);
         boolean added = _subsessions.add(rv);
@@ -285,7 +308,7 @@ public class I2PSocketManagerFull implements I2PSocketManager {
             throw new I2PSessionException("dup");
         }
         ConnectionOptions defaultOptions = new ConnectionOptions(opts);
-        int protocol = defaultOptions.getEnforceProtocol() ? I2PSession.PROTO_STREAMING : I2PSession.PROTO_ANY;
+        int protocol = I2PSession.PROTO_STREAMING;
         rv.addMuxedSessionListener(_connectionManager.getMessageHandler(), protocol, defaultOptions.getLocalPort());
         if (_log.shouldLog(Log.WARN))
             _log.warn("Added subsession " + rv);
@@ -305,7 +328,7 @@ public class I2PSocketManagerFull implements I2PSocketManager {
                     return rv;
                 if (rv != null)
                     st = rv.toString();
-                _log.logAlways(Log.WARN, "Unsupported sig type " + st +
+                _log.logAlways(Log.WARN, "Tunnel configuration error: Unsupported sig type " + st +
                                          ", reverting to " + I2PClient.DEFAULT_SIGTYPE);
                 // TODO throw instead?
             }
@@ -323,7 +346,7 @@ public class I2PSocketManagerFull implements I2PSocketManager {
         boolean removed = _subsessions.remove(session);
         if (removed) {
             if (_log.shouldLog(Log.WARN))
-                _log.warn("Removeed subsession " + session);
+                _log.warn("Removed subsession " + session);
         } else {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Subsession not found to remove " + session);
@@ -349,7 +372,8 @@ public class I2PSocketManagerFull implements I2PSocketManager {
      * incoming connections on a subsession.
      * 
      * @return connected I2PSocket, or null through 0.9.16, non-null as of 0.9.17
-     * @throws I2PException if session is closed
+     * @throws I2PException if session is closed; as of 0.9.61, this is an I2PSessionException which extends I2PException
+     * @throws net.i2p.client.streaming.RouterRestartException (extends I2PException) if the router is apparently restarting, since 0.9.34
      * @throws ConnectException (since 0.9.17; I2PServerSocket interface always declared it)
      * @throws SocketTimeoutException if a timeout was previously set with setSoTimeout and the timeout has been reached.
      */
@@ -499,14 +523,20 @@ public class I2PSocketManagerFull implements I2PSocketManager {
         return _realServerSocket;
     }
 
+    /**
+     * @throws I2PException if session is closed; as of 0.9.61, this is an I2PSessionException which extends I2PException
+     */
     private void verifySession() throws I2PException {
         verifySession(_connectionManager.getSession());
     }
 
-    /** @since 0.9.21 */
+    /**
+     * @throws I2PException if session is closed; as of 0.9.61, this is an I2PSessionException which extends I2PException
+     * @since 0.9.21
+     */
     private void verifySession(I2PSession session) throws I2PException {
         if (_isDestroyed.get())
-            throw new I2PException("Session was closed");
+            throw new I2PSessionException("Session was closed");
         if (!session.isClosed())
             return;
         session.connect();

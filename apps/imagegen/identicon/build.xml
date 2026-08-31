@@ -18,13 +18,16 @@
 
     <!-- only used if not set by a higher build.xml -->
     <property name="javac.compilerargs" value="" />
-    <property name="javac.version" value="1.7" />
+    <property name="javac.version" value="1.8" />
+    <property name="javac.release" value="8" />
 
     <target name="compile" depends="depend">
         <mkdir dir="./build" />
         <mkdir dir="./build/obj" />
         <javac srcdir="./core/src/main/java" debug="true" deprecation="on" source="${javac.version}" target="${javac.version}"
+               release="${javac.release}"
                includeAntRuntime="false"
+               encoding="UTF-8"
                destdir="./build/obj" >
             <compilerarg line="${javac.compilerargs}" />
         </javac>
@@ -36,7 +39,9 @@
         <javac
             srcdir="./test/junit"
             debug="true" deprecation="on" source="${javac.version}" target="${javac.version}"
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./buildTest/obj"
             classpath="./build/identicon.jar" >
             <compilerarg line="${javac.compilerargs}" />
@@ -48,13 +53,20 @@
     </target>
 
     <target name="listChangedFiles" depends="jarUpToDate" if="shouldListChanges" >
-        <exec executable="mtn" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="." />
         </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes}" outputproperty="workspace.changes.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
+        </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.sed}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
@@ -86,7 +98,7 @@
                 <not>
                     <isset property="jar.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>

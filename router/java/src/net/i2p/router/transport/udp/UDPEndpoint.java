@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import net.i2p.router.RouterContext;
 import net.i2p.router.transport.TransportUtil;
 import net.i2p.util.Log;
+import net.i2p.util.SystemVersion;
 
 /**
  * Coordinate the low-level datagram socket, creating and managing the UDPSender and
@@ -27,6 +28,8 @@ class UDPEndpoint implements SocketListener {
     private final InetAddress _bindAddress;
     private final boolean _isIPv4, _isIPv6;
     private static final AtomicInteger _counter = new AtomicInteger();
+
+    private static final int MIN_SOCKET_BUFFER = 256*1024;
     
     /**
      *  @param transport may be null for unit testing ONLY
@@ -97,11 +100,6 @@ class UDPEndpoint implements SocketListener {
     }
 ********/
     
-    /** 8998 is monotone, and 31000 is the wrapper outbound, so let's stay between those */
-    public static final String PROP_MIN_PORT = "i2np.udp.minPort";
-    public static final String PROP_MAX_PORT = "i2np.udp.maxPort";
-    private static final int MIN_RANDOM_PORT = 9111;
-    private static final int MAX_RANDOM_PORT = 30777;
     private static final int MAX_PORT_RETRIES = 20;
 
     /**
@@ -114,9 +112,7 @@ class UDPEndpoint implements SocketListener {
         DatagramSocket socket = null;
         int port = _listenPort;
         if (port > 0 && !TransportUtil.isValidPort(port)) {
-            _log.error("Specified UDP port " + port + " is not valid, selecting a new port");
-            // See isValidPort() for list
-            _log.error("Invalid ports are: 0-1023, 1900, 2049, 2827, 3659, 4045, 4444, 4445, 6000, 6665-6669, 6697, 7650-7664, 8998, 9100, 31000, 32000, 65536+");
+            TransportUtil.logInvalidPort(_log, "UDP", port);
             port = -1;
         }
 
@@ -124,13 +120,19 @@ class UDPEndpoint implements SocketListener {
              if (port <= 0) {
                  // try random ports rather than just do new DatagramSocket()
                  // so we stay out of the way of other I2P stuff
-                 port = selectRandomPort(_context);
+                 port = TransportUtil.selectRandomPort(_context, UDPTransport.STYLE);
              }
              try {
                  if (_bindAddress == null)
                      socket = new DatagramSocket(port);
                  else
                      socket = new DatagramSocket(port, _bindAddress);
+                 if (!SystemVersion.isAndroid()) {
+                     if (socket.getSendBufferSize() < MIN_SOCKET_BUFFER)
+                         socket.setSendBufferSize(MIN_SOCKET_BUFFER);
+                     if (socket.getReceiveBufferSize() < MIN_SOCKET_BUFFER)
+                         socket.setReceiveBufferSize(MIN_SOCKET_BUFFER);
+                 }
                  break;
              } catch (SocketException se) {
                  if (_log.shouldLog(Log.WARN))
@@ -148,16 +150,6 @@ class UDPEndpoint implements SocketListener {
         }
         _listenPort = port;
         return socket;
-    }
-
-    /**
-     *  Pick a random port between the configured boundaries
-     *  @since IPv6
-     */
-    public static int selectRandomPort(RouterContext ctx) {
-        int minPort = Math.min(65535, Math.max(1, ctx.getProperty(PROP_MIN_PORT, MIN_RANDOM_PORT)));
-        int maxPort = Math.min(65535, Math.max(minPort, ctx.getProperty(PROP_MAX_PORT, MAX_RANDOM_PORT)));
-        return minPort + ctx.random().nextInt(1 + maxPort - minPort);
     }
 
 

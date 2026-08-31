@@ -13,6 +13,7 @@ import java.io.BufferedOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
@@ -25,8 +26,12 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import net.i2p.client.I2PClient;
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.SessionKeyManager;
+import net.i2p.data.DatabaseEntry;
+import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
+import net.i2p.data.EncryptedLeaseSet;
 import net.i2p.data.Hash;
 import net.i2p.data.LeaseSet;
 import net.i2p.data.Payload;
@@ -45,10 +50,14 @@ import net.i2p.router.Job;
 import net.i2p.router.JobImpl;
 import net.i2p.router.RouterContext;
 import net.i2p.router.crypto.TransientSessionKeyManager;
+import net.i2p.router.crypto.ratchet.RatchetSKM;
+import net.i2p.router.crypto.ratchet.MuxedPQSKM;
+import net.i2p.router.crypto.ratchet.MuxedSKM;
+import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
 import net.i2p.util.ConcurrentHashSet;
 import net.i2p.util.I2PThread;
 import net.i2p.util.Log;
-import net.i2p.util.SimpleTimer;
+import net.i2p.util.SimpleTimer2;
 
 /**
  * Bridge the router and the client - managing state for a client.
@@ -85,6 +94,8 @@ class ClientConnectionRunner {
     protected I2CPMessageReader _reader;
     /** Used for all sessions, which must all have the same crypto keys */
     private SessionKeyManager _sessionKeyManager;
+    /** Used for leaseSets sent to and received from this client */
+    private FloodfillNetworkDatabaseFacade _floodfillNetworkDatabaseFacade;
     /** 
      * This contains the last 10 MessageIds that have had their (non-ack) status 
      * delivered to the client (so that we can be sure only to update when necessary)
@@ -98,6 +109,7 @@ class ClientConnectionRunner {
     /** For inbound traffic. true if i2cp.fastReceive = "true"; @since 0.9.4 */
     private boolean _dontSendMSMOnReceive;
     private final AtomicInteger _messageId; // messageId counter
+    private Hash _encryptedLSHash;
     
     // Was 32767 since the beginning (04-2004).
     // But it's 4 bytes in the I2CP spec and stored as a long in MessageID....
@@ -124,7 +136,10 @@ class ClientConnectionRunner {
         SessionConfig config;
         LeaseRequestState leaseRequest;
         Rerequest rerequestTimer;
+        /** possibly decrypted */
         LeaseSet currentLeaseSet;
+        /** only if encrypted */
+        LeaseSet currentEncryptedLeaseSet;
 
         SessionParams(Destination d, boolean isPrimary) {
             dest = d;
@@ -198,23 +213,42 @@ class ClientConnectionRunner {
         _acceptedPending.clear();
         if (_sessionKeyManager != null)
             _sessionKeyManager.shutdown();
+        if (_encryptedLSHash != null)
+            _manager.unregisterEncryptedDestination(this, _encryptedLSHash);
         _manager.unregisterConnection(this);
         // netdb may be null in unit tests
         if (_context.netDb() != null) {
+            // Note that if the client sent us a destroy message,
+            // removeSession() was called just before this, and
+            // _sessions will be empty.
             for (SessionParams sp : _sessions.values()) {
-                LeaseSet ls = sp.currentLeaseSet;
-                if (ls != null)
-                    _context.netDb().unpublish(ls);
+                // we don't need to unpublish(),
+                // as we shut down our subdb below.
                 if (!sp.isPrimary)
                     _context.tunnelManager().removeAlias(sp.dest);
             }
+            for (SessionParams sp : _sessions.values()) {
+                if (sp.isPrimary)
+                    _context.tunnelManager().removeTunnels(sp.dest);
+                if (sp.rerequestTimer != null)
+                    sp.rerequestTimer.cancel();
+            }
         }
+        if (_floodfillNetworkDatabaseFacade != null)
+            _floodfillNetworkDatabaseFacade.shutdown();
         synchronized (_alreadyProcessed) {
             _alreadyProcessed.clear();
         }
         _sessions.clear();
     }
     
+    /**
+     *  @since 0.9.66
+     */
+    public InetAddress getAddress() {
+        return _socket.getInetAddress();
+    }
+
     /**
      *  Current client's config,
      *  will be null if session not found
@@ -275,7 +309,10 @@ class ClientConnectionRunner {
         return _clientVersion;
     }
 
-    /** current client's sessionkeymanager */
+    /**
+     *  The current client's SessionKeyManager.
+     *  As of 0.9.44, returned implementation varies based on supported encryption types.
+     */
     public SessionKeyManager getSessionKeyManager() { return _sessionKeyManager; }
 
     /**
@@ -414,6 +451,7 @@ class ClientConnectionRunner {
     
     /**
      *  Kill the session. Caller must kill runner if none left.
+     *  If the session is primary and there are subsessions, this removes all subsessions also.
      *
      *  @since 0.9.21
      */
@@ -430,11 +468,21 @@ class ClientConnectionRunner {
                 // Tell client manger
                 _manager.unregisterSession(id, sp.dest);
                 LeaseSet ls = sp.currentLeaseSet;
-                if (ls != null)
-                    _context.netDb().unpublish(ls);
+                if (ls != null && _floodfillNetworkDatabaseFacade != null)
+                    _floodfillNetworkDatabaseFacade.unpublish(ls);
+                // unpublish encrypted LS also
+                ls = sp.currentEncryptedLeaseSet;
+                if (ls != null && _floodfillNetworkDatabaseFacade != null)
+                    _floodfillNetworkDatabaseFacade.unpublish(ls);
                 isPrimary = sp.isPrimary;
-                if (!isPrimary)
+                if (isPrimary)
+                    _context.tunnelManager().removeTunnels(sp.dest);
+                else
                     _context.tunnelManager().removeAlias(sp.dest);
+                synchronized(this) {
+                    if (sp.rerequestTimer != null)
+                        sp.rerequestTimer.cancel();
+                }
                 break;
             }
         }
@@ -445,10 +493,19 @@ class ClientConnectionRunner {
                     _log.info("Destroying remaining client subsession " + sp.sessionId);
                 _manager.unregisterSession(sp.sessionId, sp.dest);
                 LeaseSet ls = sp.currentLeaseSet;
-                if (ls != null)
-                    _context.netDb().unpublish(ls);
+                if (ls != null && _floodfillNetworkDatabaseFacade != null)
+                    _floodfillNetworkDatabaseFacade.unpublish(ls);
+                // unpublish encrypted LS also
+                ls = sp.currentEncryptedLeaseSet;
+                if (ls != null && _floodfillNetworkDatabaseFacade != null)
+                    _floodfillNetworkDatabaseFacade.unpublish(ls);
                 _context.tunnelManager().removeAlias(sp.dest);
+                synchronized(this) {
+                    if (sp.rerequestTimer != null)
+                        sp.rerequestTimer.cancel();
+                }
             }
+            _sessions.clear();
         }
     }
 
@@ -524,15 +581,17 @@ class ClientConnectionRunner {
         if (!isPrimary) {
             // all encryption keys must be the same
             for (SessionParams sp : _sessions.values()) {
-                if (!dest.getPublicKey().equals(sp.dest.getPublicKey()))
+                if (!dest.getPublicKey().equals(sp.dest.getPublicKey())) {
+                    _log.error("LS pubkey mismatch");
                     return SessionStatusMessage.STATUS_INVALID;
+                }
             }
         }
         SessionParams sp = new SessionParams(dest, isPrimary);
         sp.config = config;
         SessionParams old = _sessions.putIfAbsent(destHash, sp);
         if (old != null)
-            return SessionStatusMessage.STATUS_INVALID;
+            return SessionStatusMessage.STATUS_DUP_DEST;
         // We process a few options here, but most are handled by the tunnel manager.
         // The ones here can't be changed later.
         Properties opts = config.getOptions();
@@ -540,11 +599,20 @@ class ClientConnectionRunner {
             _dontSendMSM = "none".equals(opts.getProperty(I2PClient.PROP_RELIABILITY, "").toLowerCase(Locale.US));
             _dontSendMSMOnReceive = Boolean.parseBoolean(opts.getProperty(I2PClient.PROP_FAST_RECEIVE));
         }
+
+        // Set up the
         // per-destination session key manager to prevent rather easy correlation
+        // based on the specified encryption types in the config
         if (isPrimary && _sessionKeyManager == null) {
             int tags = TransientSessionKeyManager.DEFAULT_TAGS;
             int thresh = TransientSessionKeyManager.LOW_THRESHOLD;
-            if (opts != null) {
+            boolean hasElg = false;
+            boolean hasEC = false;
+            boolean hasPQ = false;
+            int pqType = 0;
+            // router may be null in unit tests, avoid NPEs in ratchet
+            // we won't actually be using any SKM anyway
+            if (opts != null && _context.router() != null) {
                 String ptags = opts.getProperty(PROP_TAGS);
                 if (ptags != null) {
                     try { tags = Integer.parseInt(ptags); } catch (NumberFormatException nfe) {}
@@ -553,8 +621,66 @@ class ClientConnectionRunner {
                 if (pthresh != null) {
                     try { thresh = Integer.parseInt(pthresh); } catch (NumberFormatException nfe) {}
                 }
+                String senc = opts.getProperty("i2cp.leaseSetEncType");
+                if (senc != null) {
+                    String[] senca = DataHelper.split(senc, ",");
+                    for (String sencaa : senca) {
+                        if (sencaa.equals("0")) {
+                            hasElg = true;
+                        } else if (sencaa.equals("4")) {
+                            hasEC = true;
+                        } else if (sencaa.equals("5") || sencaa.equals("6") || sencaa.equals("7")) {
+                            if (hasPQ) {
+                                _log.error("Bad encryption type combination in i2cp.leaseSetEncType for " + dest.toBase32());
+                                return SessionStatusMessage.STATUS_INVALID;
+                            }
+                            pqType = Integer.parseInt(sencaa);
+                            hasPQ = true;
+                        }
+                    }
+                } else {
+                    hasElg = true;
+                }
+            } else {
+                hasElg = true;
             }
-            _sessionKeyManager = new TransientSessionKeyManager(_context, tags, thresh);
+            if (hasElg) {
+                if (hasPQ) {
+                    _log.error("Bad encryption type combination in i2cp.leaseSetEncType for " + dest.toBase32());
+                    return SessionStatusMessage.STATUS_INVALID;
+                }
+                TransientSessionKeyManager tskm = new TransientSessionKeyManager(_context, tags, thresh);
+                if (hasEC) {
+                    RatchetSKM rskm = new RatchetSKM(_context, dest);
+                    _sessionKeyManager = new MuxedSKM(tskm, rskm);
+                } else {
+                    _sessionKeyManager = tskm;
+                }
+            } else if (hasPQ) {
+                if (hasEC) {
+                    // ECIES
+                    RatchetSKM rskm1 = new RatchetSKM(_context, dest);
+                    // PQ
+                    RatchetSKM rskm2 = new RatchetSKM(_context, dest, EncType.getByCode(pqType));
+                    _sessionKeyManager = new MuxedPQSKM(rskm1, rskm2);
+                } else {
+                    _sessionKeyManager = new RatchetSKM(_context, dest, EncType.getByCode(pqType));
+                }
+            } else {
+                if (hasEC) {
+                    _sessionKeyManager = new RatchetSKM(_context, dest);
+                } else {
+                    _log.error("No supported encryption types in i2cp.leaseSetEncType for " + dest.toBase32());
+                    return SessionStatusMessage.STATUS_INVALID;
+                }
+            }
+        }
+        // router() null for some unit tests
+        if (isPrimary && _floodfillNetworkDatabaseFacade == null && _context.router() != null) {
+            if (_log.shouldDebug())
+                _log.debug("Initializing subDb for client" + destHash);
+            _floodfillNetworkDatabaseFacade = new FloodfillNetworkDatabaseFacade(_context, destHash);
+            _floodfillNetworkDatabaseFacade.startup();
         }
         return _manager.destinationEstablished(this, dest);
     }
@@ -569,7 +695,7 @@ class ClientConnectionRunner {
      *
      *  @param dest the client
      *  @param id the router's ID for this message
-     *  @param messageNonce the client's ID for this message
+     *  @param messageNonce the client's ID for this message, greater than zero
      *  @param status see I2CP MessageStatusMessage for success/failure codes
      */
     void updateMessageDeliveryStatus(Destination dest, MessageId id, long messageNonce, int status) {
@@ -587,6 +713,8 @@ class ClientConnectionRunner {
     /** 
      * called after a new leaseSet is granted by the client, the NetworkDb has been
      * updated.  This takes care of all the LeaseRequestState stuff (including firing any jobs)
+     *
+     * @param ls if encrypted, the encrypted LS, not the decrypted one
      */
     void leaseSetCreated(LeaseSet ls) {
         Hash h = ls.getDestination().calculateHash();
@@ -595,6 +723,11 @@ class ClientConnectionRunner {
             return;
         LeaseRequestState state;
         synchronized (this) {
+            if (ls.getType() == DatabaseEntry.KEY_TYPE_ENCRYPTED_LS2) {
+                EncryptedLeaseSet encls = (EncryptedLeaseSet) ls;
+                sp.currentEncryptedLeaseSet = encls;
+                ls = encls.getDecryptedLeaseSet();
+            }
             sp.currentLeaseSet = ls;
             state = sp.leaseRequest;
             if (state == null) {
@@ -606,13 +739,41 @@ class ClientConnectionRunner {
             } else {
                 state.setIsSuccessful(true);
                 if (_log.shouldLog(Log.DEBUG))
-                    _log.debug("LeaseSet created fully: " + state + " / " + ls);
+                    _log.debug("LeaseSet created fully: " + state + '\n' + ls);
                 sp.leaseRequest = null;
                 _consecutiveLeaseRequestFails = 0;
+                if (sp.rerequestTimer != null) {
+                    sp.rerequestTimer.cancel();
+                    sp.rerequestTimer = null;
+                }
             }
         }
         if ( (state != null) && (state.getOnGranted() != null) )
             _context.jobQueue().addJob(state.getOnGranted());
+    }
+
+    /**
+     *  Call after destinationEstablished(),
+     *  when an encrypted leaseset is created, so we know it's local.
+     *  Add to the clients list. Check for a dup hash.
+     *  Caller must call runner.disconnectClient() on failure.
+     *
+     *  @param hash the location of the encrypted LS, will change every day
+     *  @return success, false on dup
+     *  @since 0.9.39
+     */
+    public boolean registerEncryptedLS(Hash hash) {
+        boolean rv = true;
+        synchronized(this) {
+            if (!hash.equals(_encryptedLSHash)) {
+                if (_encryptedLSHash != null)
+                    _manager.unregisterEncryptedDestination(this, _encryptedLSHash);
+                rv = _manager.registerEncryptedDestination(this, hash);
+                if (rv)
+                    _encryptedLSHash = hash;
+            }
+        }
+        return rv;
     }
     
     /**
@@ -681,7 +842,7 @@ class ClientConnectionRunner {
         // the following blocks as described above
         Destination fromDest = getDestination(message.getSessionId());
         if (fromDest != null)
-            _manager.distributeMessage(fromDest, dest, payload,
+            _manager.distributeMessage(this, fromDest, dest, payload,
                                        id, message.getNonce(), expiration, flags);
         // else log error?
         //long timeToDistribute = _context.clock().now() - beforeDistribute;
@@ -783,7 +944,8 @@ class ClientConnectionRunner {
      * @param h the Destination's hash
      * @param set LeaseSet with requested leases - this object must be updated to contain the 
      *            signed version (as well as any changed/added/removed Leases)
-     *            The LeaseSet contains Leases and destination only, it is unsigned.
+     *            The LeaseSet contains Leases only, it is unsigned.
+     *            Must be unique for this hash, do not reuse for subsessions.
      * @param expirationTime ms to wait before failing
      * @param onCreateJob Job to run after the LeaseSet is authorized, null OK
      * @param onFailedJob Job to run after the timeout passes without receiving authorization, null OK
@@ -812,20 +974,22 @@ class ClientConnectionRunner {
         //  so the comparison will always work.
         int leases = set.getLeaseCount();
         // synch so _currentLeaseSet isn't changed out from under us
-        LeaseSet current = null;
+        LeaseSet current;
         Destination dest = sp.dest;
         LeaseRequestState state;
         synchronized (this) {
             current = sp.currentLeaseSet;
-            if (current != null && current.getLeaseCount() == leases) {
+            // Skip this check for meta, for now, TODO
+            if (current != null && current.getLeaseCount() == leases &&
+                current.getType() != DatabaseEntry.KEY_TYPE_META_LS2) {
                 for (int i = 0; i < leases; i++) {
                     if (! current.getLease(i).getTunnelId().equals(set.getLease(i).getTunnelId()))
                         break;
                     if (! current.getLease(i).getGateway().equals(set.getLease(i).getGateway()))
                         break;
                     if (i == leases - 1) {
-                        if (_log.shouldLog(Log.INFO))
-                            _log.info("Requested leaseSet hasn't changed");
+                        if (_log.shouldDebug())
+                            _log.debug("Requested leaseSet hasn't changed");
                         if (onCreateJob != null)
                             _context.jobQueue().addJob(onCreateJob);
                         return; // no change
@@ -851,7 +1015,7 @@ class ClientConnectionRunner {
                     set.setDestination(dest);
                     Rerequest timer = new Rerequest(set, expirationTime, onCreateJob, onFailedJob);
                     sp.rerequestTimer = timer;
-                    _context.simpleTimer2().addEvent(timer, 3*1000);
+                    timer.schedule(3*1000);
                     if (_log.shouldLog(Log.DEBUG))
                         _log.debug("Already requesting, ours newer, wait 3 sec: " + state);
                 }
@@ -865,14 +1029,18 @@ class ClientConnectionRunner {
                     // before we are ready
                     Rerequest timer = new Rerequest(set, expirationTime, onCreateJob, onFailedJob);
                     sp.rerequestTimer = timer;
-                    _context.simpleTimer2().addEvent(timer, 1000);
+                    timer.schedule(1000);
                     if (_log.shouldLog(Log.DEBUG))
                         _log.debug("No current LS but no OB tunnels, wait 1 sec for " + h);
                     return;
                 } else {
                     // so the timer won't fire off with an older LS request
-                    sp.rerequestTimer = null;
-                    sp.leaseRequest = state = new LeaseRequestState(onCreateJob, onFailedJob,
+                    if (sp.rerequestTimer != null) {
+                        sp.rerequestTimer.cancel();
+                        sp.rerequestTimer = null;
+                    }
+                    long earliest = (current != null) ? current.getEarliestLeaseDate() : 0;
+                    sp.leaseRequest = state = new LeaseRequestState(onCreateJob, onFailedJob, earliest,
                                                                 _context.clock().now() + expirationTime, set);
                     if (_log.shouldLog(Log.DEBUG))
                         _log.debug("New request: " + state);
@@ -882,14 +1050,18 @@ class ClientConnectionRunner {
         _context.jobQueue().addJob(new RequestLeaseSetJob(_context, this, state));
     }
 
-    private class Rerequest implements SimpleTimer.TimedEvent {
+    private class Rerequest extends SimpleTimer2.TimedEvent {
         private final LeaseSet _ls;
         private final long _expirationTime;
         private final Job _onCreate;
         private final Job _onFailed;
 
-        /** @param ls dest must be set */
+        /**
+         * Caller must schedule()
+         * @param ls dest must be set
+         */
         public Rerequest(LeaseSet ls, long expirationTime, Job onCreate, Job onFailed) {
+            super(_context.simpleTimer2());
             _ls = ls;
             _expirationTime = expirationTime;
             _onCreate = onCreate;
@@ -1018,6 +1190,19 @@ class ClientConnectionRunner {
      */
     private final static long REQUEUE_DELAY = 500;
     private static final int MAX_REQUEUE = 60;  // 30 sec.
+
+    /**
+     * Get the FloodfillNetworkDatabaseFacade for this runner. This is the client
+     * netDb.
+     * 
+     * If a session has not been created yet, it will return null.
+     * 
+     * @return the client netdb or null if no session was created yet
+     * @since 0.9.61
+     */
+    public FloodfillNetworkDatabaseFacade getFloodfillNetworkDatabaseFacade() {
+        return _floodfillNetworkDatabaseFacade;
+    }
     
     private class MessageDeliveryStatusUpdate extends JobImpl {
         private final SessionId _sessId;

@@ -23,49 +23,36 @@
  */
 package i2p.susi.webmail.encoding;
 
+import java.io.IOException;
+import java.io.InputStream;
+
+import i2p.susi.util.Buffer;
 import i2p.susi.util.ReadBuffer;
 
 import net.i2p.data.DataHelper;
 
 /**
+ * Decode only.
  * @author susi
  */
-public class SevenBit implements Encoding {
+public class SevenBit extends Encoding {
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#getName()
-	 */
 	public String getName() {
 		return "7bit";
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#encode(byte[])
+	/**
+	 * @throws EncodingException always
 	 */
-	public String encode(byte[] in) {
-		// TODO Auto-generated method stub
-		return null;
+	public String encode(byte[] in) throws EncodingException {
+		throw new EncodingException("unsupported");
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#encode(java.lang.String)
+	/**
+	 * @throws DecodingException on illegal characters
 	 */
-	public String encode(String str) {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(byte[])
-	 */
-	public ReadBuffer decode(byte[] in) throws DecodingException {
-		return decode( in, 0, in.length );
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(byte[], int, int)
-	 */
-	public ReadBuffer decode(byte[] in, int offset, int length)
+	@Override
+	public Buffer decode(byte[] in, int offset, int length)
 			throws DecodingException {
 		int backupLength = length;
 		int backupOffset = offset;
@@ -82,18 +69,22 @@ public class SevenBit implements Encoding {
 		return new ReadBuffer(in, backupOffset, backupLength);
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(java.lang.String)
+	/**
+	 * We don't do any 8-bit checks like we do for decode(byte[])
+	 * @return in, unchanged
 	 */
-	public ReadBuffer decode(String str) throws DecodingException {
-		return decode( DataHelper.getUTF8(str) );
+	@Override
+	public Buffer decode(Buffer in) {
+		return in;
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(i2p.susi.webmail.util.ReadBuffer)
+	/**
+	 * Copy in to out, unchanged
+	 * We don't do any 8-bit checks like we do for decode(byte[])
+	 * @since 0.9.34
 	 */
-	public ReadBuffer decode(ReadBuffer in) throws DecodingException {
-		return decode( in.content, in.offset, in.length );
+	public void decode(InputStream in, Buffer out) throws IOException {
+		DataHelper.copy(in, out.getOutputStream());
+		// read complete, write complete
 	}
-
 }

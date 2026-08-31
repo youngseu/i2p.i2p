@@ -133,11 +133,20 @@ class AddressBook implements Iterable<Map.Entry<String, HostTxtEntry>> {
     public AddressBook(Subscription subscription, String proxyHost, int proxyPort) {
         Map<String, HostTxtEntry> a = null;
         File subf = null;
+        File tmp = null;
         try {
-            File tmp = SecureFile.createTempFile("addressbook", null, I2PAppContext.getGlobalContext().getTempDir());
+            tmp = SecureFile.createTempFile("addressbook", null, I2PAppContext.getGlobalContext().getTempDir());
+            // Apache 2.4 mod_deflate etag bug workaround
+            // strip -gzip from the etag
+            // Gitlab #454
+            String loc = subscription.getLocation();
+            String etag = subscription.getEtag();
+            if (loc.startsWith("http://i2p-projekt.i2p/") && etag != null && etag.endsWith("-gzip\""))
+                etag = etag.substring(0, etag.length() - 6) + '"';
+
             EepGet get = new EepGet(I2PAppContext.getGlobalContext(), true,
                     proxyHost, proxyPort, 0, -1l, MAX_SUB_SIZE, tmp.getAbsolutePath(), null,
-                    subscription.getLocation(), true, subscription.getEtag(), subscription.getLastModified(), null);
+                    loc, true, etag, subscription.getLastModified(), null);
             if (get.fetch()) {
                 subscription.setEtag(get.getETag());
                 subscription.setLastModified(get.getLastModified());
@@ -148,6 +157,8 @@ class AddressBook implements Iterable<Map.Entry<String, HostTxtEntry>> {
                 tmp.delete();
             }
         } catch (IOException ioe) {
+            if (tmp != null)
+                tmp.delete();
             a = Collections.emptyMap();
         }
         this.addresses = a;
@@ -243,19 +254,19 @@ class AddressBook implements Iterable<Map.Entry<String, HostTxtEntry>> {
     }
 
     /**
-     * Do basic validation of the hostname
-     * hostname was already converted to lower case by HostTxtParser.parse()
+     * Do basic validation of the address
+     * address was already converted to lower case by HostTxtParser.parse()
      */
     public static boolean isValidKey(String host) {
 	return
-		host.endsWith(".i2p") &&
-		host.length() > 4 &&
-		host.length() <= 67 &&          // 63 + ".i2p"
+	    host.endsWith(".i2p") &&
+        host.length() > 4 &&
+        host.length() <= 67 &&          // 63 + ".i2p"
                 (! host.startsWith(".")) &&
                 (! host.startsWith("-")) &&
                 host.indexOf(".-") < 0 &&
                 host.indexOf("-.") < 0 &&
-		host.indexOf("..") < 0 &&
+        host.indexOf("..") < 0 &&
                 // IDN - basic check, not complete validation
                 (host.indexOf("--") < 0 || host.startsWith("xn--") || host.indexOf(".xn--") > 0) &&
                 HOST_PATTERN.matcher(host).matches() &&
@@ -272,19 +283,19 @@ class AddressBook implements Iterable<Map.Entry<String, HostTxtEntry>> {
                 (! host.endsWith(".proxy.i2p")) &&
                 (! host.endsWith(".router.i2p")) &&
                 (! host.endsWith(".console.i2p"))
-                ;	
+                ;    
     }
 
     /**
      * Do basic validation of the b64 dest, without bothering to instantiate it
      */
     private static boolean isValidDest(String dest) {
-	return
+    return
                 // null cert ends with AAAA but other zero-length certs would be AA
-		((dest.length() == MIN_DEST_LENGTH && dest.endsWith("AA")) ||
-		 (dest.length() > MIN_DEST_LENGTH && dest.length() <= MAX_DEST_LENGTH)) &&
-		// B64 comes in groups of 2, 3, or 4 chars, but never 1
-		((dest.length() % 4) != 1) &&
+        ((dest.length() == MIN_DEST_LENGTH && dest.endsWith("AA")) ||
+         (dest.length() > MIN_DEST_LENGTH && dest.length() <= MAX_DEST_LENGTH)) &&
+        // B64 comes in groups of 2, 3, or 4 chars, but never 1
+        ((dest.length() % 4) != 1) &&
                 B64_PATTERN.matcher(dest).matches()
                 ;	
     }
@@ -306,7 +317,17 @@ class AddressBook implements Iterable<Map.Entry<String, HostTxtEntry>> {
     public void merge(AddressBook other, boolean overwrite, Log log) {
         if (this.addresses == null)
             throw new IllegalStateException();
-        for (Iterator<Map.Entry<String, HostTxtEntry>> iter = other.iterator(); iter.hasNext(); ) {
+        Iterator<Map.Entry<String, HostTxtEntry>> iter = other.iterator();
+        try {
+            merge2(other, iter, overwrite, log);
+        } finally {
+            if (iter instanceof HostTxtIterator)
+                ((HostTxtIterator) iter).close();
+        }
+    }
+
+    private void merge2(AddressBook other, Iterator<Map.Entry<String, HostTxtEntry>> iter, boolean overwrite, Log log) {
+        while(iter.hasNext()) {
             Map.Entry<String, HostTxtEntry> entry = iter.next();
             String otherKey = entry.getKey();
             HostTxtEntry otherValue = entry.getValue();
@@ -365,11 +386,6 @@ class AddressBook implements Iterable<Map.Entry<String, HostTxtEntry>> {
         if (this.location == null || this.location.startsWith("http://"))
             throw new IllegalStateException();
         this.write(new File(this.location));
-    }
-
-    @Override
-    protected void finalize() {
-        delete();
     }
 
 /****

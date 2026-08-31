@@ -34,7 +34,16 @@ public interface UpdateManager {
     public void unregister(Updater updater, UpdateType type, UpdateMethod method);
 
     public void unregister(Checker checker, UpdateType type, UpdateMethod method);
-    
+
+    /**
+     *  Register a post-processor for this UpdateType and SU3File file type.
+     *
+     *  @param type only ROUTER_SIGNED_SU3 and ROUTER_DEV_SU3 are currently supported
+     *  @param fileType a SU3File TYPE_xxx constant, 1-255, TYPE_ZIP not supported.
+     *  @since 0.9.51
+     */
+    public void register(UpdatePostProcessor upp, UpdateType type, int fileType);
+
     public void start();
 
     public void shutdown();
@@ -229,6 +238,15 @@ public interface UpdateManager {
      *  @since 0.9.21
      */
     public String getStatus();
+
+    /**
+     *  Tell the UpdateManager that a version is already installed.
+     *
+     *  @param id subtype for plugins, or ""
+     *  @param version null to remove from installed
+     *  @since 0.9.45
+     */
+    public void notifyInstalled(UpdateType type, String id, String version);
 
     /**
      *  For debugging

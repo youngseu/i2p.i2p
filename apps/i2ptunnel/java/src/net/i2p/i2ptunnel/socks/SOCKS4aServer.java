@@ -12,7 +12,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
-import java.net.SocketException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
@@ -22,12 +21,15 @@ import net.i2p.I2PException;
 import net.i2p.app.ClientApp;
 import net.i2p.app.ClientAppManager;
 import net.i2p.app.Outproxy;
+import net.i2p.client.naming.NamingService;
 import net.i2p.client.streaming.I2PSocket;
 import net.i2p.client.streaming.I2PSocketOptions;
 import net.i2p.data.DataFormatException;
 import net.i2p.data.Destination;
+import static net.i2p.socks.SOCKS4Constants.*;
 import net.i2p.util.HexDump;
 import net.i2p.util.Log;
+import net.i2p.socks.SOCKSException;
 
 /*
  * Class that manages SOCKS 4/4a connections, and forwards them to
@@ -36,6 +38,8 @@ import net.i2p.util.Log;
  * @author zzz modded from SOCKS5Server
  */
 class SOCKS4aServer extends SOCKSServer {
+
+    private static final int MAX_STRING_LEN = 1024;
 
     private boolean setupCompleted;
 
@@ -70,7 +74,7 @@ class SOCKS4aServer extends SOCKSServer {
 
             manageRequest(in, out);
         } catch (IOException e) {
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
 
         setupCompleted = true;
@@ -134,11 +138,15 @@ class SOCKS4aServer extends SOCKSServer {
             connHostName = readString(in);
     }
 
-    private String readString(DataInputStream in) throws IOException {
+    private static String readString(DataInputStream in) throws IOException {
         StringBuilder sb = new StringBuilder(16);
+        int i = 0;
         char c;
-        while ((c = (char) (in.readByte() & 0xff)) != 0)
+        while ((c = (char) (in.readByte() & 0xff)) != 0) {
+            if (i++ >= MAX_STRING_LEN)
+                throw new IOException("String too long");
             sb.append(c);
+        }
         return sb.toString();
     }
 
@@ -149,7 +157,7 @@ class SOCKS4aServer extends SOCKSServer {
 
             sendRequestReply(Reply.SUCCEEDED, InetAddress.getByName("127.0.0.1"), 1, out);
         } catch (IOException e) {
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
     }
 
@@ -188,7 +196,7 @@ class SOCKS4aServer extends SOCKSServer {
         setupServer();
 
         if (connHostName == null) {
-            _log.error("BUG: destination host name has not been initialized!");
+            _log.error("BUG: destination hostname has not been initialized!");
             throw new SOCKSException("BUG! See the logs!");
         }
         if (connPort == 0) {
@@ -200,7 +208,7 @@ class SOCKS4aServer extends SOCKSServer {
         try {
             out = new DataOutputStream(clientSock.getOutputStream());
         } catch (IOException e) {
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
 
         // FIXME: here we should read our config file, select an
@@ -209,7 +217,8 @@ class SOCKS4aServer extends SOCKSServer {
         I2PSocket destSock;
 
         try {
-            if (connHostName.toLowerCase(Locale.US).endsWith(".i2p")) {
+            String hostLowerCase = connHostName.toLowerCase(Locale.US);
+            if (NamingService.isI2PHost(hostLowerCase)) {
                 Destination dest = _context.namingService().lookup(connHostName);
                 if (dest == null) {
                     try {
@@ -223,7 +232,9 @@ class SOCKS4aServer extends SOCKSServer {
                 I2PSocketOptions sktOpts = t.buildOptions(overrides);
                 sktOpts.setPort(connPort);
                 destSock = t.createI2PSocket(dest, sktOpts);
-            } else if ("localhost".equals(connHostName) || "127.0.0.1".equals(connHostName)) {
+            } else if ("localhost".equals(hostLowerCase) || "127.0.0.1".equals(connHostName) ||
+                       hostLowerCase.endsWith(".localhost") ||
+                       connHostName.startsWith("192.168.") || connHostName.equals("[::1]")) {
                 String err = "No localhost accesses allowed through the Socks Proxy";
                 _log.error(err);
                 try {
@@ -285,40 +296,19 @@ class SOCKS4aServer extends SOCKSServer {
             try {
                 sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
             } catch (IOException ioe) {}
-            throw new SOCKSException("Error in destination format");
-        } catch (SocketException e) {
-            try {
-                sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
-            } catch (IOException ioe) {}
-            throw new SOCKSException("Error connecting ("
-                                     + e.getMessage() + ")");
+            throw new SOCKSException("Error in destination format", e);
         } catch (IOException e) {
             try {
                 sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
             } catch (IOException ioe) {}
-            throw new SOCKSException("Error connecting ("
-                                     + e.getMessage() + ")");
+            throw new SOCKSException("Error connecting", e);
         } catch (I2PException e) {
             try {
                 sendRequestReply(Reply.CONNECTION_REFUSED, InetAddress.getByName("127.0.0.1"), 0, out);
             } catch (IOException ioe) {}
-            throw new SOCKSException("Error connecting ("
-                                     + e.getMessage() + ")");
+            throw new SOCKSException("Error connecting", e);
         }
 
         return destSock;
-    }
-
-    /*
-     * Some namespaces to enclose SOCKS protocol codes
-     */
-    private static class Command {
-        private static final int CONNECT = 0x01;
-        private static final int BIND = 0x02;
-    }
-
-    private static class Reply {
-        private static final int SUCCEEDED = 0x5a;
-        private static final int CONNECTION_REFUSED = 0x5b;
     }
 }

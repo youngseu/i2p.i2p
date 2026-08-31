@@ -1,5 +1,7 @@
 package net.i2p.router.web;
 
+import javax.servlet.http.HttpSession;
+
 import net.i2p.I2PAppContext;
 import net.i2p.crypto.TrustedUpdate;
 import net.i2p.data.DataHelper;
@@ -7,6 +9,7 @@ import net.i2p.util.PortMapper;
 
 public class ConfigUpdateHelper extends HelperBase {
     private boolean _dontInstall;
+    protected HttpSession _session;
 
     public ConfigUpdateHelper() {}
     
@@ -44,7 +47,7 @@ public class ConfigUpdateHelper extends HelperBase {
     public String getUpdateURL() {
         String url = _context.getProperty(ConfigUpdateHandler.PROP_UPDATE_URL);
         if (url != null)
-            return url.replace(",", "\n");
+            return url.replace(',', '\n');
         else
             return ConfigUpdateHandler.DEFAULT_UPDATE_URL;
     }
@@ -118,14 +121,14 @@ public class ConfigUpdateHelper extends HelperBase {
         StringBuilder buf = new StringBuilder(256);
         buf.append("<select name=\"refreshFrequency\">");
         for (int i = 0; i < PERIODS.length; i++) {
-            buf.append("<option value=\"").append(PERIODS[i]);
+            buf.append("<option value=\"").append(PERIODS[i]).append("\" ");
             if (PERIODS[i] == ms)
-                buf.append("\" selected=\"selected");
+                buf.append(SELECTED);
             
             if (PERIODS[i] == -1)
-                buf.append("\">").append(_t("Never")).append("</option>\n");
+                buf.append(">").append(_t("Never")).append("</option>\n");
             else
-                buf.append("\">").append(_t("Every")).append(' ').append(DataHelper.formatDuration2(PERIODS[i])).append("</option>\n");
+                buf.append(">").append(_t("Every")).append(' ').append(DataHelper.formatDuration2(PERIODS[i])).append("</option>\n");
         }
         buf.append("</select>\n");
         return buf.toString();
@@ -142,14 +145,14 @@ public class ConfigUpdateHelper extends HelperBase {
         
         buf.append("<option value=\"notify\"");
         if ("notify".equals(policy) || _dontInstall)
-            buf.append(" selected=\"selected\"");
+            buf.append(SELECTED);
         buf.append('>').append(_t("Notify only")).append("</option>");
 
         buf.append("<option value=\"download\"");
         if (_dontInstall)
             buf.append(" disabled=\"disabled\"");
         else if ("download".equals(policy))
-            buf.append(" selected=\"selected\"");
+            buf.append(SELECTED);
         buf.append('>').append(_t("Download and verify only")).append("</option>");
         
         if (_context.hasWrapper()) {
@@ -157,7 +160,7 @@ public class ConfigUpdateHelper extends HelperBase {
             if (_dontInstall)
                 buf.append(" disabled=\"disabled\"");
             else if ("install".equals(policy))
-                buf.append(" selected=\"selected\"");
+                buf.append(SELECTED);
             buf.append('>').append(_t("Download, verify, and restart")).append("</option>");
         }
         
@@ -178,7 +181,20 @@ public class ConfigUpdateHelper extends HelperBase {
         return _context.getProperty(ConfigUpdateHandler.PROP_DEV_SU3_URL, "");
     }
 
+    public void storeSession(HttpSession session) { _session = session; }
+
+    /**
+     *  storeSession MUST be called first
+     */
     public String getNewsStatus() { 
-        return NewsHelper.status(_context);
+        return NewsHelper.status(_context, _session);
+    }
+
+    /**
+     *  same as getNewsStatus() but without the show/hide news links
+     *  @since 0.9.70
+     */
+    public String getNewsStatusBrief() { 
+        return NewsHelper.status(_context, null);
     }
 }

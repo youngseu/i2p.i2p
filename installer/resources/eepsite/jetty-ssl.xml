@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure_10_0.dtd">
 
-<!-- This configuration supports Jetty 9. Do not remove this line. -->
+<!-- This configuration supports Jetty 12. Do not remove this line. -->
 
 <!-- ========================================================================= -->
 <!-- If you have a 'split' directory installation, with configuration          -->
-<!-- files in ~/.i2p (Linux), %APPDATA%\I2P (Windows),                         -->
+<!-- files in ~/.i2p (Linux), %LOCALAPPDATA%\I2P (Windows),                         -->
 <!-- or /Users/(user)/Library/Application Support/i2p (Mac), be sure to        -->
 <!-- edit the file in the configuration directory, NOT the install directory.  -->
 <!-- When running as a Linux daemon, the configuration directory is            -->
@@ -66,8 +66,8 @@
 <!-- See https://wiki.eclipse.org/Jetty/Howto/Configure_SSL          -->
 <!-- for alternate methods.                                          -->
 <!--
-   keytool -genkey -keystore ~/.i2p/eepsite/etc/keystore.ks -storepass changeit -alias b32 -dname CN=biglongkey.b32.i2p,OU=Eepsite,O=XX,L=XX,ST=XX,C=XX -validity 3652 -keyalg RSA -keysize 2048 -keypass myKeyPassword 
-   keytool -genkey -keystore ~/.i2p/eepsite/etc/keystore.ks -storepass changeit -alias hostname -dname CN=example.i2p,OU=Eepsite,O=XX,L=XX,ST=XX,C=XX -validity 3652 -keyalg RSA -keysize 2048 -keypass myKeyPassword 
+   keytool -genkey -keystore ~/.i2p/eepsite/etc/keystore.ks -storepass changeit -alias b32 -dname CN=biglongkey.b32.i2p,OU=Eepsite,O=XX,L=XX,ST=XX,C=XX -validity 3652 -keyalg RSA -keysize 2048 -keypass myKeyPassword
+   keytool -genkey -keystore ~/.i2p/eepsite/etc/keystore.ks -storepass changeit -alias hostname -dname CN=example.i2p,OU=Eepsite,O=XX,L=XX,ST=XX,C=XX -validity 3652 -keyalg RSA -keysize 2048 -keypass myKeyPassword
    chmod 600 ~/.i2p/eepsite/etc/keystore.ks
  -->
 <!--                                                                 -->
@@ -253,14 +253,14 @@
   <Call name="addConnector">
     <Arg>
       <New class="org.eclipse.jetty.server.ServerConnector">
-        <Arg><Ref id="Server" /></Arg>
+        <Arg><Ref refid="Server" /></Arg>
         <Arg type="int">1</Arg>     <!-- number of acceptors -->
         <Arg type="int">0</Arg>     <!-- default number of selectors -->
         <Arg>
            <Array type="org.eclipse.jetty.server.ConnectionFactory">    <!-- varargs so we need an array -->
               <Item>
                 <New class="org.eclipse.jetty.server.SslConnectionFactory">
-                  <Arg><Ref id="sslContextFactory" /></Arg>
+                  <Arg><Ref refid="sslContextFactory" /></Arg>
                   <Arg>http/1.1</Arg>
                 </New>
               </Item>
@@ -269,7 +269,8 @@
                   <Arg>
                     <New class="org.eclipse.jetty.server.HttpConfiguration">
                       <Set name="sendServerVersion">false</Set>
-                      <Set name="sendDateHeader">true</Set>
+                      <Set name="sendDateHeader">false</Set>
+                      <Set name="sendXPoweredBy">false</Set>
                     </New>
                   </Arg>
                 </New>

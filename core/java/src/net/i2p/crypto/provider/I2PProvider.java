@@ -1,7 +1,7 @@
 package net.i2p.crypto.provider;
 
-import java.security.AccessController;
-import java.security.PrivilegedAction;
+//import java.security.AccessController;
+//import java.security.PrivilegedAction;
 import java.security.Provider;
 import java.security.Security;
 
@@ -20,15 +20,21 @@ public final class I2PProvider extends Provider {
      * <code>Security.addProvider()</code> mechanism.
      */
     public I2PProvider() {
+        // following constructor deprecated in Java 9,
+        // replaced by (String,String,String) added in Java 9
         super(PROVIDER_NAME, 0.1, INFO);
 
+/*
         AccessController.doPrivileged(new PrivilegedAction<Void>() {
             @Override
             public Void run() {
+*/
                 setup();
+/*
                 return null;
             }
         });
+*/
     }
 
     private void setup() {
@@ -70,6 +76,14 @@ public final class I2PProvider extends Provider {
         // but this works fine with programmatic cert generation
         put("Alg.Alias.Signature.1.3.101.101", "SHA512withEdDSA");
         put("Alg.Alias.Signature.OID.1.3.101.101", "SHA512withEdDSA");
+        // The official OID is now 1.3.101.112 for pubkeys, privkeys, and sigs
+        // See RFC 8410 and RFC 8420
+        put("Alg.Alias.KeyFactory.1.3.101.112", "EdDSA");
+        put("Alg.Alias.KeyFactory.OID.1.3.101.112", "EdDSA");
+        put("Alg.Alias.KeyPairGenerator.1.3.101.112", "EdDSA");
+        put("Alg.Alias.KeyPairGenerator.OID.1.3.101.112", "EdDSA");
+        put("Alg.Alias.Signature.1.3.101.112", "SHA512withEdDSA");
+        put("Alg.Alias.Signature.OID.1.3.101.112", "SHA512withEdDSA");
         // TODO Ed25519ph
         // OID: 1.3.101.101
 

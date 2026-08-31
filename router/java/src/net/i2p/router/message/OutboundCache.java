@@ -67,7 +67,7 @@ public class OutboundCache {
       *
       * Concurrent.
       */
-    final Map<HashPair, LeaseSet> leaseSetCache = new ConcurrentHashMap<HashPair, LeaseSet>(64);
+    final ConcurrentHashMap<HashPair, LeaseSet> leaseSetCache = new ConcurrentHashMap<HashPair, LeaseSet>(64);
 
     /**
      * Use the same inbound tunnel (i.e. lease) as we did for the same destination previously,
@@ -94,6 +94,15 @@ public class OutboundCache {
      * Concurrent.
      */
     final Map<HashPair, Long> lastReplyRequestCache = new ConcurrentHashMap<HashPair, Long>(64);
+
+
+    /**
+     * This cache is used to keep track of when we receive a leaseSet from a router
+     * we are multihomed with, or otherwise are asked to store a valid routerInfo for
+     * a destination which we also host.
+     */
+
+    public final ConcurrentHashMap<Hash, LeaseSet> multihomedCache = new ConcurrentHashMap<Hash, LeaseSet>(64);
 
     private final RouterContext _context;
 

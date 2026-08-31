@@ -1,10 +1,12 @@
 package net.i2p.router.web;
 
+import java.awt.SystemTray;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Properties;
 
+import net.i2p.I2PAppContext;
 import net.i2p.app.ClientApp;
 import net.i2p.app.ClientAppManager;
 import net.i2p.app.ClientAppState;
@@ -29,6 +31,7 @@ public class ConfigServiceHandler extends FormHandler {
 
     private static final String LISTENER_AVAILABLE = "3.2.0";
     private static final String PROPERTIES_AVAILABLE = "3.2.0";
+    private static final String LOCATION_AVAILABLE = "3.3.7";
 
     /**
      *  Register two shutdown hooks, one to rekey and/or tell the wrapper we are stopping,
@@ -200,12 +203,15 @@ public class ConfigServiceHandler extends FormHandler {
      *  @since 0.9.26
      */
     public boolean shouldShowSystray() {
-        return !
-            (SystemVersion.isLinuxService() ||
-             (SystemVersion.isWindows() && _context.hasWrapper() && WrapperManager.isLaunchedAsService()) ||
-             // headless=true is forced in i2prouter script to prevent useless dock icon;
-             // must fix this first
-             SystemVersion.isMac());
+        try {
+            if (!SystemTray.isSupported())
+                return false;
+        } catch (Throwable t) {
+            // java.lang.NoClassDefFoundError: Could not initialize class java.awt.Toolkit
+            return false;
+        }
+        return !SystemVersion.isService() &&
+               !(SystemVersion.isWindows() && _context.hasWrapper() && WrapperManager.isLaunchedAsService());
     }
 
     /**
@@ -214,16 +220,18 @@ public class ConfigServiceHandler extends FormHandler {
      *  @since 0.9.26
      */
     public boolean isSystrayEnabled() {
-        // default false for now, except on non-service windows
-        String sdtg = _context.getProperty(RouterConsoleRunner.PROP_DTG_ENABLED);
-        return Boolean.parseBoolean(sdtg) ||
-               (sdtg == null && SystemVersion.isWindows());
+        return RouterConsoleRunner.isSystrayEnabled(_context);
+    }
+
+    /**
+     *  @since 0.9.33
+     */
+    public String getConsoleURL() {
+        return _context.portMapper().getConsoleURL();
     }
 
     @Override
     protected void processForm() {
-        if (_action == null) return;
-        
         if (_t("Shutdown gracefully").equals(_action)) {
             if (_context.hasWrapper())
                 registerWrapperNotifier(Router.EXIT_GRACEFUL, false);
@@ -265,10 +273,13 @@ public class ConfigServiceHandler extends FormHandler {
             try {
                 WrapperManager.requestThreadDump();
             } catch (Throwable t) {
-                addFormError("Warning: unable to contact the service manager - " + t.getMessage());
+                addFormError("Warning: unable to contact the service manager - " + t.getLocalizedMessage());
             }
-            File wlog = LogsHelper.wrapperLogFile(_context);
+            File wlog = wrapperLogFile(_context);
             addFormNotice(_t("Threads dumped to {0}", wlog.getAbsolutePath()));
+            boolean deadlock = DeadlockDetector.detect(_context);
+            if (deadlock)
+                addFormErrorNoEscape("Deadlock detected!<br><a href=\"/logs\">Please report using the information on the logs page!</a><br>After reporting, please restart your router!");
         } else if (_t("View console on startup").equals(_action)) {
             browseOnStartup(true);
             addFormNotice(_t("Console is to be shown on startup"));
@@ -287,43 +298,91 @@ public class ConfigServiceHandler extends FormHandler {
         }
     }
     
+    /**
+     *  Does not necessarily exist.
+     *
+     *  @return non-null, doesn't necessarily exist
+     *  @since 0.9.1, public since 0.9.27, moved from LogsHelper in 0.9.33
+     */
+    public static File wrapperLogFile(I2PAppContext ctx) {
+        File f = null;
+        if (ctx.hasWrapper()) {
+            String wv = System.getProperty("wrapper.version");
+            if (wv != null && VersionComparator.comp(wv, LOCATION_AVAILABLE) >= 0) {
+                try {
+                   f = WrapperManager.getWrapperLogFile();
+                } catch (Throwable t) {}
+            }
+        }
+        if (f == null || !f.exists()) {
+            // RouterLaunch puts the location here if no wrapper
+            String path = System.getProperty("wrapper.logfile");
+            if (path != null) {
+                f = new File(path);
+            } else {
+                // look in new and old places
+                f = new File(System.getProperty("java.io.tmpdir"), "wrapper.log");
+                if (!f.exists())
+                    f = new File(ctx.getBaseDir(), "wrapper.log");
+            }
+        }
+        return f;
+    }
+    
     private void installService() {
+        File f = new File(_context.getBaseDir(), "install_i2p_service_winnt.bat");
+        String[] cmd = new String[1];
+        cmd[0] = f.getPath();
         try { 
-            Runtime.getRuntime().exec("install_i2p_service_winnt.bat");
+            Runtime.getRuntime().exec(cmd);
             addFormNotice(_t("Service installed"));
         } catch (IOException ioe) {
-            addFormError(_t("Warning: unable to install the service") + " - " + ioe.getMessage());
+            addFormError(_t("Warning: unable to install the service") + " - " + ioe.getLocalizedMessage());
         }
     }
 
     private void uninstallService() {
+        File f = new File(_context.getBaseDir(), "uninstall_i2p_service_winnt.bat");
+        String[] cmd = new String[1];
+        cmd[0] = f.getPath();
         try { 
-            Runtime.getRuntime().exec("uninstall_i2p_service_winnt.bat");
+            Runtime.getRuntime().exec(cmd);
             addFormNotice(_t("Service removed"));
         } catch (IOException ioe) {
-            addFormError(_t("Warning: unable to remove the service") + " - " + ioe.getMessage());
+            addFormError(_t("Warning: unable to remove the service") + " - " + ioe.getLocalizedMessage());
         }
     }
 
     private void browseOnStartup(boolean shouldLaunchBrowser) {
         List<ClientAppConfig> clients = ClientAppConfig.getClientApps(_context);
-        boolean found = false;
+        ClientAppConfig ca = null;
         for (int cur = 0; cur < clients.size(); cur++) {
-            ClientAppConfig ca = clients.get(cur);
-            if (UrlLauncher.class.getName().equals(ca.className)) {
+            ClientAppConfig cac = clients.get(cur);
+            if (UrlLauncher.class.getName().equals(cac.className)) {
+                ca = cac;
                 ca.disabled = !shouldLaunchBrowser;
-                found = true;
                 break;
             }
         }
         // releases <= 0.6.5 deleted the entry completely
-        if (shouldLaunchBrowser && !found) {
-            int port = _context.portMapper().getPort(PortMapper.SVC_CONSOLE, RouterConsoleRunner.DEFAULT_LISTEN_PORT);
-            ClientAppConfig ca = new ClientAppConfig(UrlLauncher.class.getName(), "consoleBrowser",
-                                                     "http://127.0.0.1:" + port + '/', 5, false);
+        if (shouldLaunchBrowser && ca == null) {
+            String url = _context.portMapper().getConsoleURL();
+            ca = new ClientAppConfig(UrlLauncher.class.getName(), "consoleBrowser",
+                                     url, 5, false);
             clients.add(ca);
         }
-        ClientAppConfig.writeClientAppConfig(_context, clients);
+        try {
+            if (ca != null) {
+                if (ClientAppConfig.isSplitConfig(_context))
+                    ClientAppConfig.writeClientAppConfig(_context, ca);
+                else
+                    ClientAppConfig.writeClientAppConfig(_context, clients);
+            }
+            addFormNotice(_t("Configuration saved successfully"));
+        } catch (IOException ioe) {
+            addFormError(_t("Error saving the configuration (applied but not saved) - please see the error logs"));
+            addFormError(ioe.getLocalizedMessage());
+        }
     }
 
     /**
@@ -350,7 +409,7 @@ public class ConfigServiceHandler extends FormHandler {
                     }
                 } else if (enable) {
                     // already set to true, GraphicsEnvironment initialized, can't change it now
-                    if (Boolean.valueOf(System.getProperty("java.awt.headless"))) {
+                    if (Boolean.parseBoolean(System.getProperty("java.awt.headless"))) {
                         addFormError(_t("Restart required to take effect"));
                     } else {
                         dtg = new net.i2p.desktopgui.Main(_context, mgr, null);    

@@ -21,7 +21,7 @@ import net.i2p.util.Log;
  *
  * Note that this does NOT extend SearchJob.
  */
-public class FloodSearchJob extends JobImpl {
+abstract class FloodSearchJob extends JobImpl {
     protected final Log _log;
     protected final FloodfillNetworkDatabaseFacade _facade;
     protected final Hash _key;
@@ -152,7 +152,7 @@ public class FloodSearchJob extends JobImpl {
      */
     public String getName() { return "NetDb search (phase 1)"; }
     
-    protected Hash getKey() { return _key; }
+    public Hash getKey() { return _key; }
 
     /**
      *  @return number remaining after decrementing
@@ -251,7 +251,7 @@ public class FloodSearchJob extends JobImpl {
             _search = job;
         }
         public void runJob() { 
-            if (getContext().netDb().lookupLocally(_search.getKey()) != null) {
+            if (getContext().netDbSegmentor().lookupLocally(_search.getKey()) != null) {
                 _search.success();
             } else {
                 int remaining = _search.getLookupsRemaining();

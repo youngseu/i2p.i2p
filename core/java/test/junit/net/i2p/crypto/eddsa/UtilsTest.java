@@ -1,3 +1,14 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa;
 
 import org.hamcrest.core.IsEqual;
@@ -5,8 +16,8 @@ import org.junit.*;
 
 import java.security.SecureRandom;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
 
 /**
  * @author str4d
@@ -47,7 +58,7 @@ public class UtilsTest {
         for (int i=0; i<100; i++) {
             random.nextBytes(bytes1);
             System.arraycopy(bytes1, 0, bytes2, 0, 32);
-            Assert.assertThat(Utils.equal(bytes1, bytes2), IsEqual.equalTo(1));
+            assertThat(Utils.equal(bytes1, bytes2), IsEqual.equalTo(1));
         }
     }
 
@@ -60,7 +71,7 @@ public class UtilsTest {
         for (int i=0; i<32; i++) {
             System.arraycopy(bytes1, 0, bytes2, 0, 32);
             bytes2[i] = (byte)(bytes2[i] ^ 0xff);
-            Assert.assertThat(Utils.equal(bytes1, bytes2), IsEqual.equalTo(0));
+            assertThat(Utils.equal(bytes1, bytes2), IsEqual.equalTo(0));
         }
     }
 
@@ -105,17 +116,22 @@ public class UtilsTest {
         assertThat(Utils.bit(new byte[] {1, 2, 3}, 16), is(1));
     }
 
+    @Test(expected = IllegalArgumentException.class)
+    public void hexToBytesThrowsOnInvalidLengthHexString() {
+        Utils.hexToBytes("bad");
+    }
+
     @Test
     public void hexToBytesReturnsCorrectByteArray() {
-        Assert.assertThat(Utils.hexToBytes(hex1), IsEqual.equalTo(bytes1));
-        Assert.assertThat(Utils.hexToBytes(hex2), IsEqual.equalTo(bytes2));
-        Assert.assertThat(Utils.hexToBytes(hex3), IsEqual.equalTo(bytes3));
+        assertThat(Utils.hexToBytes(hex1), IsEqual.equalTo(bytes1));
+        assertThat(Utils.hexToBytes(hex2), IsEqual.equalTo(bytes2));
+        assertThat(Utils.hexToBytes(hex3), IsEqual.equalTo(bytes3));
     }
 
     @Test
     public void bytesToHexReturnsCorrectHexString() {
-        Assert.assertThat(Utils.bytesToHex(bytes1), IsEqual.equalTo(hex1));
-        Assert.assertThat(Utils.bytesToHex(bytes2), IsEqual.equalTo(hex2));
-        Assert.assertThat(Utils.bytesToHex(bytes3), IsEqual.equalTo(hex3));
+        assertThat(Utils.bytesToHex(bytes1), IsEqual.equalTo(hex1));
+        assertThat(Utils.bytesToHex(bytes2), IsEqual.equalTo(hex2));
+        assertThat(Utils.bytesToHex(bytes3), IsEqual.equalTo(hex3));
     }
 }

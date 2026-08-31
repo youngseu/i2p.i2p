@@ -24,7 +24,7 @@ public class MessageOutputStreamTest extends TestCase {
     @Test
     public void test() throws Exception {
         Receiver receiver = new Receiver();
-        MessageOutputStream out = new MessageOutputStream(_context, _st2, receiver, 100);
+        MessageOutputStream out = new MessageOutputStream(_context, _st2, receiver, 100, 100);
         byte buf[] = new byte[128*1024];
         _context.random().nextBytes(buf);
         out.write(buf);
@@ -59,8 +59,8 @@ public class MessageOutputStreamTest extends TestCase {
     }
 
     private static class DummyWriteStatus implements MessageOutputStream.WriteStatus {        
-        public void waitForAccept(int maxWaitMs) { return; }
-        public void waitForCompletion(int maxWaitMs) { return; }
+        public void waitForAccept(int maxWaitMs) {}
+        public void waitForCompletion(int maxWaitMs) {}
         public boolean writeAccepted() { return true; }
         public boolean writeFailed() { return false; }
         public boolean writeSuccessful() { return true; }

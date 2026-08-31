@@ -12,14 +12,17 @@ import java.io.IOException;
 import java.io.Writer;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
+import net.i2p.I2PAppContext;
 import net.i2p.data.Hash;
 import net.i2p.data.router.RouterAddress;
 import net.i2p.data.router.RouterInfo;
 import net.i2p.router.transport.Transport;
-import net.i2p.router.transport.crypto.DHSessionKeyBuilder;
+import net.i2p.router.transport.crypto.X25519KeyFactory;
+import net.i2p.util.Translate;
 
 /**
  * Manages the communication subsystem between peers, including connections, 
@@ -27,6 +30,10 @@ import net.i2p.router.transport.crypto.DHSessionKeyBuilder;
  *
  */ 
 public abstract class CommSystemFacade implements Service {
+
+    /** @since 0.9.45 */
+    protected static final String ROUTER_BUNDLE_NAME = "net.i2p.router.util.messages";
+
     public abstract void processMessage(OutNetMessage msg);
     
     public void renderStatusHTML(Writer out, String urlBase, int sortFlags) throws IOException { }
@@ -39,14 +46,14 @@ public abstract class CommSystemFacade implements Service {
      *  How many peers are we currently connected to, that we have
      *  sent a message to or received a message from in the last five minutes.
      */
-    public int countActivePeers() { return 0; }
+    public abstract int countActivePeers();
 
     /**
      *  How many peers are we currently connected to, that we have
      *  sent a message to in the last minute.
      *  Unused for anything, to be removed.
      */
-    public int countActiveSendPeers() { return 0; }
+    public abstract int countActiveSendPeers();
 
     public boolean haveInboundCapacity(int pct) { return true; }
     public boolean haveOutboundCapacity(int pct) { return true; }
@@ -83,6 +90,14 @@ public abstract class CommSystemFacade implements Service {
     public Status getStatus() { return Status.OK; }
 
     /**
+     * getStatus().toStatusString(), translated if available.
+     * @since 0.9.45
+     */
+    public String getLocalizedStatusString() {
+        return getStatus().toStatusString();
+    }
+
+    /**
      * @deprecated unused
      */
     @Deprecated
@@ -90,9 +105,17 @@ public abstract class CommSystemFacade implements Service {
 
     public boolean isBacklogged(Hash peer) { return false; }
     public boolean wasUnreachable(Hash peer) { return false; }
-    public boolean isEstablished(Hash peer) { return false; }
+    public abstract boolean isEstablished(Hash peer);
     public byte[] getIP(Hash dest) { return null; }
     public void queueLookup(byte[] ip) {}
+
+    /**
+     *  For debugging
+     *
+     *  @return the identifier for the transport if connected, or null
+     *  @since 0.9.69
+     */    
+    public String getTransport(Hash peer) { return null; }
     
     /**
      * Tell the comm system that we may disconnect from this peer.
@@ -101,21 +124,39 @@ public abstract class CommSystemFacade implements Service {
      * @since 0.9.24
      */
     public void mayDisconnect(Hash peer) {}
+    
+    /**
+     * Tell the comm system to disconnect from this peer.
+     *
+     * @since 0.9.38
+     */
+    public void forceDisconnect(Hash peer) {}
 
     /** @since 0.8.11 */
     public String getOurCountry() { return null; }
 
     /** @since 0.8.13 */
-    public boolean isInBadCountry() { return false; }
+    public boolean isInStrictCountry() { return false; }
 
     /** @since 0.9.16 */
-    public boolean isInBadCountry(Hash peer) { return false; }
+    public boolean isInStrictCountry(Hash peer) { return false; }
 
     /** @since 0.9.16 */
-    public boolean isInBadCountry(RouterInfo ri) { return false; }
+    public boolean isInStrictCountry(RouterInfo ri) { return false; }
 
     public String getCountry(Hash peer) { return null; }
     public String getCountryName(String code) { return code; }
+
+    /**
+     * Get the country code map
+     *
+     * @return Map of two-letter lower case code to untranslated country name, unmodifiable
+     * @since 0.9.53
+     */
+    public Map<String, String> getCountries() {
+        return Collections.emptyMap();
+    }
+
     public String renderPeerHTML(Hash peer) {
         return peer.toBase64().substring(0, 4);
     }
@@ -128,8 +169,21 @@ public abstract class CommSystemFacade implements Service {
         return new TreeMap<String, Transport>();
     }
     
+    /**
+     *  Get all the peers we are connected to.
+     *  This should be more efficient than repeated calls to isEstablished()
+     *  if you have to check a lot.
+     *
+     *  @return the hashes of all the routers we are connected to, non-null
+     *  @since 0.9.34
+     */
+    public abstract List<Hash> getEstablished();
+    
     /** @since 0.8.13 */
     public boolean isDummy() { return true; }
+
+    /** @since 0.9.53 */
+    public boolean isRunning() { return true; }
 
     /** 
      * Tell other transports our address changed
@@ -161,10 +215,37 @@ public abstract class CommSystemFacade implements Service {
     public void unregisterTransport(Transport t) {}
 
     /**
-     *  Hook for pluggable transport creation.
-     *  @since 0.9.16
+     *  Factory for making X25519 key pairs.
+     *  @since 0.9.46
      */
-    public DHSessionKeyBuilder.Factory getDHFactory() { return null; }
+    public X25519KeyFactory getXDHFactory() { return null; }
+
+    /**
+     *  Router must call after netdb is initialized
+     *  @since 0.9.41
+     */
+    public void initGeoIP() {}
+
+    /**
+     *  Exempt this router hash from any incoming throttles or rejections
+     *
+     *  @since 0.9.58
+     */
+    public void exemptIncoming(Hash peer) {}
+
+    /**
+     *  Is this IP exempt from any incoming throttles or rejections
+     *
+     *  @since 0.9.58
+     */
+    public boolean isExemptIncoming(String ip) { return false; }
+
+    /**
+     *  Remove this IP from the exemptions
+     *
+     *  @since 0.9.58
+     */
+    public void removeExemption(String ip) {}
 
     /*
      *  Reachability status codes
@@ -335,9 +416,11 @@ public abstract class CommSystemFacade implements Service {
         IPV4_UNKNOWN_IPV6_OK(STATUS_IPV4_UNKNOWN_IPV6_OK, _x("IPv4: Testing; IPv6: OK")),
         IPV4_FIREWALLED_IPV6_OK(STATUS_IPV4_FIREWALLED_IPV6_OK, _x("IPv4: Firewalled; IPv6: OK")),
         IPV4_DISABLED_IPV6_OK(STATUS_IPV4_DISABLED_IPV6_OK, _x("IPv4: Disabled; IPv6: OK")),
+        /** IPv4 symmetric NAT (not source NAT) */
         IPV4_SNAT_IPV6_OK(STATUS_IPV4_SNAT_IPV6_OK, _x("IPv4: Symmetric NAT; IPv6: OK")),
         /** IPv4 symmetric NAT, IPv6 firewalled or disabled or no address */
         DIFFERENT(STATUS_DIFFERENT, _x("Symmetric NAT")),
+        /** IPv4 symmetric NAT (not source NAT) */
         IPV4_SNAT_IPV6_UNKNOWN(STATUS_IPV4_SNAT_IPV6_UNKNOWN, _x("IPv4: Symmetric NAT; IPv6: Testing")),
         IPV4_FIREWALLED_IPV6_UNKNOWN(STATUS_IPV4_FIREWALLED_IPV6_UNKNOWN, _x("IPv4: Firewalled; IPv6: Testing")),
         /** IPv4 firewalled, IPv6 firewalled or disabled or no address */
@@ -386,8 +469,6 @@ public abstract class CommSystemFacade implements Service {
 
                         case DIFFERENT:
                         case REJECT_UNSOLICITED:
-                            return newStatus;
-
                         case IPV4_DISABLED_IPV6_FIREWALLED:
                             return IPV4_OK_IPV6_FIREWALLED;
 
@@ -459,12 +540,12 @@ public abstract class CommSystemFacade implements Service {
                         case IPV4_SNAT_IPV6_OK:
                             return IPV4_FIREWALLED_IPV6_OK;
 
+                        case REJECT_UNSOLICITED:
                         case IPV4_OK_IPV6_FIREWALLED:
                         case IPV4_DISABLED_IPV6_FIREWALLED:
                             return REJECT_UNSOLICITED;
 
                         case DIFFERENT:
-                        case REJECT_UNSOLICITED:
                             return newStatus;
 
                         // cases where we already knew the IPv6 state only
@@ -496,14 +577,13 @@ public abstract class CommSystemFacade implements Service {
 
                         case REJECT_UNSOLICITED:
                         case IPV4_FIREWALLED_IPV6_OK:
-                        case IPV4_DISABLED_IPV6_FIREWALLED:
                             return REJECT_UNSOLICITED;
 
                         case IPV4_DISABLED_IPV6_OK:
                             return IPV4_DISABLED_IPV6_FIREWALLED;
 
                         case DIFFERENT:
-                        case IPV4_SNAT_IPV6_OK:
+                        case IPV4_DISABLED_IPV6_FIREWALLED:
                             return oldStatus;
 
                         // cases where we already knew the IPv6 state only
@@ -522,6 +602,7 @@ public abstract class CommSystemFacade implements Service {
                             return IPV4_DISABLED_IPV6_FIREWALLED;
 
                         case IPV4_SNAT_IPV6_UNKNOWN:
+                        case IPV4_SNAT_IPV6_OK:
                             return DIFFERENT;
 
                         default:
@@ -611,6 +692,14 @@ public abstract class CommSystemFacade implements Service {
          */
         public String toStatusString() {
             return status;
+        }
+
+        /**
+         * toStatusString(), translated if available.
+         * @since 0.9.45
+         */
+        public String toLocalizedStatusString(I2PAppContext ctx) {
+            return Translate.getString(status, ctx, ROUTER_BUNDLE_NAME);
         }
 
         @Override

@@ -19,6 +19,7 @@ import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Hash;
 import net.i2p.util.Log;
+import net.i2p.util.FileSuffixFilter;
 import net.i2p.util.SecureDirectory;
 import net.i2p.util.SecureFileOutputStream;
 
@@ -45,7 +46,7 @@ class PersistNews {
      *  Old entries are always overwritten, as they may change even without the updated date changing.
      *
      *  @param entries each one should be "entry" at the root
-     *  @return success
+     *  @return true if any new entry was written (not if changed)
      */
     public static boolean store(I2PAppContext ctx, List<Node> entries) {
         Log log = ctx.logManager().getLog(PersistNews.class);
@@ -53,7 +54,7 @@ class PersistNews {
         if (!dir.exists())
             dir.mkdirs();
         StringBuilder buf = new StringBuilder();
-        boolean rv = true;
+        boolean rv = false;
         for (Node entry : entries) {
             Node nid = entry.getNode("id");
             if (nid == null) {
@@ -69,17 +70,18 @@ class PersistNews {
             }
             String name = idToName(ctx, id);
             File file = new File(dir, name);
+            if (!rv && !file.exists())
+                rv = true;
             Writer out = null;
             try {
-                out = new OutputStreamWriter(new GZIPOutputStream(new SecureFileOutputStream(file)));
+                out = new OutputStreamWriter(new GZIPOutputStream(new SecureFileOutputStream(file)), "UTF-8");
                 out.write(XML_START);
                 XMLParser.toString(buf, entry);
-                out.write(buf.toString());
+                out.append(buf);
                 buf.setLength(0);
             } catch (IOException ioe) {
                 if (log.shouldWarn())
                     log.warn("failed store to " + file, ioe);
-                rv = false;
             } finally {
                 if (out != null) try { out.close(); } catch (IOException ioe) {}
             }
@@ -98,13 +100,11 @@ class PersistNews {
         Log log = ctx.logManager().getLog(PersistNews.class);
         File dir = new File(ctx.getConfigDir(), DIR);
         List<NewsEntry> rv = new ArrayList<NewsEntry>();
-        File[] files = dir.listFiles();
+        File[] files = dir.listFiles(new FileSuffixFilter(PFX, SFX));
         if (files == null)
             return rv;
         for (File file : files) {
             String name = file.getName();
-            if (!name.startsWith(PFX) || !name.endsWith(SFX))
-                continue;
             XMLParser parser = new XMLParser(ctx);
             InputStream in = null;
             Node node;

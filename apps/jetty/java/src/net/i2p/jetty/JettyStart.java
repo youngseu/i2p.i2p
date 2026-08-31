@@ -1,5 +1,7 @@
 package net.i2p.jetty;
 
+import java.io.IOException;
+
 // Contains code from org.mortbay.xml.XmlConfiguation:
 
 // ========================================================================
@@ -16,7 +18,10 @@ package net.i2p.jetty;
 // limitations under the License.
 // ========================================================================
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -26,14 +31,19 @@ import java.util.Properties;
 import net.i2p.I2PAppContext;
 import net.i2p.app.*;
 import static net.i2p.app.ClientAppState.*;
+import net.i2p.servlet.filters.XI2PLocationFilter;
+import net.i2p.util.FileUtil;
 import net.i2p.util.I2PAppThread;
 import net.i2p.util.PortMapper;
+import net.i2p.util.VersionComparator;
 
+import org.eclipse.jetty.server.AbstractNetworkConnector;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.NetworkConnector;
+import org.eclipse.jetty.server.ConnectionFactory;
+import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.component.LifeCycle;
-import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.xml.XmlConfiguration;
 
 /**
@@ -51,10 +61,13 @@ public class JettyStart implements ClientApp {
     private final ClientAppManager _mgr;
     private final String[] _args;
     private final List<LifeCycle> _jettys;
+    // warning, may be null if called from main
     private final I2PAppContext _context;
     private volatile ClientAppState _state;
-    private volatile int _port;
-
+    private volatile int _port, _sslPort;
+    private static final String GZIP_DIR = "eepsite-jetty9.3";
+    private static final String GZIP_CONFIG = "jetty-gzip.xml";
+    private static final String MIN_GZIP_HANDLER_VER = "9.3";
     /**
      *  All args must be XML file names.
      *  Does not support any of the other argument types from org.mortbay.start.Main.
@@ -68,7 +81,19 @@ public class JettyStart implements ClientApp {
         _args = args;
         _jettys = new ArrayList<LifeCycle>(args.length);
         _context = context;
-        parseArgs(args);
+        // To prevent console WebAppClassLoader from interfering
+        // by hiding jetty classses
+        // when an eepsite is started from /configclients
+        ClassLoader cl1 = ClassLoader.getSystemClassLoader();
+        ClassLoader cl2 = Thread.currentThread().getContextClassLoader();
+        if (cl1 != cl2)
+            Thread.currentThread().setContextClassLoader(cl1);
+        try {
+            parseArgs(args);
+        } finally {
+            if (cl1 != cl2)
+                Thread.currentThread().setContextClassLoader(cl2);
+        }
         _state = INITIALIZED;
     }
 
@@ -76,17 +101,61 @@ public class JettyStart implements ClientApp {
      *  Modified from XmlConfiguration.main()
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public void parseArgs(String[] args) throws Exception {
+    private void parseArgs(String[] args) throws Exception {
+        if (VersionComparator.comp(Server.getVersion(), MIN_GZIP_HANDLER_VER) >= 0) {
+            // If 9.3 or higher,
+            // look for jetty-gzip.xml in args.
+            // If not found, copy over from $I2P if necessary and add to args
+            // so content will be gzipped.
+            boolean found = false;
+            File path = new File(".");
+            for (int i = 0; i < args.length; i++) {
+                if (args[i].toLowerCase().endsWith(".properties"))
+                    continue;
+                if (args[i].toLowerCase().endsWith(GZIP_CONFIG)) {
+                    found = true;
+                    break;
+                }
+                // save path to dir of other xml file for use below
+                File f = new File(args[i]);
+                File p = f.getParentFile();
+                if (p != null)
+                    path = p;
+            }
+            if (!found) {
+                File f = new File(path, GZIP_CONFIG);
+                boolean exists = f.exists();
+                if (!exists && !_context.getBaseDir().equals(_context.getConfigDir())) {
+                    // copy jetty-gzip.xml over
+                    File from = new File(_context.getBaseDir(), GZIP_DIR);
+                    from = new File(from, GZIP_CONFIG);
+                    exists = FileUtil.copy(from, f, false, true);
+                }
+                if (exists) {
+                    // add to args
+                    String[] nargs = new String[args.length + 1];
+                    System.arraycopy(args, 0, nargs, 0, args.length);
+                    nargs[args.length] = f.getPath();
+                    args = nargs;
+                }
+            }
+        }
+
         Properties properties=new Properties();
         XmlConfiguration last=null;
-        InputStream in = null;
         for (int i = 0; i < args.length; i++) {
+            File f = new File(args[i]);
             if (args[i].toLowerCase().endsWith(".properties")) {
-                in = Resource.newResource(args[i]).getInputStream();
-                properties.load(in);
-                in.close();
+                InputStream in = null;
+                try {
+                    in = new FileInputStream(f);
+                    properties.load(in);
+                } finally {
+                    if (in != null) try { in.close(); } catch (IOException ioe) {}
+                }
             } else {
-                XmlConfiguration configuration = new XmlConfiguration(Resource.newResource(args[i]).getURL());
+                URL configUrl = f.toURI().toURL();
+                XmlConfiguration configuration = new XmlConfiguration(ResourceFactory.root().newResource(configUrl));
                 if (last!=null)
                     configuration.getIdMap().putAll(last.getIdMap());
                 if (properties.size()>0) {
@@ -103,7 +172,7 @@ public class JettyStart implements ClientApp {
     }
 
     public synchronized void startup() {
-        if (_state != INITIALIZED)
+        if (_state != INITIALIZED && _state != STOPPED && _state != START_FAILED)
             return;
         if (_jettys.isEmpty()) {
             changeState(START_FAILED);
@@ -124,23 +193,49 @@ public class JettyStart implements ClientApp {
         public void run() {
             for (LifeCycle lc : _jettys) {
                 if (!lc.isRunning()) {
+                    if (lc instanceof Server) {
+                        Server server = (Server) lc;
+                        Handler.Wrapper filter = new XI2PLocationFilter();
+                        filter.setHandler(server.getHandler());
+                        server.setHandler(filter);
+                    }
                     try {
                         lc.start();
-                        if (_context != null && _context.portMapper().getPort(PortMapper.SVC_EEPSITE) <= 0) {
+                        if (_context != null) {
+                            PortMapper pm = _context.portMapper();
                             if (lc instanceof Server) {
                                 Server server = (Server) lc;
                                 Connector[] connectors = server.getConnectors();
-                                if (connectors.length > 0) {
-                                    Connector conn = connectors[0];
-                                    if (conn instanceof NetworkConnector) {
-                                        NetworkConnector nconn = (NetworkConnector) conn;
+                                for (int i = 0; i < connectors.length; i++) {
+                                    Connector conn = connectors[i];
+                                    if (conn instanceof AbstractNetworkConnector) {
+                                        AbstractNetworkConnector nconn = (AbstractNetworkConnector) conn;
                                         int port = nconn.getPort();
                                         if (port > 0) {
-                                            _port = port;
                                             String host = nconn.getHost();
-                                            if (host.equals("0.0.0.0") || host.equals("::"))
+                                            if (host.equals("0.0.0.0"))
                                                 host = "127.0.0.1";
-                                            _context.portMapper().register(PortMapper.SVC_EEPSITE, host, port);
+                                            else if (host.equals("::"))
+                                                host = "::1";
+                                            // at some point this changed from "SSL-http/1.1" to "SSL" and "HTTP/1.1" ?
+                                            boolean isSSL = false;
+                                            //System.out.println("Found connector: " + nconn);
+                                            for (ConnectionFactory fact : nconn.getConnectionFactories()) {
+                                                //System.out.println("  Factory: " + fact + " protocol: " + fact.getProtocol());
+                                                if (fact.getProtocol().startsWith("SSL")) {
+                                                    isSSL = true;
+                                                    break;
+                                                }
+                                            }
+                                            String svc;
+                                            if (isSSL) {
+                                                _sslPort = port;
+                                                svc = PortMapper.SVC_HTTPS_EEPSITE;
+                                            } else {
+                                                _port = port;
+                                                svc = PortMapper.SVC_EEPSITE;
+                                            }
+                                            pm.register(svc, host, port);
                                         }
                                     }
                                 }
@@ -184,9 +279,16 @@ public class JettyStart implements ClientApp {
                     }
                 }
             }
-            if (_context != null && _port > 0 && _context.portMapper().getPort(PortMapper.SVC_EEPSITE) == _port) {
-                _port = 0;
-                _context.portMapper().unregister(PortMapper.SVC_EEPSITE);
+            if (_context != null) {
+                PortMapper pm = _context.portMapper();
+                if (_port > 0) {
+                    pm.unregister(PortMapper.SVC_EEPSITE, _port);
+                    _port = 0;
+                }
+                if (_sslPort > 0) {
+                    pm.unregister(PortMapper.SVC_HTTPS_EEPSITE, _sslPort);
+                    _sslPort = 0;
+                }
             }
             changeState(STOPPED);
         }

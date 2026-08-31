@@ -14,12 +14,15 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 
+import net.i2p.data.BlindData;
 import net.i2p.data.Destination;
 import net.i2p.data.Hash;
 import net.i2p.data.PrivateKey;
 import net.i2p.data.SessionKey;
 import net.i2p.data.SessionTag;
+import net.i2p.data.Signature;
 import net.i2p.data.SigningPrivateKey;
+import net.i2p.data.SigningPublicKey;
 
 /**
  * <p>Define the standard means of sending and receiving messages on the 
@@ -226,6 +229,14 @@ public interface I2PSession {
      */
     public byte[] receiveMessage(int msgId) throws I2PSessionException;
 
+    /**
+     * Throw away the received message, we don't want it.
+     * Use instead of receiveMessage() to avoid gunzip overhead.
+     *
+     * @since 0.9.71
+     */
+    public void discardMessage(int msgId);
+
     /** Instruct the router that the message received was abusive (including how
      * abusive on a 1-100 scale) in the hopes the router can do something to
      * minimize receiving abusive messages like that in the future.
@@ -295,14 +306,41 @@ public interface I2PSession {
 
     /**
      * Retrieve the decryption PrivateKey associated with the Destination
-     *
+     * @deprecated this key is unused
      */
+    @Deprecated
     public PrivateKey getDecryptionKey();
 
     /**
-     * Retrieve the signing SigningPrivateKey associated with the Destination
+     * Retrieve the signing SigningPrivateKey associated with the Destination.
+     * As of 0.9.38, this will be the transient key if offline signed.
      */
     public SigningPrivateKey getPrivateKey();
+
+    /**
+     *  Does this session have offline and transient keys?
+     *  @since 0.9.38
+     */
+    public boolean isOffline();
+
+    /**
+     *  Get the offline expiration
+     *  @return Java time (ms) or 0 if not initialized or does not have offline keys
+     *  @since 0.9.38
+     */
+    public long getOfflineExpiration();
+
+    /**
+     *  @return null on error or if not initialized or does not have offline keys
+     *  @since 0.9.38
+     */
+    public Signature getOfflineSignature();
+
+    /**
+     *  @return null on error or if not initialized or does not have offline keys
+     *  @since 0.9.38
+     */
+    public SigningPublicKey getTransientSigningPublicKey();
 
     /**
      * Lookup a Destination by Hash.
@@ -320,10 +358,10 @@ public interface I2PSession {
     public Destination lookupDest(Hash h, long maxWait) throws I2PSessionException;
 
     /**
-     *  Ask the router to lookup a Destination by host name.
+     *  Ask the router to lookup a Destination by hostname.
      *  Blocking. Waits a max of 10 seconds by default.
      *
-     *  This only makes sense for a b32 hostname, OR outside router context.
+     *  This only makes sense for a b32 address, OR outside router context.
      *  Inside router context, just query the naming service.
      *  Outside router context, this does NOT query the context naming service.
      *  Do that first if you expect a local addressbook.
@@ -373,13 +411,90 @@ public interface I2PSession {
     public Destination lookupDest(String name) throws I2PSessionException;
 
     /**
-     *  Ask the router to lookup a Destination by host name.
+     *  Ask the router to lookup a Destination by hostname.
      *  Blocking. See above for details.
      *  @param maxWait ms
      *  @since 0.9.11
      *  @return null on failure
      */
     public Destination lookupDest(String name, long maxWait) throws I2PSessionException;
+
+    /**
+     *  Ask the router to lookup a Destination by hostname.
+     *  Blocking. See above for details.
+     *  Same as lookupDest() but with a failure code in the return value
+     *
+     *  @param maxWait ms
+     *  @since 0.9.43
+     *  @return non-null
+     */
+    public LookupResult lookupDest2(String name, long maxWait) throws I2PSessionException;
+
+    /**
+     *  Lookup a Destination by hash.
+     *  Non-blocking.
+     *  If the result is cached or there is an immediate failure,
+     *  the result code will be something other than RESULT_DEFERRED, and the callback will NOT be called.
+     *
+     *  @param maxWait ms
+     *  @param callback to return the result, non-null
+     *  @return non-null. If result code is RESULT_DEFERRED, callback will be called later
+     *  @since 0.9.67
+     */
+    public LookupResult lookupDest(Hash h, long maxWait, LookupCallback callback) throws I2PSessionException;
+
+    /**
+     *  Lookup a Destination by hostname.
+     *  Non-blocking.
+     *  If the result is cached or there is an immediate failure,
+     *  the result code will be something other than RESULT_DEFERRED, and the callback will NOT be called.
+     *
+     *  @param maxWait ms
+     *  @param callback to return the result, non-null
+     *  @return non-null. If result code is RESULT_DEFERRED, callback will be called later
+     *  @since 0.9.67
+     */
+    public LookupResult lookupDest(String name, long maxWait, LookupCallback callback) throws I2PSessionException;
+
+    /**
+     *  Ask the router to lookup a Destination by hostname.
+     *  Blocking. See above for details.
+     *  Same as lookupDest() but with a failure code in the return value
+     *
+     *  @param maxWait ms
+     *  @param withOptions see proposal 167
+     *  @return non-null
+     *  @since 0.9.70
+     */
+    public LookupResult lookupDest2(String name, long maxWait, boolean withOptions) throws I2PSessionException;
+
+    /**
+     *  Lookup a Destination by hash.
+     *  Non-blocking.
+     *  If the result is cached or there is an immediate failure,
+     *  the result code will be something other than RESULT_DEFERRED, and the callback will NOT be called.
+     *
+     *  @param maxWait ms
+     *  @param callback to return the result, non-null
+     *  @param withOptions see proposal 167
+     *  @return non-null. If result code is RESULT_DEFERRED, callback will be called later
+     *  @since 0.9.70
+     */
+    public LookupResult lookupDest(Hash h, long maxWait, LookupCallback callback, boolean withOptions) throws I2PSessionException;
+
+    /**
+     *  Lookup a Destination by hostname.
+     *  Non-blocking.
+     *  If the result is cached or there is an immediate failure,
+     *  the result code will be something other than RESULT_DEFERRED, and the callback will NOT be called.
+     *
+     *  @param maxWait ms
+     *  @param callback to return the result, non-null
+     *  @param withOptions see proposal 167
+     *  @return non-null. If result code is RESULT_DEFERRED, callback will be called later
+     *  @since 0.9.70
+     */
+    public LookupResult lookupDest(String name, long maxWait, LookupCallback callback, boolean withOptions) throws I2PSessionException;
 
     /**
      *  Pass updated options to the router.
@@ -396,6 +511,20 @@ public interface I2PSession {
      * @since 0.8.3
      */
     public int[] bandwidthLimits() throws I2PSessionException;
+
+    /**
+     *
+     *  @since 0.9.43
+     */
+    public void sendBlindingInfo(BlindData bd) throws I2PSessionException;
+
+    /**
+     *  Always valid in RouterContext. Returns null if not yet connected in I2PAppContext.
+     *
+     *  @return null if unknown
+     *  @since 0.9.46
+     */
+    public String getRouterVersion();
 
     /**
      *  Listen on specified protocol and port.
@@ -434,14 +563,27 @@ public interface I2PSession {
     public static final int PROTO_STREAMING = 6;
 
     /**
-     *  Generally a signed datagram, but could
-     *  also be a raw datagram, depending on the application
+     *  A repliable and signed datagram
      */
     public static final int PROTO_DATAGRAM = 17;
 
     /**
-     *  A raw (unsigned) datagram
+     *  A raw (unsigned, unrepliable) datagram
      *  @since 0.9.2
      */
     public static final int PROTO_DATAGRAM_RAW = 18;
+
+    /**
+     *  A repliable and signed datagram.
+     *  See Proposal 163 and datagrams/Datagram2
+     *  @since 0.9.66
+     */
+    public static final int PROTO_DATAGRAM2 = 19;
+
+    /**
+     *  A repliable but unsigned datagram.
+     *  See Proposal 163 and datagrams/Datagram3
+     *  @since 0.9.66
+     */
+    public static final int PROTO_DATAGRAM3 = 20;
 }

@@ -2,7 +2,7 @@
 # Copyright (C) 2009 The I2P Project
 # This file is distributed under the same license as the routerconsole package.
 # To contribute translations, see http://www.i2p2.de/newdevelopers
-# 
+#
 # Translators:
 # Bad Cluster <badcluster@i2pmail.org>, 2012
 # Leelium <bovas85@gmail.com>, 2012
@@ -11,22 +11,27 @@
 # ironbishop <ironbishop@fsfe.org>, 2011
 # mkkid <jokjok@hotmail.it>, 2011
 # danimoth <kronat@tiscali.it>, 2011
-# Sebastiano Pistore <SebastianoPistore.info@protonmail.ch>, 2015-2017
+# SebastianoPistore <SebastianoPistore.info@protonmail.ch>, 2015-2017
+# SebastianoPistore <SebastianoPistore.info@protonmail.ch>, 2017
+# SebastianoPistore <SebastianoPistore.info@protonmail.ch>, 2020
 # spawned76 <fswitch20@hotmail.com>, 2012
 # Tristano Ajmone <tajmone@gmail.com>, 2015
 msgid ""
 msgstr ""
 "Project-Id-Version: I2P\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2015-07-17 01:33+0000\n"
-"PO-Revision-Date: 2017-06-30 21:33+0000\n"
-"Last-Translator: Sebastiano Pistore <SebastianoPistore.info@protonmail.ch>\n"
-"Language-Team: Italian (http://www.transifex.com/otf/I2P/language/it/)\n"
+"POT-Creation-Date: 2020-08-12 13:39+0000\n"
+"PO-Revision-Date: 2026-03-20 17:22+0000\n"
+"Last-Translator: Claudio Arseni "
+"<claudio@users.noreply.localizationlab.weblate.cloud>\n"
+"Language-Team: Italian <https://localizationlab.weblate.cloud/projects/i2p/"
+"countries/it/>\n"
+"Language: it\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Language: it\n"
-"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Weblate 5.16.2\n"
 
 msgid "Anonymous Proxy"
 msgstr "Proxy anonimo"
@@ -107,13 +112,13 @@ msgid "Bulgaria"
 msgstr "Bulgaria"
 
 msgid "Bahrain"
-msgstr "Bahrain"
+msgstr "Bahrein"
 
 msgid "Burundi"
 msgstr "Burundi"
 
 msgid "Benin"
-msgstr "Repubblica del Benin"
+msgstr "Benin"
 
 msgid "Saint Barthélemy"
 msgstr "Saint-Barthélemy"
@@ -179,7 +184,7 @@ msgid "Cameroon"
 msgstr "Camerun"
 
 msgid "China"
-msgstr "Cina"
+msgstr "Repubblica Popolare Cinese"
 
 msgid "Colombia"
 msgstr "Colombia"
@@ -200,7 +205,7 @@ msgid "Curaçao"
 msgstr "Curaçao"
 
 msgid "Christmas Island"
-msgstr "Isola di Natale "
+msgstr "Isola di Natale"
 
 msgid "Cyprus"
 msgstr "Cipro"
@@ -311,7 +316,7 @@ msgid "Greece"
 msgstr "Grecia"
 
 msgid "South Georgia and the South Sandwich Islands"
-msgstr "Georgia del Sud e isole Sandwich del Sud"
+msgstr "Georgia del Sud e Isole Sandwich Australi"
 
 msgid "Guatemala"
 msgstr "Guatemala"
@@ -401,10 +406,10 @@ msgid "Saint Kitts and Nevis"
 msgstr "Saint Kitts e Nevis"
 
 msgid "North Korea"
-msgstr "Repubblica democratica popolare di Corea"
+msgstr "Corea del Nord"
 
 msgid "Republic of Korea"
-msgstr "Repubblica di Corea"
+msgstr "Corea del Sud"
 
 msgid "Kuwait"
 msgstr "Kuwait"
@@ -416,7 +421,7 @@ msgid "Kazakhstan"
 msgstr "Kazakistan"
 
 msgid "Lao People's Democratic Republic"
-msgstr "Repubblica democratica popolare del Laos"
+msgstr "Laos"
 
 msgid "Lebanon"
 msgstr "Libano"
@@ -434,7 +439,7 @@ msgid "Liberia"
 msgstr "Liberia"
 
 msgid "Lesotho"
-msgstr "Lesoto"
+msgstr "Lesotho"
 
 msgid "Lithuania"
 msgstr "Lituania"
@@ -470,13 +475,13 @@ msgid "Marshall Islands"
 msgstr "Isole Marshall"
 
 msgid "Macedonia"
-msgstr "Macedonia"
+msgstr "Macedonia del Nord"
 
 msgid "Mali"
 msgstr "Mali"
 
 msgid "Myanmar"
-msgstr "Myanmar"
+msgstr "Myanmar-Birmania"
 
 msgid "Mongolia"
 msgstr "Mongolia"
@@ -677,7 +682,7 @@ msgid "Syria"
 msgstr "Siria"
 
 msgid "Swaziland"
-msgstr "Swaziland"
+msgstr "Swaziland-eSwatini"
 
 msgid "Turks and Caicos Islands"
 msgstr "Isole Turks e Caicos"
@@ -686,7 +691,7 @@ msgid "Chad"
 msgstr "Ciad"
 
 msgid "French Southern Territories"
-msgstr "Territori francesi del Sud"
+msgstr "Terre australi e antartiche francesi"
 
 msgid "Togo"
 msgstr "Togo"
@@ -722,7 +727,7 @@ msgid "Tuvalu"
 msgstr "Tuvalu"
 
 msgid "Taiwan"
-msgstr "Taiwan"
+msgstr "Repubblica di Cina-Taiwan"
 
 msgid "Tanzania"
 msgstr "Tanzania"
@@ -737,7 +742,7 @@ msgid "United States Minor Outlying Islands"
 msgstr "Isole minori esterne degli Stati Uniti d'America"
 
 msgid "United States"
-msgstr "Stati Uniti"
+msgstr "Stati Uniti d'America"
 
 msgid "Uruguay"
 msgstr "Uruguay"
@@ -768,6 +773,9 @@ msgstr "Wallis e Futuna"
 
 msgid "Samoa"
 msgstr "Samoa"
+
+msgid "Kosovo"
+msgstr "Kosovo"
 
 msgid "Yemen"
 msgstr "Yemen"

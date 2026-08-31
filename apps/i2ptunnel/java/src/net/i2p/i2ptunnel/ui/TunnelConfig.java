@@ -2,7 +2,11 @@ package net.i2p.i2ptunnel.ui;
 
 import java.security.GeneralSecurityException;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -11,9 +15,13 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import net.i2p.I2PAppContext;
 import net.i2p.client.I2PClient;
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.KeyGenerator;
+import net.i2p.crypto.KeyPair;
 import net.i2p.crypto.SigType;
+import net.i2p.data.Base32;
 import net.i2p.data.Base64;
+import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
 import net.i2p.data.SimpleDataStructure;
 import net.i2p.i2ptunnel.I2PTunnelClientBase;
@@ -24,12 +32,16 @@ import net.i2p.i2ptunnel.I2PTunnelHTTPServer;
 import net.i2p.i2ptunnel.I2PTunnelIRCClient;
 import net.i2p.i2ptunnel.I2PTunnelServer;
 import net.i2p.i2ptunnel.TunnelController;
+import net.i2p.i2ptunnel.socks.I2PSOCKSTunnel;
 import net.i2p.util.ConcurrentHashSet;
 import net.i2p.util.PasswordManager;
 
 /**
  * Helper class to generate a valid TunnelController configuration from provided
  * settings.
+ *
+ * This class is also used by Android.
+ * Maintain as a stable API and take care not to break Android.
  *
  * @since 0.9.19 logic moved from IndexBean
  */
@@ -50,6 +62,10 @@ public class TunnelConfig {
     // -2 or higher is valid
     private int _tunnelVariance = -3;
     private int _tunnelBackupQuantity = -1;
+    private int _tunnelDepthOut = -1;
+    private int _tunnelQuantityOut = -1;
+    private int _tunnelVarianceOut = -3;
+    private int _tunnelBackupQuantityOut = -1;
     private boolean _connectDelay;
     private String _customOptions;
     private String _proxyList;
@@ -68,6 +84,15 @@ public class TunnelConfig {
     private String _newProxyUser;
     private String _newProxyPW;
     private Destination _dest;
+    private String _filterDefinition;
+    private int _encryptMode;
+    private String[] _clientNames;
+    private String[] _clientKeys;
+    private Set<Integer> _clientRevocations;
+    // b64name : b64key
+    private String _newClientName;
+    private String _newClientKey;
+    private boolean _addClientAuth;
 
     public TunnelConfig() {
         _context = I2PAppContext.getGlobalContext();
@@ -104,22 +129,63 @@ public class TunnelConfig {
     public void setClientPort(String port) {
         _i2cpPort = (port != null ? port.trim() : null);
     }
-    /** how many hops to use for inbound tunnels */
+
+    /** how many hops to use for inbound tunnels
+     *  In or both in/out
+     */
     public void setTunnelDepth(int tunnelDepth) { 
         _tunnelDepth = tunnelDepth;
     }
-    /** how many parallel inbound tunnels to use */
+
+    /** how many parallel inbound tunnels to use
+     *  In or both in/out
+     */
     public void setTunnelQuantity(int tunnelQuantity) { 
         _tunnelQuantity = tunnelQuantity;
     }
-    /** how much randomisation to apply to the depth of tunnels */
+
+    /** how much randomisation to apply to the depth of tunnels
+     *  In or both in/out
+     */
     public void setTunnelVariance(int tunnelVariance) { 
         _tunnelVariance = tunnelVariance;
     }
-    /** how many tunnels to hold in reserve to guard against failures */
+
+    /** how many tunnels to hold in reserve to guard against failures
+     *  In or both in/out
+     */
     public void setTunnelBackupQuantity(int tunnelBackupQuantity) { 
         _tunnelBackupQuantity = tunnelBackupQuantity;
     }
+
+    /** how many hops to use for outbound tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelDepthOut(int tunnelDepth) { 
+        _tunnelDepthOut = tunnelDepth;
+    }
+
+    /** how many parallel outbound tunnels to use
+     *  @since 0.9.33
+     */
+    public void setTunnelQuantityOut(int tunnelQuantity) { 
+        _tunnelQuantityOut = tunnelQuantity;
+    }
+
+    /** how much randomisation to apply to the depth of tunnels
+     *  @since 0.9.33
+     */
+    public void setTunnelVarianceOut(int tunnelVariance) { 
+        _tunnelVarianceOut = tunnelVariance;
+    }
+
+    /** how many tunnels to hold in reserve to guard against failures
+     *  @since 0.9.33
+     */
+    public void setTunnelBackupQuantityOut(int tunnelBackupQuantity) { 
+        _tunnelBackupQuantityOut = tunnelBackupQuantity;
+    }
+
     /** what I2P session overrides should be used */
     public void setCustomOptions(String customOptions) { 
         _customOptions = (customOptions != null ? customOptions.trim() : null);
@@ -206,6 +272,74 @@ public class TunnelConfig {
         else
             _booleanOptions.remove("i2cp.encryptLeaseSet");
     }
+
+    /** @since 0.9.40 */
+    public void setEncryptMode(int mode) {
+        setEncrypt(mode == 1);
+        _encryptMode = mode;
+    }
+    
+    /** @since 0.9.40 */
+    public void setBlindedPassword(String s) {
+        if (s != null && s.length() > 0)
+            _otherOptions.put("i2cp.leaseSetSecret", Base64.encode(DataHelper.getUTF8(s.trim())));
+        else
+            _otherOptions.remove("i2cp.leaseSetSecret");
+    }
+
+    /**
+     * Multiple entries in form
+     * @since 0.9.41
+     */
+    public void addClientNames(String[] s) {
+       _clientNames = s;
+    }
+
+    /**
+     * Multiple entries in form
+     * Handles either order addClientName/addClientKey
+     * @since 0.9.41
+     */
+    public void addClientKeys(String[] s) {
+       _clientKeys = s;
+    }
+
+    /**
+     * Multiple entries in form
+     * @since 0.9.41
+     */
+    public void revokeClients(String[] s) {
+        _clientRevocations = new HashSet<Integer>(4);
+        for (String k : s) {
+            try {
+                _clientRevocations.add(Integer.valueOf(Integer.parseInt(k)));
+            } catch (NumberFormatException nfe) {}
+        }
+    }
+
+    /**
+     * Handles either order newClientName/newClientKey
+     * @since 0.9.41
+     */
+    public void newClientName(String s) {
+        _newClientName = s;
+    }
+
+    /**
+     * Handles either order newClientName/newClientKey
+     * @since 0.9.41
+     */
+    public void newClientKey(String s) {
+        _newClientKey = s;
+    }
+
+    /**
+     * @since 0.9.41
+     */
+    public void setAddClient(boolean val) {
+        _addClientAuth = val;
+    }
+
     public void setDCC(boolean val) {
         if (val)
             _booleanOptions.add(I2PTunnelIRCClient.PROP_DCC);
@@ -281,6 +415,17 @@ public class TunnelConfig {
         }
     }
 
+    /**
+     *  @since 0.9.40
+     */
+    public void setFilterDefinition(String filterDefinition) {
+        if (filterDefinition != null) {
+            filterDefinition = filterDefinition.trim();
+            if (!filterDefinition.isEmpty())
+                _filterDefinition = filterDefinition;
+        }
+    }
+
     public void setDelayOpen(boolean val) {
         if (val)
             _booleanOptions.add("i2cp.delayOpen");
@@ -323,13 +468,32 @@ public class TunnelConfig {
     }
 
     public void setAccessList(String val) {
-        if (val != null)
-            _otherOptions.put("i2cp.accessList", val.trim().replace("\r\n", ",").replace("\n", ",").replace(" ", ","));
+        if (val != null) {
+            val = val.trim().replace("\r\n", ",").replace('\n', ',').replace(' ', ',');
+            // Convert to B64 to save space
+            String[] vals = DataHelper.split(val, ",");
+            StringBuilder buf = new StringBuilder(val.length());
+            for (int i = 0; i < vals.length; i++) {
+                String v = vals[i];
+                int len = v.length();
+                if (len == 0)
+                    continue;
+                if (len == 60 && v.endsWith(".b32.i2p")) {
+                    byte[] b = Base32.decode(v.substring(0, 52));
+                    if (b != null)
+                        v = Base64.encode(b);
+                }
+                buf.append(v);
+                if (i != vals.length - 1)
+                    buf.append(',');
+            }
+            _otherOptions.put("i2cp.accessList", buf.toString());
+        }
     }
 
     public void setJumpList(String val) {
         if (val != null)
-            _otherOptions.put(I2PTunnelHTTPClient.PROP_JUMP_SERVERS, val.trim().replace("\r\n", ",").replace("\n", ",").replace(" ", ","));
+            _otherOptions.put(I2PTunnelHTTPClient.PROP_JUMP_SERVERS, val.trim().replace("\r\n", ",").replace('\n', ',').replace(' ', ','));
     }
 
     public void setCloseTime(int val) {
@@ -414,7 +578,7 @@ public class TunnelConfig {
 
     public void setSslProxies(String s) {
         if (s != null)
-            _otherOptions.put(I2PTunnelHTTPClient.PROP_SSL_OUTPROXIES, s.trim().replace(" ", ","));
+            _otherOptions.put(I2PTunnelHTTPClient.PROP_SSL_OUTPROXIES, s.trim().replace(' ', ','));
     }
 
     public void setUseOutproxyPlugin(boolean val) {
@@ -423,17 +587,26 @@ public class TunnelConfig {
         else
             _booleanOptions.remove(I2PTunnelHTTPClientBase.PROP_USE_OUTPROXY_PLUGIN);
     }
+
+    /**
+     *  @param s "connect" or "socks"
+     *  @since 0.9.57
+     */
+    public void setOutproxyType(String s) {
+        if (s != null)
+            _otherOptions.put(I2PSOCKSTunnel.PROP_OUTPROXY_TYPE, s.trim());
+    }
     
     /**
      * all of these are @since 0.8.3 (moved from IndexBean)
      */
-    public static final String PROP_MAX_CONNS_MIN = "i2p.streaming.maxConnsPerMinute";
-    public static final String PROP_MAX_CONNS_HOUR = "i2p.streaming.maxConnsPerHour";
-    public static final String PROP_MAX_CONNS_DAY = "i2p.streaming.maxConnsPerDay";
-    public static final String PROP_MAX_TOTAL_CONNS_MIN = "i2p.streaming.maxTotalConnsPerMinute";
-    public static final String PROP_MAX_TOTAL_CONNS_HOUR = "i2p.streaming.maxTotalConnsPerHour";
-    public static final String PROP_MAX_TOTAL_CONNS_DAY = "i2p.streaming.maxTotalConnsPerDay";
-    public static final String PROP_MAX_STREAMS = "i2p.streaming.maxConcurrentStreams";
+    public static final String PROP_MAX_CONNS_MIN = TunnelController.PROP_MAX_CONNS_MIN;
+    public static final String PROP_MAX_CONNS_HOUR = TunnelController.PROP_MAX_CONNS_HOUR;
+    public static final String PROP_MAX_CONNS_DAY = TunnelController.PROP_MAX_CONNS_DAY;
+    public static final String PROP_MAX_TOTAL_CONNS_MIN = TunnelController.PROP_MAX_TOTAL_CONNS_MIN;
+    public static final String PROP_MAX_TOTAL_CONNS_HOUR = TunnelController.PROP_MAX_TOTAL_CONNS_HOUR;
+    public static final String PROP_MAX_TOTAL_CONNS_DAY = TunnelController.PROP_MAX_TOTAL_CONNS_DAY;
+    public static final String PROP_MAX_STREAMS = TunnelController.PROP_MAX_STREAMS;
 
     public void setLimitMinute(int val) {
         _otherOptions.put(PROP_MAX_CONNS_MIN, Integer.toString(val));
@@ -489,6 +662,19 @@ public class TunnelConfig {
     public void setSigType(String val) {
         if (val != null)
             _otherOptions.put(I2PClient.PROP_SIGTYPE, val.trim());
+    }
+
+    /**
+     * Adds to existing, comma separated
+     * @since 0.9.44
+     */
+    public void setEncType(String val) {
+        if (val != null) {
+            String p = _otherOptions.get("i2cp.leaseSetEncType");
+            if (p != null)
+                val = p + ',' + val;
+            _otherOptions.put("i2cp.leaseSetEncType", val);
+        }
     }
 
     /**
@@ -552,8 +738,11 @@ public class TunnelConfig {
             if (_port >= 0)
                 config.setProperty(TunnelController.PROP_LISTEN_PORT, Integer.toString(_port));
             config.setProperty(TunnelController.PROP_SHARED, _sharedClient + "");
+            // see I2PTunnelHTTPClient
+            if (TunnelController.TYPE_HTTP_CLIENT.equals(_type))
+                _booleanOptions.add(I2PTunnelHTTPClient.PROP_SSL_SET);
             for (String p : _booleanClientOpts)
-                config.setProperty(OPT + p, "" + _booleanOptions.contains(p));
+                config.setProperty(OPT + p, Boolean.toString(_booleanOptions.contains(p)));
             for (String p : _otherClientOpts) {
                 if (_otherOptions.containsKey(p))
                     config.setProperty(OPT + p, _otherOptions.get(p));
@@ -562,12 +751,21 @@ public class TunnelConfig {
             // generic server stuff
             if (_targetPort >= 0)
                 config.setProperty(TunnelController.PROP_TARGET_PORT, Integer.toString(_targetPort));
-            for (String p : _booleanServerOpts)
-                config.setProperty(OPT + p, "" + _booleanOptions.contains(p));
+
+            if (_filterDefinition != null)
+                config.setProperty(TunnelController.PROP_FILTER, _filterDefinition);
+            
+            // see TunnelController.setConfig()
+            _booleanOptions.add(TunnelController.PROP_LIMITS_SET);
+            for (String p : _booleanServerOpts) {
+                config.setProperty(OPT + p, Boolean.toString(_booleanOptions.contains(p)));
+            }
+
             for (String p : _otherServerOpts) {
                 if (_otherOptions.containsKey(p))
                     config.setProperty(OPT + p, _otherOptions.get(p));
             }
+            processEncryptMode(config);
         }
 
         // override bundle setting set above
@@ -581,12 +779,12 @@ public class TunnelConfig {
         if (TunnelController.TYPE_HTTP_CLIENT.equals(_type) || TunnelController.TYPE_CONNECT.equals(_type) || 
             TunnelController.TYPE_SOCKS.equals(_type) ||TunnelController.TYPE_SOCKS_IRC.equals(_type)) {
             for (String p : _booleanProxyOpts)
-                config.setProperty(OPT + p, "" + _booleanOptions.contains(p));
+                config.setProperty(OPT + p, Boolean.toString(_booleanOptions.contains(p)));
             if (_proxyList != null)
                 config.setProperty(TunnelController.PROP_PROXIES, _proxyList);
         }
 
-        // Proxy auth including migration to MD5
+        // Proxy auth including migration to MD5 and SHA256
         if (TunnelController.TYPE_HTTP_CLIENT.equals(_type) || TunnelController.TYPE_CONNECT.equals(_type)) {
             // Migrate even if auth is disabled
             // go get the old from custom options that updateConfigGeneric() put in there
@@ -608,6 +806,17 @@ public class TunnelConfig {
                         config.remove(ppw);
                     }
                 }
+                // SHA256 RFC 7616
+                String psha256 = OPT + I2PTunnelHTTPClientBase.PROP_PROXY_DIGEST_PREFIX +
+                                 user + I2PTunnelHTTPClientBase.PROP_PROXY_DIGEST_SHA256_SUFFIX;
+                if (config.getProperty(psha256) == null) {
+                    // not in there, add it
+                    String realm = _type.equals(TunnelController.TYPE_HTTP_CLIENT) ? I2PTunnelHTTPClient.AUTH_REALM
+                                                              : I2PTunnelConnectClient.AUTH_REALM;
+                    String hex = PasswordManager.sha256Hex(realm, user, pw);
+                    if (hex != null)
+                        config.setProperty(psha256, hex);
+                }
             }
             // New user/password
             String auth = _otherOptions.get(I2PTunnelHTTPClientBase.PROP_AUTH);
@@ -621,6 +830,25 @@ public class TunnelConfig {
                     String hex = PasswordManager.md5Hex(realm, _newProxyUser, _newProxyPW);
                     if (hex != null)
                         config.setProperty(pmd5, hex);
+                    String psha256 = OPT + I2PTunnelHTTPClientBase.PROP_PROXY_DIGEST_PREFIX +
+                                     _newProxyUser + I2PTunnelHTTPClientBase.PROP_PROXY_DIGEST_SHA256_SUFFIX;
+                    hex = PasswordManager.sha256Hex(realm, _newProxyUser, _newProxyPW);
+                    if (hex != null)
+                        config.setProperty(psha256, hex);
+                }
+            }
+        } else if (TunnelController.TYPE_SOCKS.equals(_type) || TunnelController.TYPE_SOCKS_IRC.equals(_type)) {
+            // As of 0.9.57, was in UI but unimplemented before,
+            // so use SHA256
+            String auth = _otherOptions.get(I2PTunnelHTTPClientBase.PROP_AUTH);
+            if (auth != null && !auth.equals("false")) {
+                if (_newProxyUser != null && _newProxyPW != null &&
+                    _newProxyUser.length() > 0 && _newProxyPW.length() > 0) {
+                    String psha256 = OPT + I2PTunnelHTTPClientBase.PROP_PROXY_DIGEST_PREFIX +
+                                     _newProxyUser + I2PTunnelHTTPClientBase.PROP_PROXY_DIGEST_SHA256_SUFFIX;
+                    String hex = PasswordManager.sha256Hex(I2PSOCKSTunnel.AUTH_REALM, _newProxyUser, _newProxyPW);
+                    if (hex != null)
+                        config.setProperty(psha256, hex);
                 }
             }
         }
@@ -652,7 +880,7 @@ public class TunnelConfig {
         if (TunnelController.TYPE_IRC_CLIENT.equals(_type)) {
             boolean dcc = _booleanOptions.contains(I2PTunnelIRCClient.PROP_DCC);
             config.setProperty(OPT + I2PTunnelIRCClient.PROP_DCC,
-                               "" + dcc);
+                               Boolean.toString(dcc));
             // add some sane server options since they aren't in the GUI (yet)
             if (dcc) {
                 config.setProperty(OPT + PROP_MAX_CONNS_MIN, "3");
@@ -673,24 +901,247 @@ public class TunnelConfig {
                 _context.random().nextBytes(rk);
                 config.setProperty(p, Base64.encode(rk));
             }
+
             // As of 0.9.18, add persistent leaseset keys if not present
             // but only if we know the sigtype
-            p = OPT + "i2cp.leaseSetSigningPrivateKey";
-            if (_dest != null && !config.containsKey(p)) {
-                try {
-                    SigType type = _dest.getSigType();
-                    SimpleDataStructure keys[] = KeyGenerator.getInstance().generateSigningKeys(type);
-                    config.setProperty(p, type.name() + ':' + keys[1].toBase64());
-                    p = OPT + "i2cp.leaseSetPrivateKey";
-                    keys = KeyGenerator.getInstance().generatePKIKeys();
-                    config.setProperty(p, "ELGAMAL_2048:" + keys[1].toBase64());
-                } catch (GeneralSecurityException gse) {
-                    // so much for that
+            // Server enctype migration here
+            String dflt;
+            if (TunnelController.TYPE_HTTP_SERVER.equals(_type) ||
+                TunnelController.TYPE_IRC_SERVER.equals(_type) ||
+                TunnelController.TYPE_STREAMR_SERVER.equals(_type)) {
+                dflt = "4";
+            } else {
+                dflt = "4,0";
+            }
+            String senc = config.getProperty(OPT + "i2cp.leaseSetEncType", dflt);
+            String slstyp = config.getProperty(OPT + "i2cp.leaseSetType", "0");
+            if (senc.equals("0") && slstyp.equals("0")) {
+                // only for LS1
+                p = OPT + "i2cp.leaseSetSigningPrivateKey";
+                if (!config.containsKey(p)) {
+                    SigType type;
+                    if (_dest != null) {
+                        type = _dest.getSigType();
+                    } else {
+                        String ssigtyp = config.getProperty(OPT + "i2cp.destination.sigType", "0");
+                        type = SigType.parseSigType(ssigtyp);
+                    }
+                    if (type != null) {
+                        try {
+                            SimpleDataStructure keys[] = KeyGenerator.getInstance().generateSigningKeys(type);
+                            config.setProperty(p, type.name() + ':' + keys[1].toBase64());
+                        } catch (GeneralSecurityException gse) {
+                            // so much for that
+                        }
+                    }
+                }
+            }
+
+            // persistent LS encryption keys
+            // multiple types as of 0.9.46, add missing ones
+            p = OPT + "i2cp.leaseSetPrivateKey";
+            String skeys = config.getProperty(p);
+            // normalize it first to make the code below easier
+            if (skeys != null && skeys.length() > 0 && !skeys.contains(":"))
+                config.setProperty(p, "ELGAMAL_2048:" + skeys);
+            String[] senca = DataHelper.split(senc, ",");
+            // for each configured enc type, generate a key if we don't have it
+            for (int i = 0; i < senca.length; i++) {
+                EncType type = EncType.parseEncType(senca[i]);
+                if (type != null && type.isAvailable()) {
+                    String stype = type.toString();
+                    skeys = config.getProperty(p, "");
+                    if (!skeys.contains(stype + ':')) {
+                        KeyPair keys = KeyGenerator.getInstance().generatePKIKeys(type);
+                        if (skeys.length() > 0)
+                            config.setProperty(p, skeys + ',' + stype + ':' + keys.getPrivate().toBase64());
+                        else
+                            config.setProperty(p, stype + ':' + keys.getPrivate().toBase64());
+                    }
                 }
             }
         }
 
         return config;
+    }
+
+    /**
+     *  Servers only.
+     *  @since 0.9.41 pulled out from getConfig() above
+     */
+    private void processEncryptMode(Properties config) {
+        switch (_encryptMode) {
+          case 0:  // none
+          default:
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.remove(OPT + "i2cp.leaseSetType");
+            config.remove(OPT + "i2cp.leaseSetKey");
+            config.remove(OPT + "i2cp.leaseSetPrivKey");
+            break;
+    
+          case 10:  // none (LS2)
+            config.put(OPT + "i2cp.leaseSetType", "3");
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.remove(OPT + "i2cp.leaseSetAuthType");
+            config.remove(OPT + "i2cp.leaseSetKey");
+            config.remove(OPT + "i2cp.leaseSetPrivKey");
+            break;
+
+          case 1:  // encrypted LS1
+            addLeaseSetPrivKey(config, false);
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.remove(OPT + "i2cp.leaseSetAuthType");
+            break;
+
+          case 2:  // blinded
+            config.put(OPT + "i2cp.leaseSetType", "5");
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.remove(OPT + "i2cp.leaseSetAuthType");
+            config.remove(OPT + "i2cp.leaseSetKey");
+            config.remove(OPT + "i2cp.leaseSetPrivKey");
+            break;
+    
+          case 3:  // blinded + secret
+            config.put(OPT + "i2cp.leaseSetType", "5");
+            config.remove(OPT + "i2cp.leaseSetAuthType");
+            config.remove(OPT + "i2cp.leaseSetKey");
+            config.remove(OPT + "i2cp.leaseSetPrivKey");
+            break;
+
+          case 4:  // blinded, shared key (implicit PSK)
+            addLeaseSetPrivKey(config, true);
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.put(OPT + "i2cp.leaseSetAuthType", "2");
+            break;
+    
+          case 5:  // blinded, secret, shared key (implicit PSK)
+            addLeaseSetPrivKey(config, true);
+            config.put(OPT + "i2cp.leaseSetAuthType", "2");
+            break;
+
+          case 6:  // blinded, per-client PSK
+            addLeaseSetPrivKey(config, true);
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.put(OPT + "i2cp.leaseSetAuthType", "2");
+            break;
+    
+          case 7:  // blinded, secret, per-client PSK
+            addLeaseSetPrivKey(config, true);
+            config.put(OPT + "i2cp.leaseSetAuthType", "2");
+            break;
+
+          case 8:  // blinded, per-client DH
+            addLeaseSetPrivKey(config, true);
+            config.remove(OPT + "i2cp.leaseSetSecret");
+            config.put(OPT + "i2cp.leaseSetAuthType", "1");
+            break;
+    
+          case 9:  // blinded, secret, per-client DH
+            addLeaseSetPrivKey(config, true);
+            config.put(OPT + "i2cp.leaseSetAuthType", "1");
+            break;
+
+        }
+
+        // per-client keys
+        String pfx;
+        if (_encryptMode == 6 || _encryptMode == 7) {
+            pfx = OPT + "i2cp.leaseSetClient.psk.";
+        } else if (_encryptMode == 8 || _encryptMode == 9) {
+            pfx = OPT + "i2cp.leaseSetClient.dh.";
+        } else {
+            pfx = null;
+        }
+        List<String> clientAuth = null;
+        if (pfx != null) {
+            if (_clientNames != null && _clientKeys != null && _clientNames.length == _clientKeys.length) {
+                clientAuth = new ArrayList<String>(4);
+            } else if (_addClientAuth || _encryptMode == 6 || _encryptMode == 7) {
+                // force one client for per-client PSK
+                clientAuth = new ArrayList<String>(1);
+                if (!_addClientAuth) {
+                    _addClientAuth = true;
+                    if (_newClientName == null || _newClientName.length() == 0)
+                        _newClientName = GeneralHelper._t("Client", _context) + " 1";
+                }
+            }
+        }
+        if (pfx != null && clientAuth != null) {
+            if (_clientNames != null && _clientKeys != null && _clientNames.length == _clientKeys.length) {
+                for (int i = 0; i < _clientNames.length; i++) {
+                    if (_clientRevocations != null && _clientRevocations.contains(Integer.valueOf(i)))
+                       continue;
+                    String name = _clientNames[i];
+                    String key = _clientKeys[i];
+                    byte[] b = Base64.decode(key);
+                    if (b == null || b.length != 32)
+                       continue;
+                    if (name.length() > 0)
+                        name = Base64.encode(DataHelper.getUTF8(name));
+                    else
+                        name = Base64.encode(DataHelper.getUTF8(GeneralHelper._t("Client", _context) + ' ' + (i + 1)));
+                    clientAuth.add(name + ':' + key);
+                }
+                if (clientAuth.isEmpty() && !_addClientAuth) {
+                    // if we revoked all of them, add a new one
+                    _addClientAuth = true;
+                    _newClientName = GeneralHelper._t("Client", _context) + " 1";
+                }
+            }
+            if (_addClientAuth && _newClientName != null) {
+                String name = _newClientName;
+                if (name.length() > 0)
+                    name = Base64.encode(DataHelper.getUTF8(name));
+                else
+                    name = Base64.encode(DataHelper.getUTF8(GeneralHelper._t("Client", _context) + ' ' + (clientAuth.size() + 1)));
+                String key;
+                if (_encryptMode == 6 || _encryptMode == 7) {
+                    byte[] b = new byte[32];
+                    _context.random().nextBytes(b);
+                    key = Base64.encode(b);
+                    clientAuth.add(name + ':' + key);
+                } else if (_encryptMode == 8 || _encryptMode == 9) {
+                    key = _newClientKey;
+                    byte[] b = Base64.decode(key);
+                    if (b != null && b.length == 32) {
+                        // key required for DH
+                        clientAuth.add(name + ':' + key);
+                    }
+                }
+            }
+            int i = 0;
+            for (String auth : clientAuth) {
+                config.put(pfx + i, auth);
+                i++;
+            }
+        }
+    }
+
+    /**
+     *  Servers only.
+     *  Also sets/clears i2cp.leaseSetType
+     *  @since 0.9.41
+     */
+    private void addLeaseSetPrivKey(Properties config, boolean isBlinded) {
+        // LS1 is AES, blinded is X25519, both are 32 random bytes.
+        // we always store in i2cp.leaseSetKey where the UI can find it.
+        // if blinded, we also store in i2cp.leaseSetPrivKey
+        String opt = OPT + "i2cp.leaseSetKey";
+        String bopt = OPT + "i2cp.leaseSetPrivKey";
+        String b64 = config.getProperty(opt);
+        if (b64 == null) {
+            byte[] data = new byte[32];
+            _context.random().nextBytes(data);
+            b64 = Base64.encode(data);
+            config.setProperty(opt, b64);
+        }
+        if (isBlinded) {
+            config.setProperty(bopt, b64);
+            config.put(OPT + "i2cp.leaseSetType", "5");
+        } else {
+            config.remove(bopt);
+            config.remove(OPT + "i2cp.leaseSetType");
+        }
     }
     
     private static final String _noShowOpts[] = {
@@ -709,7 +1160,8 @@ public class TunnelConfig {
         I2PTunnelHTTPClient.PROP_USER_AGENT,
         I2PTunnelHTTPClient.PROP_REFERER,
         I2PTunnelHTTPClient.PROP_ACCEPT,
-        I2PTunnelHTTPClient.PROP_INTERNAL_SSL
+        I2PTunnelHTTPClient.PROP_INTERNAL_SSL,
+        I2PTunnelHTTPClient.PROP_SSL_SET
         };
     private static final String _booleanServerOpts[] = {
         "i2cp.reduceOnIdle", "i2cp.encryptLeaseSet", PROP_ENABLE_ACCESS_LIST, PROP_ENABLE_BLACKLIST,
@@ -718,25 +1170,30 @@ public class TunnelConfig {
         I2PTunnelHTTPServer.OPT_REJECT_REFERER,
         I2PTunnelHTTPServer.OPT_REJECT_USER_AGENTS,
         I2PTunnelServer.PROP_UNIQUE_LOCAL,
-        "shouldBundleReplyInfo"
+        "shouldBundleReplyInfo",
+        TunnelController.PROP_LIMITS_SET
         };
     private static final String _otherClientOpts[] = {
         "i2cp.reduceIdleTime", "i2cp.reduceQuantity", "i2cp.closeIdleTime",
         "outproxyUsername", "outproxyPassword",
+        I2PSOCKSTunnel.PROP_OUTPROXY_TYPE,
         I2PTunnelHTTPClient.PROP_JUMP_SERVERS,
         I2PTunnelHTTPClientBase.PROP_AUTH,
         I2PClient.PROP_SIGTYPE,
         I2PTunnelHTTPClient.PROP_SSL_OUTPROXIES,
         // following are mostly server but could also be persistent client
-        "inbound.randomKey", "outbound.randomKey", "i2cp.leaseSetSigningPrivateKey", "i2cp.leaseSetPrivateKey"
+        "inbound.randomKey", "outbound.randomKey", "i2cp.leaseSetSigningPrivateKey", "i2cp.leaseSetPrivateKey",
+        "i2cp.leaseSetEncType"
         };
     private static final String _otherServerOpts[] = {
         "i2cp.reduceIdleTime", "i2cp.reduceQuantity", "i2cp.leaseSetKey", "i2cp.accessList",
          PROP_MAX_CONNS_MIN, PROP_MAX_CONNS_HOUR, PROP_MAX_CONNS_DAY,
          PROP_MAX_TOTAL_CONNS_MIN, PROP_MAX_TOTAL_CONNS_HOUR, PROP_MAX_TOTAL_CONNS_DAY,
          PROP_MAX_STREAMS, I2PClient.PROP_SIGTYPE,
-        "inbound.randomKey", "outbound.randomKey", "i2cp.leaseSetSigningPrivateKey", "i2cp.leaseSetPrivateKey",
-         I2PTunnelServer.PROP_ALT_PKF
+         "inbound.randomKey", "outbound.randomKey", "i2cp.leaseSetSigningPrivateKey", "i2cp.leaseSetPrivateKey",
+         I2PTunnelServer.PROP_ALT_PKF,
+         "i2cp.leaseSetSecret", "i2cp.leaseSetType", "i2cp.leaseSetAuthType", "i2cp.leaseSetPrivKey",
+        "i2cp.leaseSetEncType"
         };
     private static final String _httpServerOpts[] = {
         I2PTunnelHTTPServer.OPT_POST_WINDOW,
@@ -756,8 +1213,8 @@ public class TunnelConfig {
         "proxyUsername", "proxyPassword"
         };
 
-    public static final Set<String> _noShowSet = new HashSet<String>(128);
-    public static final Set<String> _nonProxyNoShowSet = new HashSet<String>(4);
+    static final Set<String> _noShowSet = new HashSet<String>(128);
+    static final Set<String> _nonProxyNoShowSet = new HashSet<String>(4);
     static {
         _noShowSet.addAll(Arrays.asList(_noShowOpts));
         _noShowSet.addAll(Arrays.asList(_booleanClientOpts));
@@ -781,20 +1238,16 @@ public class TunnelConfig {
             if ( (_i2cpPort != null) && (_i2cpPort.trim().length() > 0) ) {
                 config.setProperty(TunnelController.PROP_I2CP_PORT, _i2cpPort);
             } else {
-                config.setProperty(TunnelController.PROP_I2CP_PORT, "7654");
+                config.setProperty(TunnelController.PROP_I2CP_PORT, Integer.toString(I2PClient.DEFAULT_LISTEN_PORT));
             }
         }
         if (_privKeyFile != null)
             config.setProperty(TunnelController.PROP_FILE, _privKeyFile);
         
-        if (_customOptions != null) {
-            StringTokenizer tok = new StringTokenizer(_customOptions);
-            while (tok.hasMoreTokens()) {
-                String pair = tok.nextToken();
-                int eq = pair.indexOf('=');
-                if ( (eq <= 0) || (eq >= pair.length()) )
-                    continue;
-                String key = pair.substring(0, eq);
+        if (_customOptions != null && _customOptions.length() > 0) {
+            Map<String, String> custom = parseCustomOptions(_customOptions);
+            for (Map.Entry<String, String> e : custom.entrySet()) {
+                String key = e.getKey();
                 if (_noShowSet.contains(key))
                     continue;
                 // leave in for HTTP and Connect so it can get migrated to MD5
@@ -803,7 +1256,7 @@ public class TunnelConfig {
                     (!TunnelController.TYPE_CONNECT.equals(_type)) &&
                     _nonProxyNoShowSet.contains(key))
                     continue;
-                String val = pair.substring(eq+1);
+                String val = e.getValue();
                 config.setProperty(OPT + key, val);
             }
         }
@@ -812,7 +1265,7 @@ public class TunnelConfig {
 
         updateTunnelQuantities(config);
         if (_connectDelay)
-            config.setProperty("option.i2p.streaming.connectDelay", "1000");
+            config.setProperty("option.i2p.streaming.connectDelay", "500");
         else
             config.setProperty("option.i2p.streaming.connectDelay", "0");
         if (TunnelController.isClient(_type) && _sharedClient) {
@@ -840,19 +1293,142 @@ public class TunnelConfig {
     public void updateTunnelQuantities(Properties config) {
         if (_tunnelQuantity >= 0) {
             config.setProperty("option.inbound.quantity", Integer.toString(_tunnelQuantity));
-            config.setProperty("option.outbound.quantity", Integer.toString(_tunnelQuantity));
+            if (_tunnelQuantityOut < 0)
+                _tunnelQuantityOut = _tunnelQuantity;
+            config.setProperty("option.outbound.quantity", Integer.toString(_tunnelQuantityOut));
         }
         if (_tunnelDepth >= 0) {
             config.setProperty("option.inbound.length", Integer.toString(_tunnelDepth));
-            config.setProperty("option.outbound.length", Integer.toString(_tunnelDepth));
+            if (_tunnelDepthOut < 0)
+                _tunnelDepthOut = _tunnelDepth;
+            config.setProperty("option.outbound.length", Integer.toString(_tunnelDepthOut));
         }
         if (_tunnelVariance >= -2) {
             config.setProperty("option.inbound.lengthVariance", Integer.toString(_tunnelVariance));
-            config.setProperty("option.outbound.lengthVariance", Integer.toString(_tunnelVariance));
+            if (_tunnelVarianceOut < -2)
+                _tunnelVarianceOut = _tunnelVariance;
+            config.setProperty("option.outbound.lengthVariance", Integer.toString(_tunnelVarianceOut));
         }
         if (_tunnelBackupQuantity >= 0) {
             config.setProperty("option.inbound.backupQuantity", Integer.toString(_tunnelBackupQuantity));
-            config.setProperty("option.outbound.backupQuantity", Integer.toString(_tunnelBackupQuantity));
+            if (_tunnelBackupQuantityOut < 0)
+                _tunnelBackupQuantityOut = _tunnelBackupQuantity;
+            config.setProperty("option.outbound.backupQuantity", Integer.toString(_tunnelBackupQuantityOut));
         }
     }
+
+    /**
+     *  Parse the args submitted in the custom options field.
+     *
+     *  Modified from EepGet.parseAuthArgs()
+     *  Spaces or tabs separate args.
+     *  Args may be single- or double-quoted if they contain spaces or tabs.
+     *  There is no provision for escaping quotes.
+     *  A quoted string may not contain a quote of any kind.
+     *  Double quotes around values are stripped.
+     *  No quotes allowed for keys.
+     *  Keys without values, e.g. key= or key will be returned with "" for the value.
+     *
+     *  @param args non-null
+     *  @since 0.9.43
+     */
+    private static Map<String, String> parseCustomOptions(String args) {
+        Map<String, String> rv = new HashMap<String, String>(8);
+        StringBuilder buf = new StringBuilder(32);
+        boolean isQuoted = false;
+        String key = null;
+        for (int i = 0; i < args.length(); i++) {
+            char c = args.charAt(i);
+            switch (c) {
+                case '\'':
+                case '"':
+                    if (isQuoted) {
+                        // keys never quoted
+                        if (key != null) {
+                            rv.put(key, buf.toString().trim());
+                            key = null;
+                        }
+                        buf.setLength(0);
+                    }
+                    isQuoted = !isQuoted;
+                    break;
+
+                case ' ':
+                case '\r':
+                case '\n':
+                case '\t':
+                case ',':
+                    // whitespace - if we're in a quoted section, keep this as part of the quote,
+                    // otherwise use it as a delim
+                    if (isQuoted) {
+                        buf.append(c);
+                    } else {
+                        if (key != null) {
+                            if (key.length() > 0)
+                                rv.put(key, buf.toString().trim());
+                            key = null;
+                        } else {
+                          String k = buf.toString().trim();
+                          if (k.length() > 0)
+                              rv.put(k, "");
+                        }
+                        buf.setLength(0);
+                    }
+                    break;
+
+                case '=':
+                    if (isQuoted || key != null) {
+                        buf.append(c);
+                    } else {
+                        key = buf.toString().trim();
+                        buf.setLength(0);
+                    }
+                    break;
+
+                default:
+                    buf.append(c);
+                    break;
+            }
+        }
+        if (key != null) {
+            if (key.length() > 0)
+                rv.put(key, buf.toString().trim());
+        } else {
+            key = buf.toString().trim();
+            if (key.length() > 0)
+                rv.put(key, "");
+        }
+        return rv;
+    }
+
+/****
+    private static String[] tests = {
+        "", "foo", "foo=bar",
+        "f=b x", "x f=b",
+        "  aaa=bbb ccc=ddd   ",
+        "aaa=bbb ccc=ddd x",
+        "aaa=bbb ccc=ddd x=",
+        "a=\"w x y z\" b c= d='1 2 3 4'",
+        "klsjdf owi=\"w\tx y\tz\"",
+        "z= aaa= ",
+        "=", " = ", "=foo", " =fpp ",
+        "a=\"\", b='', c='xxx\" d='aaa'",
+        "xx=\"missingquote",
+        "'zxw=123'",
+        "'zxw=123",
+        "'zxw=123' a=b c d e",
+        "x====", "x====x",
+        "aaa=b=cc====dddddd====",
+    };
+
+    public static void main(String[] args) {
+        for (int i = 0; i < tests.length; i++) {
+            Map<String, String> m = parseCustomOptions(tests[i]);
+            System.out.println("\nTest \"" + tests[i] + '"');
+            for (Map.Entry<String, String> e : m.entrySet()) {
+                System.out.println("    \"" + e.getKey() + "\" = \"" + e.getValue() + '"');
+            }
+        }
+    }
+****/
 }

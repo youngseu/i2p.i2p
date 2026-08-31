@@ -9,16 +9,24 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import net.i2p.I2PAppContext;
 import net.i2p.app.ClientAppManager;
+import net.i2p.crypto.EncType;
 import net.i2p.data.Hash;
+import net.i2p.data.PublicKey;
 import net.i2p.data.RoutingKeyGenerator;
 import net.i2p.data.router.RouterInfo;
 import net.i2p.data.router.RouterKeyGenerator;
 import net.i2p.internal.InternalClientManager;
 import net.i2p.router.client.ClientManagerFacadeImpl;
+import net.i2p.router.crypto.ElGamalAESEngine;
+import net.i2p.router.crypto.ratchet.ECIESAEADEngine;
+import net.i2p.router.crypto.ratchet.MuxedSKM;
+import net.i2p.router.crypto.ratchet.RatchetSKM;
 import net.i2p.router.crypto.TransientSessionKeyManager;
 import net.i2p.router.dummy.*;
 import net.i2p.router.message.GarlicMessageParser;
 import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
+import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseSegmentor;
+import net.i2p.router.networkdb.kademlia.SegmentedNetworkDatabaseFacade;
 import net.i2p.router.peermanager.PeerManagerFacadeImpl;
 import net.i2p.router.peermanager.ProfileManagerImpl;
 import net.i2p.router.peermanager.ProfileOrganizer;
@@ -50,7 +58,7 @@ public class RouterContext extends I2PAppContext {
     private OutNetMessagePool _outNetMessagePool;
     private MessageHistory _messageHistory;
     private OutboundMessageRegistry _messageRegistry;
-    private NetworkDatabaseFacade _netDb;
+    private SegmentedNetworkDatabaseFacade _netDb;
     private KeyManager _keyManager;
     private CommSystemFacade _commSystem;
     private ProfileOrganizer _profileOrganizer;
@@ -68,6 +76,8 @@ public class RouterContext extends I2PAppContext {
     private RouterAppManager _appManager;
     private RouterKeyGenerator _routingKeyGenerator;
     private GarlicMessageParser _garlicMessageParser;
+    private ElGamalAESEngine _elGamalAESEngine;
+    private ECIESAEADEngine _eciesEngine;
     private final Set<Runnable> _finalShutdownTasks;
     // split up big lock on this to avoid deadlocks
     private volatile boolean _initialized;
@@ -77,15 +87,38 @@ public class RouterContext extends I2PAppContext {
     
     /**
      *  Caller MUST call initAll() after instantiation.
+     *
+     *  @param router may be null for unit tests if you are careful
      */
     public RouterContext(Router router) { this(router, null); }
 
     /**
      *  Caller MUST call initAll() after instantiation.
+     *
+     *  @param router may be null for unit tests if you are careful
      */
     public RouterContext(Router router, Properties envProps) { 
-        super(filterProps(envProps));
+        this(router, envProps, true);
+    }
+
+    /**
+     *  Caller MUST call initAll() after instantiation.
+     *  NOT a public API, for use by Router only, NOT for external use.
+     *
+     *  @param router may be null for unit tests if you are careful
+     *  @param doInit should this context be used as the global one (if necessary)?
+     *                Will only apply if there is no global context now.
+     *                If false, caller should call setGlobalContext() afterwards.
+     *  @since 0.9.33
+     */
+    RouterContext(Router router, Properties envProps, boolean doInit) { 
+        super(doInit, filterProps(envProps));
         _router = router;
+        if (router == null) {
+            // disable NTP when doing unit tests
+            setProperty("time.disabled", "true");
+        }
+
         // Disabled here so that the router can get a context and get the
         // directory locations from it, to do an update, without having
         // to init everything. Caller MUST call initAll() afterwards.
@@ -94,7 +127,24 @@ public class RouterContext extends I2PAppContext {
         if (!_contexts.isEmpty())
             System.err.println("Warning - More than one router in this JVM");
         _finalShutdownTasks = new CopyOnWriteArraySet<Runnable>();
-        _contexts.add(this);
+        if (doInit) {
+            // Bad practice, adding this to static List in constructor.
+            // doInit will be false when instantiated via Router.
+            _contexts.add(this);
+        }
+    }
+    
+    /**
+     * Sets the default context, unless there is one already.
+     * NOT a public API, for use by Router only, NOT for external use.
+     *
+     * @param ctx context constructed with doInit = false
+     * @return success (false if previously set)
+     * @since 0.9.33
+     */
+    static boolean setGlobalContext(RouterContext ctx) {
+        _contexts.add(ctx);
+        return I2PAppContext.setGlobalContext(ctx);
     }
 
     /**
@@ -120,9 +170,9 @@ public class RouterContext extends I2PAppContext {
             // or about 2 seconds per buffer - so about 200x faster
             // to fill than to drain - so we don't need too many
             long maxMemory = SystemVersion.getMaxMemory();
-            long maxBuffs = (SystemVersion.isAndroid() || SystemVersion.isARM()) ? 4 : 8;
+            long maxBuffs = 3;
             long buffs = Math.min(maxBuffs, Math.max(2, maxMemory / (21 * 1024 * 1024)));
-            envProps.setProperty("prng.buffers", "" + buffs);
+            envProps.setProperty("prng.buffers", Long.toString(buffs));
         }
         return envProps;
     }
@@ -181,6 +231,8 @@ public class RouterContext extends I2PAppContext {
             _clientManagerFacade = new DummyClientManagerFacade(this);
             // internal client manager is null
         }
+        _elGamalAESEngine = new ElGamalAESEngine(this);
+        _eciesEngine = new ECIESAEADEngine(this);
         _garlicMessageParser = new GarlicMessageParser(this);
         _clientMessagePool = new ClientMessagePool(this);
         _jobQueue = new JobQueue(this);
@@ -192,9 +244,9 @@ public class RouterContext extends I2PAppContext {
         //_messageStateMonitor = new MessageStateMonitor(this);
         _routingKeyGenerator = new RouterKeyGenerator(this);
         if (!getBooleanProperty("i2p.dummyNetDb"))
-            _netDb = new FloodfillNetworkDatabaseFacade(this); // new KademliaNetworkDatabaseFacade(this);
+            _netDb = new FloodfillNetworkDatabaseSegmentor(this);
         else
-            _netDb = new DummyNetworkDatabaseFacade(this);
+            _netDb = new DummyNetworkDatabaseSegmentor(this);
         _keyManager = new KeyManager(this);
         if (!getBooleanProperty("i2p.vmCommSystem"))
             _commSystem = new CommSystemFacadeImpl(this);
@@ -264,17 +316,12 @@ public class RouterContext extends I2PAppContext {
      *  Convenience method for getting the router hash.
      *  Equivalent to context.router().getRouterInfo().getIdentity().getHash()
      *
-     *  Warning - risk of deadlock - do not call while holding locks
-     *
      *  @return may be null if called very early
      */
     public Hash routerHash() {
         if (_router == null)
             return null;
-        RouterInfo ri = _router.getRouterInfo();
-        if (ri == null)
-            return null;
-        return ri.getIdentity().getHash();
+        return _router.getRouterHash();
     }
 
     /**
@@ -318,8 +365,26 @@ public class RouterContext extends I2PAppContext {
 
     /**
      * Our db cache
+     * @since 0.9.61
      */
-    public NetworkDatabaseFacade netDb() { return _netDb; }
+    public SegmentedNetworkDatabaseFacade netDbSegmentor() { return _netDb; }
+
+    /**
+     * @return may be null if called very early or in some unit tests
+     */
+    public NetworkDatabaseFacade netDb() { return _netDb != null ? _netDb.mainNetDB() : null; }
+
+    /**
+     * Get the client netDb for the given id.
+     * Will return the main netDb if
+     * the dbid is null or the client db is not found.
+     * 
+     * @since 0.9.61
+     * @param id may be null
+     * @return non-null
+     */
+    public NetworkDatabaseFacade clientNetDb(Hash id) { return _netDb.clientNetDB(id); }
+
     /**
      * The actual driver of the router, where all jobs are enqueued and processed.
      */
@@ -498,7 +563,15 @@ public class RouterContext extends I2PAppContext {
         }
     }
 
-    /** override to support storage in router.config */
+    /**
+     *  Basic hash map for LS1
+     *
+     *  overriden to support storage in router.config
+     *
+     *  Deprecated -
+     *  This is for the deprecated LS1 AES encrypted leasesets only.
+     *  LS2 encrypted leaseset data are stored in netdb BlindCache and router.blindcache.dat.
+     */
     @Override
     public KeyRing keyRing() {
         if (!_keyRingInitialized)
@@ -583,16 +656,25 @@ public class RouterContext extends I2PAppContext {
 
     /**
      *  As of 0.9.15, this returns a dummy SessionKeyManager in I2PAppContext.
-     *  Overridden in RouterContext to return the full TransientSessionKeyManager.
+     *  Overridden in RouterContext to return the full TransientSessionKeyManager
+     *  or MuxedSKM, depending on configured router encryption type.
      *
      *  @since 0.9.15
      */
     @Override
     protected void initializeSessionKeyManager() {
         synchronized (_lock3) {
-            if (_sessionKeyManager == null) 
-                //_sessionKeyManager = new PersistentSessionKeyManager(this);
-                _sessionKeyManager = new TransientSessionKeyManager(this);
+            if (_sessionKeyManager == null) {
+                PublicKey pk = keyManager().getPublicKey();
+                if (pk != null && pk.getType() == EncType.ECIES_X25519) {
+                    RatchetSKM rskm = new RatchetSKM(this);
+                    //_sessionKeyManager = new MuxedSKM(tskm, rskm);
+                    _sessionKeyManager = rskm;
+                } else {
+                    TransientSessionKeyManager tskm = new TransientSessionKeyManager(this);
+                    _sessionKeyManager = tskm;
+                }
+            }
             _sessionKeyManagerInitialized = true;
         }
     }
@@ -636,5 +718,48 @@ public class RouterContext extends I2PAppContext {
      */
     public GarlicMessageParser garlicMessageParser() {
         return _garlicMessageParser;
+    }
+
+    /**
+     * Access the ElGamal/AES+SessionTag engine for this context.  The algorithm
+     * makes use of the context's sessionKeyManager to coordinate transparent
+     * access to the sessionKeys and sessionTags, as well as the context's elGamal
+     * engine (which in turn keeps stats, etc).
+     *
+     * @since 0.9.38 moved from superclass (app context)
+     */
+    public ElGamalAESEngine elGamalAESEngine() {
+        return _elGamalAESEngine;
+    }
+
+    /**
+     * Access the ECIES/AEAD engine for this context.  The algorithm
+     * makes use of the sessionKeyManager to coordinate transparent
+     * access to the sessionKeys and sessionTags.
+     *
+     * @since 0.9.44
+     */
+    public ECIESAEADEngine eciesEngine() {
+        return _eciesEngine;
+    }
+
+    /** 
+     *  How long this router was down before it started, or 0 if unknown.
+     *
+     *  This may be used for a determination of whether to regenerate keys, for example.
+     *  We use the timestamp of the previous ping file left behind on crash,
+     *  as set by isOnlyRouterRunning(), if present.
+     *  Otherwise, the last STOPPED entry in the event log.
+     *
+     *  May take a while to run the first time, if it has to go through the event log.
+     *  Once called, the result is cached.
+     *
+     *  @return downtime in ms or 0 if unknown
+     *  @since 0.9.47
+     */
+    public long getEstimatedDowntime() {
+        if (_router == null)
+            return 0L;
+        return _router.getEstimatedDowntime();
     }
 }

@@ -15,12 +15,14 @@
 
 package org.cybergarage.upnp.ssdp;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 
 import org.cybergarage.net.*;
 
 import org.cybergarage.upnp.*;
+import org.cybergarage.util.Debug;
 
 public class SSDPNotifySocketList extends Vector<SSDPNotifySocket> 
 {
@@ -35,7 +37,7 @@ public class SSDPNotifySocketList extends Vector<SSDPNotifySocket>
 	
 	/**
 	 * 
-	 * @param binds The host to bind the service <tt>null</tt> means to bind to default.
+	 * @param binds The host to bind the service <code>null</code> means to bind to default.
 	 * @since 1.8
 	 */
 	public SSDPNotifySocketList(InetAddress[] binds){
@@ -48,7 +50,7 @@ public class SSDPNotifySocketList extends Vector<SSDPNotifySocket>
 	
 	public SSDPNotifySocket getSSDPNotifySocket(int n)
 	{
-		return (SSDPNotifySocket)get(n);
+		return get(n);
 	}
 
 	////////////////////////////////////////////////
@@ -86,8 +88,12 @@ public class SSDPNotifySocketList extends Vector<SSDPNotifySocket>
 		
 		for (int i = 0; i < bindAddresses.length; i++) {
 			if(bindAddresses[i]!=null){
-				SSDPNotifySocket ssdpNotifySocket = new SSDPNotifySocket(bindAddresses[i]);
-				add(ssdpNotifySocket);
+				try {
+					SSDPNotifySocket ssdpNotifySocket = new SSDPNotifySocket(bindAddresses[i]);
+					add(ssdpNotifySocket);
+				} catch (IOException ioe) {
+					Debug.warning("Failed bind to " + bindAddresses[i], ioe);
+				}
 			}
 		}
 		return true;

@@ -14,8 +14,10 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -67,6 +69,8 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
 
     private final Object startLock = new Object();
     private boolean startRunning;
+    private volatile boolean _buildingTunnels;
+    private volatile Thread _tunnelBuilder;
 
     // private Object closeLock = new Object();
 
@@ -289,10 +293,13 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
                 _socketManagerState = SocketManagerState.INIT;
                 // We could be here a LONG time, holding the lock
                 socketManager = buildSocketManager(tunnel, pkf);
+/*
+   since we enabled ratchet by default, we're not compatible with ancient servers anyway.
                 // FIXME may not be the right place for this
                 I2PSession sub = addSubsession(tunnel);
                 if (sub != null && _log.shouldLog(Log.WARN))
                     _log.warn("Added subsession " + sub);
+*/
             } else {
                 if (_log.shouldLog(Log.INFO))
                     _log.info(tunnel.getClientOptions().getProperty("inbound.nickname") + ": Not building a new socket manager since the old one is open [s=" + s + "]");
@@ -305,9 +312,15 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
             if (_log.shouldLog(Log.INFO))
                 _log.info(tunnel.getClientOptions().getProperty("inbound.nickname") + ": Building a new socket manager since there is no other one");
             socketManager = buildSocketManager(tunnel, pkf);
+
+/*
+   since we enabled ratchet by default, we're not compatible with ancient servers anyway.
+
             I2PSession sub = addSubsession(tunnel);
             if (sub != null && _log.shouldLog(Log.WARN))
                 _log.warn("Added subsession " + sub);
+*/
+
         }
         return socketManager;
     }
@@ -317,7 +330,9 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
      *
      *  @return subsession, or null if none was added
      *  @since 0.9.20
+     *  @deprecated unused as of 0.9.49
      */
+    @Deprecated
     protected static synchronized I2PSession addSubsession(I2PTunnel tunnel) {
         I2PSession sess = socketManager.getSession();
         if (sess.getMyDestination().getSigType() == SigType.DSA_SHA1)
@@ -407,7 +422,7 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
         Log _log = tunnel.getContext().logManager().getLog(I2PTunnelClientBase.class);
         Properties props = new Properties();
         props.putAll(tunnel.getClientOptions());
-        int portNum = 7654;
+        int portNum = I2PClient.DEFAULT_LISTEN_PORT;
         if (tunnel.port != null) {
             try {
                 portNum = Integer.parseInt(tunnel.port);
@@ -454,40 +469,54 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
      * @since 0.9.20
      */
     private void connectManager() {
+        boolean closed = sockMgr.getSession().isClosed();
+        if (!closed)
+            return;
         int retries = 0;
-        while (sockMgr.getSession().isClosed()) {
-            try {
-                sockMgr.getSession().connect();
-                synchronized(I2PTunnelClientBase.class) {
-                    if (sockMgr == socketManager)
-                        _socketManagerState = SocketManagerState.CONNECTED;
+        _buildingTunnels = true;
+        _tunnelBuilder = Thread.currentThread();
+        try {
+            while (closed) {
+                try {
+                    sockMgr.getSession().connect();
+                    synchronized(I2PTunnelClientBase.class) {
+                        if (sockMgr == socketManager)
+                            _socketManagerState = SocketManagerState.CONNECTED;
+                    }
+                } catch (I2PSessionException ise) {
+                    // shadows instance _log
+                    Log _log = getTunnel().getContext().logManager().getLog(I2PTunnelClientBase.class);
+                    Logging log = this.l;
+                    // try to make this error sensible as it will happen...
+                    String portNum = getTunnel().port;
+                    if (portNum == null)
+                        portNum = Integer.toString(I2PClient.DEFAULT_LISTEN_PORT);
+                    String msg;
+                    if (getTunnel().getContext().isRouterContext())
+                        msg = "Unable to build tunnels for the client";
+                    else
+                        msg = "Unable to connect to the router at " + getTunnel().host + ':' + portNum +
+                                 " and build tunnels for the client";
+                    String exmsg = ise.getMessage();
+                    boolean fail = !_buildingTunnels || (exmsg != null && exmsg.contains("session limit exceeded"));
+                    if (!fail && ++retries < MAX_RETRIES) {
+                        if (log != null)
+                            log.log(msg + ", retrying in " + (RETRY_DELAY / 1000) + " seconds");
+                        _log.error(msg + ", retrying in " + (RETRY_DELAY / 1000) + " seconds", ise);
+                    } else {
+                        if (log != null)
+                            log.log(msg + ", giving up");
+                        _log.log(Log.CRIT, msg + ", giving up", ise);
+                        throw new IllegalArgumentException(msg, ise);
+                    }
+                    try { Thread.sleep(RETRY_DELAY); } catch (InterruptedException ie) { break; }
                 }
-            } catch (I2PSessionException ise) {
-                // shadows instance _log
-                Log _log = getTunnel().getContext().logManager().getLog(I2PTunnelClientBase.class);
-                Logging log = this.l;
-                // try to make this error sensible as it will happen...
-                String portNum = getTunnel().port;
-                if (portNum == null)
-                    portNum = "7654";
-                String msg;
-                if (getTunnel().getContext().isRouterContext())
-                    msg = "Unable to build tunnels for the client";
-                else
-                    msg = "Unable to connect to the router at " + getTunnel().host + ':' + portNum +
-                             " and build tunnels for the client";
-                if (++retries < MAX_RETRIES) {
-                    if (log != null)
-                        log.log(msg + ", retrying in " + (RETRY_DELAY / 1000) + " seconds");
-                    _log.error(msg + ", retrying in " + (RETRY_DELAY / 1000) + " seconds", ise);
-                } else {
-                    if (log != null)
-                        log.log(msg + ", giving up");
-                    _log.log(Log.CRIT, msg + ", giving up", ise);
-                    throw new IllegalArgumentException(msg, ise);
-                }
-                try { Thread.sleep(RETRY_DELAY); } catch (InterruptedException ie) {}
+                // _buildingTunnels set to false by close()
+                closed = _buildingTunnels && sockMgr.getSession().isClosed();
             }
+        } finally {
+            _buildingTunnels = false;
+            _tunnelBuilder = null;
         }
     }
 
@@ -528,9 +557,7 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
                     _log.error("Unable to connect to router and build tunnels for " + _handlerName);
                     // FIXME there is a loop in buildSocketManager(), do we really need another one here?
                     // no matter, buildSocketManager() now throws an IllegalArgumentException
-                    try { Thread.sleep(10*1000); } catch (InterruptedException ie) {}
-                } else {
-                    l.log("Tunnels ready for client: " + _handlerName);
+                    try { Thread.sleep(10*1000); } catch (InterruptedException ie) { return; }
                 }
             }
             // can't be null unless we limit the loop above
@@ -562,11 +589,15 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
         }
 
         if (open && listenerReady) {
-            boolean openNow = !Boolean.parseBoolean(getTunnel().getClientOptions().getProperty("i2cp.delayOpen"));
-            if (openNow || chained)
-                l.log("Client ready, listening on " + getTunnel().listenHost + ':' + localPort);
-            else
-                l.log("Client ready, listening on " + getTunnel().listenHost + ':' + localPort + ", delaying tunnel open until required");
+            if (localPort > 0) {  // -1 for I2Ping
+                boolean openNow = !Boolean.parseBoolean(getTunnel().getClientOptions().getProperty("i2cp.delayOpen"));
+                if (openNow || chained) {
+                    l.log("Client ready, listening on " + getTunnel().listenHost + ':' + localPort);
+                    l.log("Tunnels ready for client: " + _handlerName);
+                } else {
+                    l.log("Client ready, listening on " + getTunnel().listenHost + ':' + localPort + ", delaying tunnel open until required");
+                }
+            }
             notifyEvent("openBaseClientResult", "ok");
         } else {
             l.log("Client error for " + getTunnel().listenHost + ':' + localPort + ", check logs");
@@ -700,8 +731,29 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
             Properties opts = getTunnel().getClientOptions();
             boolean useSSL = Boolean.parseBoolean(opts.getProperty(PROP_USE_SSL));
             if (useSSL) {
-                // was already done in web/IndexBean.java when saving the config
-                boolean wasCreated = SSLClientUtil.verifyKeyStore(opts);
+                // was already done in GeneralHelper.updateTunnelConfig() when saving the config
+                // we should never be generating the cert here.
+                // add the local interface and all targets to the cert
+                Set<String> altNames = new HashSet<String>(4);
+                String intfc = getTunnel().listenHost;
+                if (intfc != null && !intfc.equals("0.0.0.0") && !intfc.equals("::") &&
+                    !intfc.equals("0:0:0:0:0:0:0:0"))
+                    altNames.add(intfc);
+                // We can't easily get to the targetDestination property,
+                // or the _addrs List in I2PTunnelClient, or the target argument in I2PTunnel from here,
+                // but it shouldn't matter, we should never be generating the cert here.
+                //String targets = ...
+                //if (targets != null) {
+                //    StringTokenizer tok = new StringTokenizer(targets, ", ");
+                //    while (tok.hasMoreTokens()) {
+                //        String h = tok.nextToken();
+                //        int colon = h.indexOf(':');
+                //        if (colon >= 0)
+                //            h = h.substring(0, colon);
+                //        altNames.add(h);
+                //    }
+                //}
+                boolean wasCreated = SSLClientUtil.verifyKeyStore(opts, "", altNames);
                 if (wasCreated) {
                     // From here, we can't save the config.
                     // We shouldn't get here, as SSL isn't the default, so it would
@@ -809,7 +861,8 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
                 // probably an IllegalArgumentException from
                 // connecting to the router in a delay-open or
                 // close-on-idle tunnel (in connectManager() above)
-                _log.error("Uncaught error in i2ptunnel client", t);
+                _log.error("i2ptunnel client error", t);
+                try { _s.close(); } catch (IOException ioe) {}
             }
         }
     }
@@ -829,6 +882,13 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
     public boolean close(boolean forced) {
         if (_log.shouldLog(Log.INFO))
             _log.info("close() called: forced = " + forced + " open = " + open + " sockMgr = " + sockMgr);
+        if (forced) {
+            Thread t = _tunnelBuilder;
+            if (t != null) {
+                _buildingTunnels = false;
+                t.interrupt();
+            }
+        }
         if (!open) return true;
         // FIXME: here we might have to wait quite a long time if
         // there is a connection attempt atm. But without waiting we
@@ -881,8 +941,11 @@ public abstract class I2PTunnelClientBase extends I2PTunnelTask implements Runna
     @Override
     public synchronized boolean destroy() {
         close(true);
-        if (_ownDest)
-            sockMgr.destroySocketManager();
+        if (_ownDest) {
+            I2PSocketManager sm = sockMgr;
+            if (sm != null)
+                sm.destroySocketManager();
+        }
         return true;
     }
 

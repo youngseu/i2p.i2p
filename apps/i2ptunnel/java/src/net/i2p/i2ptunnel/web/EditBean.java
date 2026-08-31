@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Set;
 
 import net.i2p.I2PException;
+import net.i2p.client.I2PClient;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
@@ -23,6 +24,7 @@ import net.i2p.data.Signature;
 import net.i2p.data.SigningPrivateKey;
 import net.i2p.i2ptunnel.TunnelController;
 import net.i2p.i2ptunnel.TunnelControllerGroup;
+import net.i2p.i2ptunnel.ui.GeneralHelper;
 import net.i2p.util.Addresses;
 
 /**
@@ -60,11 +62,7 @@ public class EditBean extends IndexBean {
 
     public String getTargetPort(int tunnel) {
         int port = _helper.getTargetPort(tunnel);
-        return port > 0 ? "" + port : "";
-    }
-
-    public String getSpoofedHost(int tunnel) {
-        return DataHelper.escapeHTML(_helper.getSpoofedHost(tunnel));
+        return port > 0 ? Integer.toString(port) : "";
     }
 
     public String getPrivateKeyFile(int tunnel) {
@@ -134,10 +132,6 @@ public class EditBean extends IndexBean {
         return _helper.shouldStartAutomatically(tunnel);
     }
     
-    public boolean isSharedClient(int tunnel) {
-        return _helper.isSharedClient(tunnel);
-    }
-    
     public boolean shouldDelay(int tunnel) {
         return _helper.shouldDelayConnect(tunnel);
     }
@@ -146,20 +140,44 @@ public class EditBean extends IndexBean {
         return _helper.isInteractive(tunnel);
     }
     
+    /** in or both in/out */
     public int getTunnelDepth(int tunnel, int defaultLength) {
         return _helper.getTunnelDepth(tunnel, defaultLength);
     }
     
+    /** in or both in/out */
     public int getTunnelQuantity(int tunnel, int defaultQuantity) {
         return _helper.getTunnelQuantity(tunnel, defaultQuantity);
     }
    
+    /** in or both in/out */
     public int getTunnelBackupQuantity(int tunnel, int defaultBackupQuantity) {
         return _helper.getTunnelBackupQuantity(tunnel, defaultBackupQuantity);
     }
   
+    /** in or both in/out */
     public int getTunnelVariance(int tunnel, int defaultVariance) {
         return _helper.getTunnelVariance(tunnel, defaultVariance);
+    }
+    
+    /** @since 0.9.33 */
+    public int getTunnelDepthOut(int tunnel, int defaultLength) {
+        return _helper.getTunnelDepthOut(tunnel, defaultLength);
+    }
+    
+    /** @since 0.9.33 */
+    public int getTunnelQuantityOut(int tunnel, int defaultQuantity) {
+        return _helper.getTunnelQuantityOut(tunnel, defaultQuantity);
+    }
+   
+    /** @since 0.9.33 */
+    public int getTunnelBackupQuantityOut(int tunnel, int defaultBackupQuantity) {
+        return _helper.getTunnelBackupQuantityOut(tunnel, defaultBackupQuantity);
+    }
+  
+    /** @since 0.9.33 */
+    public int getTunnelVarianceOut(int tunnel, int defaultVariance) {
+        return _helper.getTunnelVarianceOut(tunnel, defaultVariance);
     }
     
     public boolean getReduce(int tunnel) {
@@ -191,6 +209,31 @@ public class EditBean extends IndexBean {
     }
     
     /**
+     *  @since 0.9.40
+     */
+    public String getEncryptMode(int tunnel) {
+        return Integer.toString(_helper.getEncryptMode(tunnel));
+    }
+    
+    /**
+     *  @since 0.9.40
+     */
+    public String getBlindedPassword(int tunnel) {
+        return _helper.getBlindedPassword(tunnel);
+    }
+    
+    /**
+     *  List of b64 name : b64key
+     *  Pubkeys for DH, privkeys for PSK
+     *  @param isDH true for DH, false for PSK
+     *  @return non-null
+     *  @since 0.9.41
+     */
+    public List<String> getClientAuths(int tunnel, boolean isDH) {
+        return _helper.getClientAuths(tunnel, isDH);
+    }
+    
+    /**
      *  @param newTunnelType used if tunnel &lt; 0
      *  @since 0.9.12
      */
@@ -202,25 +245,68 @@ public class EditBean extends IndexBean {
     public boolean isSigTypeAvailable(int code) {
         return SigType.isAvailable(code);
     }
-    
+
+    /** @since 0.9.33 */
+    public boolean canChangeSigType(int tunnel) {
+        if (!canChangeEncType(tunnel))
+            return false;
+        return getDestination(tunnel) == null;
+    }
+
+    /** @since 0.9.46 */
+    public boolean canChangeEncType(int tunnel) {
+        if (tunnel < 0)
+            return true;
+        if (getTunnelStatus(tunnel) != GeneralHelper.NOT_RUNNING)
+            return false;
+        if (isInitialized() && isSharedClient(tunnel)) {
+            for (TunnelController tc : _group.getControllers()) {
+                if (tc.isClient() &&
+                    Boolean.parseBoolean(tc.getSharedClient()) &&
+                    (tc.getIsRunning() || tc.getIsStarting()))
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @since 0.9.46 */
+    public boolean canChangePort(int tunnel) {
+        if (tunnel < 0)
+            return true;
+        return getTunnelStatus(tunnel) == GeneralHelper.NOT_RUNNING;
+    }
+
+    /**
+     *  @param encType code
+     *  @since 0.9.44
+     */
+    public boolean hasEncType(int tunnel, int encType) {
+        return _helper.hasEncType(tunnel, encType);
+    }
+
     /**
      *  Random keys, hidden in forms
      *  @since 0.9.18
      */
     public String getKey1(int tunnel) {
-        return _helper.getInboundRandomKey(tunnel);
+        String v = _helper.getInboundRandomKey(tunnel);
+        return encrypt(tunnel, "inbound.randomKey", v);
     }
 
     public String getKey2(int tunnel) {
-        return _helper.getOutboundRandomKey(tunnel);
+        String v = _helper.getOutboundRandomKey(tunnel);
+        return encrypt(tunnel, "outbound.randomKey", v);
     }
 
     public String getKey3(int tunnel) {
-        return _helper.getLeaseSetSigningPrivateKey(tunnel);
+        String v = _helper.getLeaseSetSigningPrivateKey(tunnel);
+        return encrypt(tunnel, "i2cp.leaseSetSigningPrivateKey", v);
     }
 
     public String getKey4(int tunnel) {
-        return _helper.getLeaseSetPrivateKey(tunnel);
+        String v = _helper.getLeaseSetPrivateKey(tunnel);
+        return encrypt(tunnel, "i2cp.leaseSetPrivateKey", v);
     }
 
     /** @since 0.8.9 */
@@ -238,6 +324,13 @@ public class EditBean extends IndexBean {
     
     public String getAccessList(int tunnel) {
         return _helper.getAccessList(tunnel);
+    }
+
+    /**
+     *  @since 0.9.40
+     */
+    public String getFilterDefinition(int tunnel) {
+        return _helper.getFilterDefinition(tunnel);
     }
     
     public String getJumpList(int tunnel) {
@@ -326,6 +419,14 @@ public class EditBean extends IndexBean {
         return _helper.getUseOutproxyPlugin(tunnel);
     }
 
+    /**
+     *  @return "connect" or "socks", default depends on tunnel type
+     *  @since 0.9.57
+     */
+    public String getOutproxyType(int tunnel) {
+        return _helper.getOutproxyType(tunnel);
+    }
+
     /** all of these are @since 0.8.3 */
     public int getLimitMinute(int tunnel) {
         return _helper.getLimitMinute(tunnel);
@@ -391,7 +492,8 @@ public class EditBean extends IndexBean {
 
     /** @since 0.8.3 */
     public Set<String> interfaceSet() {
-        return Addresses.getAllAddresses();
+        // exclude IPv6 temporary
+        return Addresses.getAddresses(true, true, true, false);
     }
 
     /** @since 0.9.12 */
@@ -416,7 +518,7 @@ public class EditBean extends IndexBean {
         if (tun != null)
             return tun.getI2CPPort();
         else
-            return "7654";
+            return Integer.toString(I2PClient.DEFAULT_LISTEN_PORT);
     }
 
     public String getCustomOptions(int tunnel) {
@@ -430,12 +532,14 @@ public class EditBean extends IndexBean {
     private static final int MAX_ADVANCED_QUANTITY = 16;
 
     /**
+     *  @param mode 0=both, 1=in, 2=out
      *  @since 0.9.7
      */
-    public String getQuantityOptions(int tunnel) {
-        int tunnelQuantity = getTunnelQuantity(tunnel, DFLT_QUANTITY);
-        boolean advanced = _context.getBooleanProperty(PROP_ADVANCED);
-        int maxQuantity = advanced ? MAX_ADVANCED_QUANTITY :
+    public String getQuantityOptions(int tunnel, int mode) {
+        int tunnelQuantity = mode == 2 ? getTunnelQuantityOut(tunnel, DFLT_QUANTITY)
+                                       : getTunnelQuantity(tunnel, DFLT_QUANTITY);
+        boolean adv = isAdvanced();
+        int maxQuantity = adv ? MAX_ADVANCED_QUANTITY :
                                      (isClient(tunnel) ? MAX_CLIENT_QUANTITY : MAX_SERVER_QUANTITY);
         if (tunnelQuantity > maxQuantity)
             maxQuantity = tunnelQuantity;
@@ -445,8 +549,13 @@ public class EditBean extends IndexBean {
              if (i == tunnelQuantity)
                  buf.append(" selected=\"selected\"");
              buf.append('>');
-             buf.append(ngettext("{0} inbound, {0} outbound tunnel", "{0} inbound, {0} outbound tunnels", i));
-             if (i <= 3) {
+             if (mode == 1)
+                 buf.append(ngettext("{0} inbound tunnel", "{0} inbound tunnels", i));
+             else if (mode == 2)
+                 buf.append(ngettext("{0} outbound tunnel", "{0} outbound tunnels", i));
+             else
+                 buf.append(ngettext("{0} inbound, {0} outbound tunnel", "{0} inbound, {0} outbound tunnels", i));
+             if (i <= 3 && !adv) {
                  buf.append(" (");
                  if (i == 1)
                      buf.append(_t("lower bandwidth and reliability"));
@@ -459,5 +568,15 @@ public class EditBean extends IndexBean {
              buf.append("</option>\n");
         }
         return buf.toString();
+    }
+
+    /**
+     *  @return translated s or ""
+     *  @since 0.9.47
+     */
+    public String unlessAdvanced(String s) {
+        if (isAdvanced())
+            return "";
+        return " (" + _t(s) + ')';
     }
 }

@@ -4,11 +4,13 @@ import java.io.File;
 import java.io.InputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import net.i2p.data.DataHelper;
 import net.i2p.router.RouterContext;
 import net.i2p.util.Addresses;
+import net.i2p.util.AddressType;
 import net.i2p.util.Log;
 import net.i2p.util.SimpleTimer;
 
@@ -32,9 +34,12 @@ public class ReseedChecker {
     private volatile String _lastStatus = "";
     private volatile String _lastError = "";
     private volatile boolean _networkLogged;
+    private volatile boolean _alreadyRun;
 
     public static final int MINIMUM = 50;
     private static final long STATUS_CLEAN_TIME = 20*60*1000;
+    // if down this long, reseed at startup
+    private static final long RESEED_MIN_DOWNTIME = 60*24*60*60*1000L;
 
     /**
      *  All reseeding must be done through this instance.
@@ -54,10 +59,17 @@ public class ReseedChecker {
      *  @return true if a reseed was started
      */
     public boolean checkReseed(int count) {
-        if (count >= MINIMUM)
-            return false;
+        if (_alreadyRun) {
+            if (count >= MINIMUM)
+                return false;
+        } else {
+            _alreadyRun = true;
+            if (count >= MINIMUM && _context.getEstimatedDowntime() < RESEED_MIN_DOWNTIME)
+                return false;
+        }
 
-        if (_context.getBooleanProperty(Reseeder.PROP_DISABLE)) {
+        if (_context.getBooleanProperty(Reseeder.PROP_DISABLE) ||
+            _context.getBooleanProperty("i2p.vmCommSystem")) {
             int x = count - 1;  // us
             // no ngettext, this is rare
             String s;
@@ -65,8 +77,10 @@ public class ReseedChecker {
                 s = "Only " + x + " peers remaining but reseed disabled by configuration";
             else
                 s = "No peers remaining but reseed disabled by configuration";
-            _lastError = s;
-            _log.logAlways(Log.WARN, s);
+            if (!s.equals(_lastError)) {
+                _lastError = s;
+                _log.logAlways(Log.WARN, s);
+            }
             return false;
         }
 
@@ -78,8 +92,10 @@ public class ReseedChecker {
                 s = "Only " + x + " peers remaining but reseed disabled by shutdown in progress";
             else
                 s = "No peers remaining but reseed disabled by shutdown in progress";
-            _lastError = s;
-            _log.logAlways(Log.WARN, s);
+            if (!s.equals(_lastError)) {
+                _lastError = s;
+                _log.logAlways(Log.WARN, s);
+            }
             return false;
         }
 
@@ -91,7 +107,8 @@ public class ReseedChecker {
         File noReseedFileAlt2 = new File(_context.getConfigDir(), ".i2pnoreseed");
         File noReseedFileAlt3 = new File(_context.getConfigDir(), "noreseed.i2p");
         if (!noReseedFile.exists() && !noReseedFileAlt1.exists() && !noReseedFileAlt2.exists() && !noReseedFileAlt3.exists()) {
-            if (!Addresses.isConnected()) {
+            Set<AddressType> addrs = Addresses.getConnectedAddressTypes();
+            if (!addrs.contains(AddressType.IPV4) && !addrs.contains(AddressType.IPV6)) {
                 if (!_networkLogged) {
                     _log.logAlways(Log.WARN, "Cannot reseed, no network connection");
                     _networkLogged = true;
@@ -112,8 +129,10 @@ public class ReseedChecker {
                 s = "Only " + x + " peers remaining but reseed disabled by config file";
             else
                 s = "No peers remaining but reseed disabled by config file";
-            _lastError = s;
-            _log.logAlways(Log.WARN, s);
+            if (!s.equals(_lastError)) {
+                _lastError = s;
+                _log.logAlways(Log.WARN, s);
+            }
             return false;
         }
     }
@@ -126,6 +145,7 @@ public class ReseedChecker {
      */
     public boolean requestReseed() {
         if (_inProgress.compareAndSet(false, true)) {
+            _alreadyRun = true;
             try {
                 Reseeder reseeder = new Reseeder(_context, this);
                 reseeder.requestReseed();

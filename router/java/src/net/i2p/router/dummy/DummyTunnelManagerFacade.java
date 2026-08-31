@@ -51,6 +51,7 @@ public class DummyTunnelManagerFacade implements TunnelManagerFacade {
     public int getOutboundClientTunnelCount(Hash destination) { return 0; }
     public long getLastParticipatingExpiration() { return -1; }
     public void buildTunnels(Destination client, ClientTunnelSettings settings) {}
+    public void removeTunnels(Destination client) {}
     public boolean addAlias(Destination dest, ClientTunnelSettings settings, Destination existingClient) { return false; }
     public void removeAlias(Destination dest) {}
     public TunnelPoolSettings getInboundSettings() { return null; }
@@ -75,4 +76,12 @@ public class DummyTunnelManagerFacade implements TunnelManagerFacade {
     public TunnelPool getInboundExploratoryPool() { return null; }
     public TunnelPool getOutboundExploratoryPool() { return null; }
     public void fail(Hash peer) {}
+
+    public TunnelPool getInboundPool(Hash client) {
+        return null;
+    }
+
+    public TunnelPool getOutboundPool(Hash client) {
+        return null;
+    }
 }

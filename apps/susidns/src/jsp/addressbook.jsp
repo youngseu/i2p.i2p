@@ -1,9 +1,9 @@
 <%
 /*
  * Created on Sep 02, 2005
- * 
+ *
  *  This file is part of susidns project, see http://susi.i2p/
- *  
+ *
  *  Copyright (C) 2005 <susi23@mail.i2p>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -19,7 +19,7 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *  
+ *
  * $Revision: 1.3 $
  */
 
@@ -28,55 +28,113 @@
         request.setCharacterEncoding("UTF-8");
 
     response.setHeader("X-Frame-Options", "SAMEORIGIN");
-    response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'");
+    response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'; media-src 'none'");
     response.setHeader("X-XSS-Protection", "1; mode=block");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("Accept-Ranges", "none");
 
-%>
-<%@page pageEncoding="UTF-8"%>
-<%@ page contentType="text/html"%>
-<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core"%>
+%><%@page pageEncoding="UTF-8" contentType="text/html" import="net.i2p.servlet.RequestWrapper"
+%><%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core"%>
 <jsp:useBean id="version" class="i2p.susi.dns.VersionBean" scope="application" />
 <jsp:useBean id="book" class="i2p.susi.dns.NamingServiceBean" scope="session" />
 <jsp:useBean id="intl" class="i2p.susi.dns.Messages" scope="application" />
+<%
+   String importMessages = null;
+   if (intl._t("Import").equals(request.getParameter("action"))) {
+       RequestWrapper wrequest = new RequestWrapper(request);
+       importMessages = book.importFile(wrequest);
+   }
+%>
 <jsp:setProperty name="book" property="*" />
+<% book.storeMethod(request.getMethod()); %>
 <jsp:setProperty name="book" property="resetDeletionMarks" value="1"/>
 <c:forEach items="${paramValues.checked}" var="checked">
 <jsp:setProperty name="book" property="markedForDeletion" value="${checked}"/>
 </c:forEach>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!DOCTYPE html>
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <title>${book.book} <%=intl._t("address book")%> - susidns</title>
 <link rel="stylesheet" type="text/css" href="<%=book.getTheme()%>susidns.css?<%=net.i2p.CoreVersion.VERSION%>">
-<script src="/js/resetScroll.js" type="text/javascript"></script>
+<script src="/js/resetScroll.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<script src="/js/iframeResizer.contentWindow.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<script src="js/messages.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
 </head>
 <body>
 <div class="page">
-<div id="logo">
-<a href="index"><img src="<%=book.getTheme()%>images/logo.png" alt="" title="<%=intl._t("Overview")%>" border="0"/></a>
-</div>
 <hr>
-<div id="navi">
+<%
+   String getbook = book.getBook();
+   boolean isConflicts = getbook.equals("conflicts");
+%>
+<div id="navi" class="${getbook}">
 <a id="overview" href="index"><%=intl._t("Overview")%></a>&nbsp;
-<a class="abook" href="addressbook?book=private"><%=intl._t("Private")%></a>&nbsp;
-<a class="abook" href="addressbook?book=master"><%=intl._t("Master")%></a>&nbsp;
-<a class="abook" href="addressbook?book=router"><%=intl._t("Router")%></a>&nbsp;
-<a class="abook" href="addressbook?book=published"><%=intl._t("Published")%></a>&nbsp;
+<a class="abook private" href="addressbook?book=private&amp;filter=none"><%=intl._t("Private")%></a>&nbsp;
+<a class="abook local" href="addressbook?book=local&amp;filter=none"><%=intl._t("Local")%></a>&nbsp;
+<a class="abook router" href="addressbook?book=router&amp;filter=none"><%=intl._t("Router")%><%
+    int bubbleCount = book.getBubbleCount();
+    String bubbleText = book.getBubbleText();
+    if (bubbleCount > 0) {
+        %><span class="notifbubble" <%
+        if (bubbleText != null) {
+            %> title="<%=bubbleText%>"<%
+        }
+        %>><%=bubbleCount%></span><%
+    }
+%></a>&nbsp;
+<a class="abook conflicts" href="addressbook?book=conflicts&amp;filter=none"><%=intl._t("Conflicts")%></a>&nbsp;
+<a class="abook published" href="addressbook?book=published&amp;filter=none"><%=intl._t("Published")%></a>&nbsp;
 <a id="subs" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
 <a id="config" href="config"><%=intl._t("Configuration")%></a>
 </div>
 <hr>
 <div class="headline" id="addressbook">
-<h3><%=intl._t("Address book")%>: <%=intl._t(book.getBook())%></h3>
-<h4><%=intl._t("Storage")%>: ${book.displayName}</h4>
-</div>
+<h3 id="addrtitle"><%=intl._t("Address book")%>: <%=intl._t(getbook)%></h3>
+<h4 id="storagepath"><%=intl._t("Storage")%>: ${book.displayName}</h4>
 
-<div id="messages">${book.messages}</div>
+<%
+    // This is what does the form processing.
+    // We need to do this before any notEmpty test and before loadBookMessages() which displays the entry count.
+    // Messages will be displayed below.
+    String formMessages = book.getMessages();
+%>
 
 ${book.loadBookMessages}
+<% if (getbook.equals("private")) { %>
+<div id="bookdescription">
+<p class="bookdescription">
+<%=intl._t("Addresses in the Private Address Book are not shared with anyone else unless you copy them by hand.")%>
+</p>
+</div>
+<% } else if (getbook.equals("published")) { %>
+<div id="bookdescription">
+<p class="bookdescription">
+<%=intl._t("The Published Address Book is used for sharing addresses using your I2P Site.")%>
+<%=intl._t("Sites in the Private Address Book are not published here.")%>
+</p>
+</div>
+<% } else if (getbook.equals("local")) { %>
+<div id="bookdescription">
+<p class="bookdescription">
+<%=intl._t("This is the Local Address Book.")%>
+<%=intl._t("Use it for sites that you host on this computer.")%>
+</p>
+</div>
+<% } else if (getbook.equals("router")) { %>
+<div id="bookdescription">
+<p class="bookdescription">
+<%=intl._t("The Router Address Book is automatically generated by combining the Subscriptions, Local, Private, and Published address books.")%>
+</p>
+</div>
+<% } else if (isConflicts) { %>
+<div id="bookdescription">
+<p class="bookdescription">
+<%=intl._t("The Conflicts Address Book contains entries from Subscriptions that conflict with entries in your Router address book, and allows you to resolve them.")%>
+</p>
+</div>
+<% } %>
 
 <c:if test="${book.notEmpty}">
 <% if (book.getEntries().length > 0) { /* Don't show if no results. Can't figure out how to do this with c:if */ %>
@@ -93,10 +151,29 @@ ${book.loadBookMessages}
 </div>
 </form>
 <% } /* book.getEntries().length() > 0 */ %>
+</c:if><% /* book.notEmpty */ %>
 
+</div><% /* headline */ %>
+
+<% /* need this whether book is empty or not to display the form messages */ %>
+<div id="messages"><%=formMessages%><%
+   if (importMessages != null) {
+       %><%=importMessages%><%
+   }
+%></div>
+
+<c:if test="${book.notEmpty}">
 <div id="filter">
 <c:if test="${book.hasFilter}">
-<span><%=intl._t("Current filter")%>: <b>${book.filter}</b>
+<span id="filterheader"><%=intl._t("Current filter")%>:
+<%
+    String f = book.getFilter();
+    if ("latest".equals(f))
+        f = intl._t(f);
+    else if ("xn--".equals(f))
+        f = intl._t("other");
+%>
+<b><%=f%></b>
 <a href="addressbook?filter=none&amp;begin=0&amp;end=49"><%=intl._t("clear filter")%></a></span>
 </c:if>
 <c:if test="${!book.hasFilter}">
@@ -131,6 +208,17 @@ ${book.loadBookMessages}
 <a href="addressbook?filter=z&amp;begin=0&amp;end=49">z</a>
 <a href="addressbook?filter=0-9&amp;begin=0&amp;end=49">0-9</a>
 <a href="addressbook?filter=xn--&amp;begin=0&amp;end=49"><%=intl._t("other")%></a>
+<% if (!getbook.equals("published")) { %>
+   <a href="addressbook?filter=latest&amp;begin=0&amp;end=49"><%=intl._t("latest")%><%
+    if (bubbleCount > 0 && getbook.equals("router")) {
+        %><span class="notifbubble" <%
+        if (bubbleText != null) {
+            %> title="<%=bubbleText%>"<%
+        }
+        %>><%=bubbleCount%></span><%
+    }
+    %></a>
+<% } %>
 <a href="addressbook?filter=none&amp;begin=0&amp;end=49"><%=intl._t("all")%></a>
 </p>
 </div>
@@ -140,12 +228,10 @@ ${book.loadBookMessages}
 <input type="hidden" name="book" value="${book.book}">
 <input type="hidden" name="begin" value="0">
 <input type="hidden" name="end" value="49">
-<table>
-<tr>
-<td class="search"><%=intl._t("Search")%>: <input class="search" type="text" name="search" value="${book.search}" size="20" ></td>
-<td class="search"><input class="search" type="submit" name="submitsearch" value="<%=intl._t("Search")%>" ></td>
-</tr>
-</table>
+<div id="booksearch">
+<input class="search" type="text" name="search" value="${book.search}" size="20" >
+<input class="search" type="submit" name="submitsearch" value="<%=intl._t("Search")%>" >
+</div>
 </form>
 </div>
 </c:if>
@@ -168,24 +254,63 @@ ${book.loadBookMessages}
 <% if (book.getEntries().length > 0) { /* Don't show if no results. Can't figure out how to do this with c:if */ %>
 <th><%=intl._t("Hostname")%></th>
 <th><%=intl._t("Link (b32)")%></th>
-<th>Helper</th>
-<th>Details</th>
+<th>
+<%
+   if (!isConflicts) {
+       %><%=intl._t("Helper")%><%
+   }
+%>
+</th>
+<th>
+<%
+   if (isConflicts) {
+       %><%=intl._t("Resolve Conflict")%><%
+   } else {
+       %><%=intl._t("Details")%><%
+   }
+%>
+</th>
 <th><%=intl._t("Destination")%></th>
 
 <c:if test="${book.validBook}">
-<th title="<%=intl._t("Select hosts for deletion from addressbook")%>"></th>
+<th title="<%=intl._t("Select hosts for deletion from address book")%>"></th>
 </c:if>
 
 </tr>
-
+<%
+    boolean haveImagegen = book.haveImagegen();
+%>
 <!-- limit iterator, or "Form too large" may result on submit, and is a huge web page if we don't -->
 <c:forEach items="${book.entries}" var="addr" begin="${book.resultBegin}" end="${book.resultEnd}">
 <tr class="list${book.trClass}">
-<td class="names"><a href="/imagegen/id?s=256&amp;c=${addr.b32}" target="_blank" title="<%=intl._t("View larger version of identicon for this hostname")%>"><img src="/imagegen/id?s=20&amp;c=${addr.b32}"></a><a href="http://${addr.name}/" target="_top">${addr.displayName}</a></td>
+<td class="names">
+<%
+    if (haveImagegen) {
+%>
+<a href="/imagegen/id?s=256&amp;c=${addr.b32}" target="_blank" title="<%=intl._t("View larger version of identicon for this hostname")%>"><img src="/imagegen/id?s=20&amp;c=${addr.b32}"></a>
+<%
+    }  // haveImagegen
+    if (isConflicts) {
+%>
+${addr.displayName}
+<%
+    }  else {
+%>
+<a href="http://${addr.name}/" target="_top">${addr.displayName}</a>
+<%
+    }
+%>
+</td>
 <td class="names"><span class="addrhlpr"><a href="http://${addr.b32}/" target="_blank" title="<%=intl._t("Base 32 address")%>">b32</a></span></td>
-<td class="helper"><a href="http://${addr.name}/?i2paddresshelper=${addr.destination}" target="_blank" title="<%=intl._t("Helper link to share host address with option to add to addressbook")%>">link</a></td>
+<td class="helper">
+<%
+   if (!isConflicts) {
+       %><a href="http://${addr.name}/?i2paddresshelper=${addr.destination}" target="_blank" title="<%=intl._t("Helper link to share host address with option to add to address book")%>">link</a><%
+    }
+%>
+</td>
 <td class="names"><span class="addrhlpr"><a href="details?h=${addr.name}&amp;book=${book.book}" title="<%=intl._t("More information on this entry")%>"><%=intl._t("details")%></a></span></td>
-<td class="destinations"><div class="destaddress" name="dest_${addr.name}" width="200px" tabindex="0" onblur="resetScrollLeft(this)">${addr.destination}</div></td>
+<td class="destinations"><div class="destaddress resetScrollLeft" name="dest_${addr.name}" width="200px" tabindex="0">${addr.destination}</div></td>
 
 <c:if test="${book.validBook}">
 <td class="checkbox"><input type="checkbox" name="checked" value="${addr.name}" title="<%=intl._t("Mark for deletion")%>"></td>
@@ -194,7 +319,7 @@ ${book.loadBookMessages}
 </tr>
 
 </c:forEach>
-<% } /* book..getEntries().length() > 0 */ %>
+<% } /* book.getEntries().length() > 0 */ %>
 </table>
 </div>
 
@@ -207,43 +332,69 @@ ${book.loadBookMessages}
 </p>
 </div>
 </c:if>
-<% } /* book..getEntries().length() > 0 */ %>
+<% } /* book.getEntries().length() > 0 */ %>
 </form>
 </c:if><% /* book.notEmpty */ %>
 
 <c:if test="${book.isEmpty}">
-<div id="book">
+<div id="emptybook">
 <p class="book"><%=intl._t("This address book is empty.")%></p>
 </div>
 </c:if>
 
+<% if (!isConflicts) { %>
 <form method="POST" action="addressbook">
 <input type="hidden" name="book" value="${book.book}">
 <input type="hidden" name="serial" value="<%=susiNonce%>">
 <input type="hidden" name="begin" value="0">
 <input type="hidden" name="end" value="49">
 <div id="add">
-<h3><%=intl._t("Add new destination")%></h3>
-<table>
+<h3 id="addnewaddr" class="unexpanded"><%=intl._t("Add new destination")%></h3>
+<table id="addnewaddrtable">
 <tr>
 <td><b><%=intl._t("Hostname")%></b></td>
 <td><input type="text" name="hostname" value="${book.hostname}" size="54"></td>
 </tr>
 <tr>
-<td><b><%=intl._t("Destination")%></b></td>
-<td><textarea name="destination" rows="1" style="height:3em" wrap="off" cols="70" spellcheck="false">${book.destination}</textarea></td>
+<td><b><%=intl._t("Destination or Base 32 Address")%></b></td>
+<td><input type="text" name="destination" value="${book.destination}" size="70"></td>
 </tr>
 </table>
-<p class="buttons">
+<p class="buttons" id="addnewaddrbutton">
 <input class="cancel" type="reset" value="<%=intl._t("Cancel")%>" >
+<c:if test="${book.notEmpty}">
 <input class="accept" type="submit" name="action" value="<%=intl._t("Replace")%>" >
-<% if (!book.getBook().equals("published")) { %>
+<% if (!getbook.equals("published")) { %>
   <input class="add" type="submit" name="action" value="<%=intl._t("Add Alternate")%>" >
 <% } %>
+</c:if><% /* book.notEmpty */ %>
 <input class="add" type="submit" name="action" value="<%=intl._t("Add")%>" >
 </p>
 </div>
 </form>
+<% } %>
+
+<% if (!getbook.equals("published") && !isConflicts) { %>
+<form method="POST" action="addressbook" enctype="multipart/form-data" accept-charset="UTF-8">
+<input type="hidden" name="book" value="${book.book}">
+<input type="hidden" name="serial" value="<%=susiNonce%>">
+<input type="hidden" name="begin" value="0">
+<input type="hidden" name="end" value="49">
+<div id="import">
+<h3 id="importhosts" class="unexpanded"><%=intl._t("Import from hosts.txt file")%></h3>
+<table id="importhostsform">
+<tr>
+<td><b><%=intl._t("File")%></b></td>
+<td><input name="file" type="file" accept=".txt" value="" /></td>
+</tr>
+</table>
+<p class="buttons" id="importhostsbuttons">
+<input class="cancel" type="reset" value="<%=intl._t("Cancel")%>" >
+<input class="download" type="submit" name="action" value="<%=intl._t("Import")%>" >
+</p>
+</div>
+</form>
+<% } %>
 
 <div id="footer">
 <hr>

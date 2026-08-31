@@ -8,7 +8,9 @@ import net.i2p.data.i2np.TunnelDataMessage;
 import net.i2p.router.JobImpl;
 import net.i2p.router.OutNetMessage;
 import net.i2p.router.RouterContext;
+import net.i2p.router.RouterThrottleImpl;
 import net.i2p.util.Log;
+import net.i2p.util.SyntheticREDQueue;
 
 /**
  * Participate in a tunnel at a location other than the gateway or outbound
@@ -25,12 +27,15 @@ class TunnelParticipant {
     private final InboundEndpointProcessor _inboundEndpointProcessor;
     private final InboundMessageDistributor _inboundDistributor;
     private final FragmentHandler _handler;
+    private final SyntheticREDQueue _partBWE;
     private RouterInfo _nextHopCache;
 
     private static final long MAX_LOOKUP_TIME = 15*1000;
     /** for next hop when a tunnel is first created */
     private static final long LONG_MAX_LOOKUP_TIME = 30*1000;
     private static final int PRIORITY = OutNetMessage.PRIORITY_PARTICIPATING;
+    /** @since 0.9.70 from BuildHandler */
+    static final int DEFAULT_BW_PER_TUNNEL_ESTIMATE = RouterThrottleImpl.DEFAULT_MESSAGES_PER_TUNNEL_ESTIMATE * 1024 / (10*60);
 
     /** not an inbound endpoint */
     public TunnelParticipant(RouterContext ctx, HopConfig config, HopProcessor processor) {
@@ -53,7 +58,7 @@ class TunnelParticipant {
         _config = config;
         _processor = processor;
         if ( (config == null) || (config.getSendTo() == null) )
-            _handler = new RouterFragmentHandler(ctx, new DefragmentedHandler());
+            _handler = new FragmentHandler(ctx, new DefragmentedHandler(), true);
         else
             _handler = null; // final
 
@@ -67,6 +72,16 @@ class TunnelParticipant {
             _nextHopCache = _context.netDb().lookupRouterInfoLocally(_config.getSendTo());
             if (_nextHopCache == null)
                 _context.netDb().lookupRouterInfo(_config.getSendTo(), new Found(_context), null, LONG_MAX_LOOKUP_TIME);
+        }
+        if (inEndProc == null) {
+            int max = _config.getAllocatedBW();
+            if (max <= DEFAULT_BW_PER_TUNNEL_ESTIMATE) {
+                max = _context.tunnelDispatcher().getMaxPerTunnelBandwidth(TunnelDispatcher.Location.PARTICIPANT);
+                _config.setAllocatedBW(max);
+            }
+            _partBWE = new SyntheticREDQueue(_context, max);
+        } else {
+            _partBWE = null;
         }
         // all createRateStat() in TunnelDispatcher
     }
@@ -85,10 +100,11 @@ class TunnelParticipant {
     
     public void dispatch(TunnelDataMessage msg, Hash recvFrom) {
         boolean ok = false;
+        byte[] data = msg.getData();
         if (_processor != null)
-            ok = _processor.process(msg.getData(), 0, msg.getData().length, recvFrom);
+            ok = _processor.process(data, 0, data.length, recvFrom);
         else if (_inboundEndpointProcessor != null) 
-            ok = _inboundEndpointProcessor.retrievePreprocessedData(msg.getData(), 0, msg.getData().length, recvFrom);
+            ok = _inboundEndpointProcessor.retrievePreprocessedData(data, 0, data.length, recvFrom);
         
         if (!ok) {
             if (_log.shouldLog(Log.WARN))
@@ -96,7 +112,6 @@ class TunnelParticipant {
                            + " inboundEndpoint=" + _inboundEndpointProcessor);
             if (_config != null)
                 _config.incrementProcessedMessages();
-            _context.statManager().addRateData("tunnel.corruptMessage", 1, 1);
             return;
         }
         
@@ -122,16 +137,32 @@ class TunnelParticipant {
                                                   new TimeoutJob(_context, msg), MAX_LOOKUP_TIME);
             }
         } else {
-            _inboundEndpointProcessor.getConfig().incrementProcessedMessages();
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Receive fragment: on " + _config + ": " + msg);
-            _handler.receiveTunnelMessage(msg.getData(), 0, msg.getData().length);
+            // IBEP
+            TunnelCreatorConfig cfg = _inboundEndpointProcessor.getConfig();
+            cfg.incrementProcessedMessages();
+            ok = _handler.receiveTunnelMessage(data, 0, data.length);
+            if (ok) {
+                if (_log.shouldLog(Log.DEBUG))
+                    _log.debug("Receive fragment: on " + _config + ": " + msg);
+            } else {
+                // blame everybody equally
+                int lenm1 = cfg.getLength() - 1;
+                if (lenm1 > 0) {
+                    int pct = 100 / (lenm1);
+                    for (int i = 0; i < lenm1; i++) {
+                        Hash h = cfg.getPeer(i);
+                        if (_log.shouldLog(Log.WARN))
+                            _log.warn(toString() + ": Blaming " + h + ' ' + pct + '%');
+                        _context.profileManager().tunnelFailed(h, pct);
+                    }
+                }
+            }
         }
     }
     
 /****
     private int _periodMessagesTransferred;
-    private long _lastCoallesced = System.currentTimeMillis();
+    private long _lastCoalesced = System.currentTimeMillis();
 ****/
 
     /** 
@@ -145,12 +176,12 @@ class TunnelParticipant {
     private void incrementThroughput(Hash prev) {
         if (true) return;
         long now = System.currentTimeMillis();
-        long timeSince = now - _lastCoallesced;
+        long timeSince = now - _lastCoalesced;
         if (timeSince >= 60*1000) {
             int amount = 1024 * _periodMessagesTransferred;
             int normalized = (int)((double)amount * 60d*1000d / (double)timeSince);
             _periodMessagesTransferred = 0;
-            _lastCoallesced = now;
+            _lastCoalesced = now;
             _context.profileManager().tunnelDataPushed1m(prev, normalized);
         } else {
             _periodMessagesTransferred++;
@@ -184,15 +215,14 @@ class TunnelParticipant {
 
     private void send(HopConfig config, TunnelDataMessage msg, RouterInfo ri) {
         if (_context.tunnelDispatcher().shouldDropParticipatingMessage(TunnelDispatcher.Location.PARTICIPANT,
-                                                                       TunnelDataMessage.MESSAGE_TYPE, 1024))
+                                                                       TunnelDataMessage.MESSAGE_TYPE, 1024, _partBWE))
             return;
         //_config.incrementSentMessages();
-        _context.bandwidthLimiter().sentParticipatingMessage(1024);
         long oldId = msg.getUniqueId();
         long newId = _context.random().nextLong(I2NPMessage.MAX_ID_VALUE);
         _context.messageHistory().wrap("TunnelDataMessage", oldId, "TunnelDataMessage", newId);
         msg.setUniqueId(newId);
-        msg.setMessageExpiration(_context.clock().now() + 10*1000);
+        msg.setMessageExpiration(_context.clock().now() + 20*1000);
         msg.setTunnelId(config.getSendTunnel());
         OutNetMessage m = new OutNetMessage(_context, msg, msg.getMessageExpiration(), PRIORITY, ri);
         if (_log.shouldLog(Log.DEBUG))

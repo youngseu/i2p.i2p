@@ -1,20 +1,34 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa.math.bigint;
 
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.*;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 import java.math.BigInteger;
+import java.util.Random;
 
 import net.i2p.crypto.eddsa.Utils;
 import net.i2p.crypto.eddsa.math.Field;
 import net.i2p.crypto.eddsa.math.FieldElement;
+import net.i2p.crypto.eddsa.math.MathUtils;
+import net.i2p.crypto.eddsa.math.AbstractFieldElementTest;
 import org.junit.Test;
 
 /**
  * @author str4d
  *
  */
-public class BigIntegerFieldElementTest {
+public class BigIntegerFieldElementTest extends AbstractFieldElementTest {
     static final byte[] BYTES_ZERO = Utils.hexToBytes("0000000000000000000000000000000000000000000000000000000000000000");
     static final byte[] BYTES_ONE = Utils.hexToBytes("0100000000000000000000000000000000000000000000000000000000000000");
     static final byte[] BYTES_TEN = Utils.hexToBytes("0a00000000000000000000000000000000000000000000000000000000000000");
@@ -27,6 +41,27 @@ public class BigIntegerFieldElementTest {
     static final FieldElement ZERO = new BigIntegerFieldElement(ed25519Field, BigInteger.ZERO);
     static final FieldElement ONE = new BigIntegerFieldElement(ed25519Field, BigInteger.ONE);
     static final FieldElement TWO = new BigIntegerFieldElement(ed25519Field, BigInteger.valueOf(2));
+
+    protected FieldElement getRandomFieldElement() {
+        BigInteger r;
+        Random rnd = new Random();
+        do {
+            r = new BigInteger(255, rnd);
+        } while (r.compareTo(getQ()) >= 0);
+        return new BigIntegerFieldElement(ed25519Field, r);
+    }
+
+    protected BigInteger toBigInteger(FieldElement f) {
+        return ((BigIntegerFieldElement)f).bi;
+    }
+
+    protected BigInteger getQ() {
+        return MathUtils.getQ();
+    }
+
+    protected Field getField() {
+        return ed25519Field;
+    }
 
     /**
      * Test method for {@link BigIntegerFieldElement#BigIntegerFieldElement(Field, BigInteger)}.
@@ -58,91 +93,15 @@ public class BigIntegerFieldElementTest {
 
     // region isNonZero
 
-    @Test
-    public void isNonZeroReturnsFalseIfFieldElementIsZero() {
-        // Assert:
-        assertThat(ZERO.isNonZero(), is(equalTo(false)));
+    protected FieldElement getZeroFieldElement() {
+        return ZERO;
     }
 
-    @Test
-    public void isNonZeroReturnsTrueIfFieldElementIsNonZero() {
-        // Assert:
-        assertThat(TWO.isNonZero(), is(equalTo(true)));
+    protected FieldElement getNonZeroFieldElement() {
+        return TWO;
     }
 
     // endregion
-
-    /**
-     * Test method for {@link FieldElement#isNegative()}.
-     */
-    @Test
-    public void testIsNegative() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#add(FieldElement)}.
-     */
-    @Test
-    public void testAdd() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#subtract(FieldElement)}.
-     */
-    @Test
-    public void testSubtract() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#negate()}.
-     */
-    @Test
-    public void testNegate() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#multiply(FieldElement)}.
-     */
-    @Test
-    public void testMultiply() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#square()}.
-     */
-    @Test
-    public void testSquare() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#squareAndDouble()}.
-     */
-    @Test
-    public void testSquareAndDouble() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#invert()}.
-     */
-    @Test
-    public void testInvert() {
-        //fail("Not yet implemented");
-    }
-
-    /**
-     * Test method for {@link FieldElement#pow22523()}.
-     */
-    @Test
-    public void testPow22523() {
-        //fail("Not yet implemented");
-    }
 
     /**
      * Test method for {@link FieldElement#equals(java.lang.Object)}.

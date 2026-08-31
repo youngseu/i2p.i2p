@@ -30,7 +30,7 @@ public class BitField
 {
 
   private final byte[] bitfield;
-  private final int size;
+  protected final int size;
   private int count;
 
   /**
@@ -67,10 +67,22 @@ public class BitField
   }
 
   /**
+   * For CompleteBitField. All methods except size() must be overridden.
+   *
+   * @since 0.9.71
+   */
+  protected BitField(int size, int dummy) {
+    this.size = size;
+    bitfield = null;
+  }
+
+  /**
    * This returns the actual byte array used.  Changes to this array
    * affect this BitField.  Note that some bits at the end of the byte
    * array are supposed to be always unset if they represent bits
    * bigger then the size of the bitfield.
+   *
+   * Caller should synch on this and copy!
    */
   public byte[] getFieldBytes()
   {
@@ -170,21 +182,80 @@ public class BitField
     return count >= size;
   }
 
-    @Override
+  /** @since 0.9.33 */
+  @Override
+  public int hashCode() {
+      return (count << 16) ^ size;
+  }
+
+  /** @since 0.9.33 */
+  @Override
+  public boolean equals(Object o) {
+      if (o == null || !(o instanceof BitField))
+          return false;
+      BitField bf = (BitField) o;
+      return count == bf.count() &&
+             size == bf.size() &&
+             (count == size || Arrays.equals(bitfield, bf.getFieldBytes()));
+  }
+
+  @Override
   public String toString()
   {
-    // Not very efficient
+    // generate a compact representation
     StringBuilder sb = new StringBuilder("BitField(");
     sb.append(size).append(")[");
-    for (int i = 0; i < size; i++)
-      if (get(i))
-        {
-          sb.append(' ');
-          sb.append(i);
+    int first = -1;
+    int last = -2;
+    for (int i = 0; i < size; i++) {
+        if (get(i)) {
+            if (i == last + 1) {
+                last++;
+            } else  {
+                first = i;
+                last = i;
+                sb.append(i);
+            }
+        } else if (last >= 0) {
+            if (last != first) {
+                sb.append('-');
+                sb.append(i - 1);
+            }
+            sb.append(' ');
+            first = -1;
+            last = -1;
         }
-    sb.append(" ]");
-
+    }
+    if (last >= 0 && last != first) {
+        sb.append('-');
+        sb.append(last);
+    }
+    sb.append("]");
     return sb.toString();
   }
 
+/*
+  // toString() test
+  public static void main(String[] args) {
+      BitField bf = new BitField(128);
+      net.i2p.util.RandomSource r = net.i2p.util.RandomSource.getInstance();
+      for (int i = 0; i < 96; i++) {
+          bf.set(r.nextInt(128));
+      }
+      // set last two to test final output
+      bf.set(126);
+      bf.set(127);
+      // old way
+      StringBuilder sb = new StringBuilder(1024);
+      for (int i = 0; i < 128; i++) {
+          if (bf.get(i)) {
+              sb.append(i);
+              sb.append(' ');
+          }
+      }
+      System.out.println(sb);
+      // new way
+      System.out.println(bf.toString());
+  }
+*/
 }

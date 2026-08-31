@@ -85,6 +85,10 @@ public class SingleFileNamingService extends NamingService {
      */
     @Override
     public Destination lookup(String hostname, Properties lookupOptions, Properties storedOptions) {
+        if (hostname.endsWith(".i2p.alt")) {
+            // RFC 9476
+            hostname = hostname.substring(0, hostname.length() - 4);
+        }
         try {
             String key = getKey(hostname);
             if (key == null && hostname.startsWith("www.") && hostname.length() > 7)
@@ -210,11 +214,13 @@ public class SingleFileNamingService extends NamingService {
             }
             return success;
         } catch (IOException ioe) {
-            if (in != null) try { in.close(); } catch (IOException e) {}
-            if (out != null) try { out.close(); } catch (IOException e) {}
             _log.error("Error adding " + hostname, ioe);
             return false;
-        } finally { releaseWriteLock(); }
+        } finally {
+            if (in != null) try { in.close(); } catch (IOException e) {}
+            if (out != null) try { out.close(); } catch (IOException e) {}
+            releaseWriteLock();
+        }
     }
 
     /** 
@@ -250,16 +256,17 @@ public class SingleFileNamingService extends NamingService {
             if (options != null)
                 writeOptions(options, out);
             out.write('\n');
-            out.close();
             for (NamingServiceListener nsl : _listeners) { 
                 nsl.entryAdded(this, hostname, d, options);
             }
             return true;
         } catch (IOException ioe) {
-            if (out != null) try { out.close(); } catch (IOException e) {}
             _log.error("Error adding " + hostname, ioe);
             return false;
-        } finally { releaseWriteLock(); }
+        } finally {
+            if (out != null) try { out.close(); } catch (IOException e) {}
+            releaseWriteLock();
+        }
     }
 
     /** 
@@ -333,17 +340,17 @@ public class SingleFileNamingService extends NamingService {
             }
             return success;
         } catch (IOException ioe) {
-            if (in != null) try { in.close(); } catch (IOException e) {}
-            if (out != null) try { out.close(); } catch (IOException e) {}
             _log.error("Error removing " + hostname, ioe);
             return false;
         } finally {
+            if (in != null) try { in.close(); } catch (IOException e) {}
+            if (out != null) try { out.close(); } catch (IOException e) {}
             releaseWriteLock();
         }
     }
 
     /**
-     * @param options As follows:
+     * @param options null OK, or as follows:
      *                Key "search": return only those matching substring
      *                Key "startsWith": return only those starting with
      *                                  ("[0-9]" allowed)
@@ -410,7 +417,7 @@ public class SingleFileNamingService extends NamingService {
     /**
      *  Overridden since we store base64 natively.
      *
-     *  @param options As follows:
+     *  @param options null OK, or as follows:
      *                 Key "search": return only those matching substring
      *                 Key "startsWith": return only those starting with
      *                                   ("[0-9]" allowed)
@@ -506,7 +513,7 @@ public class SingleFileNamingService extends NamingService {
 
     /**
      *  @param options ignored
-     *  @return all known host names, unsorted
+     *  @return all known hostnames, unsorted
      */
     public Set<String> getNames(Properties options) {
         if (!_file.exists())

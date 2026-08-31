@@ -1,10 +1,21 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa.math;
 
 import java.io.Serializable;
 
 /**
  * A twisted Edwards curve.
- * Points on the curve satisfy -x^2 + y^2 = 1 + d x^2y^2
+ * Points on the curve satisfy $-x^2 + y^2 = 1 + d x^2y^2$
  *
  * @since 0.9.15
  * @author str4d
@@ -19,6 +30,7 @@ public class Curve implements Serializable {
 
     private final GroupElement zeroP2;
     private final GroupElement zeroP3;
+    private final GroupElement zeroP3PrecomputedDouble;
     private final GroupElement zeroPrecomp;
 
     public Curve(Field f, byte[] d, FieldElement I) {
@@ -30,7 +42,8 @@ public class Curve implements Serializable {
         FieldElement zero = f.ZERO;
         FieldElement one = f.ONE;
         zeroP2 = GroupElement.p2(this, zero, one, one);
-        zeroP3 = GroupElement.p3(this, zero, one, one, zero);
+        zeroP3 = GroupElement.p3(this, zero, one, one, zero, false);
+        zeroP3PrecomputedDouble = GroupElement.p3(this, zero, one, one, zero, true);
         zeroPrecomp = GroupElement.precomp(this, one, one, zero);
     }
 
@@ -56,6 +69,8 @@ public class Curve implements Serializable {
             return zeroP2;
         case P3:
             return zeroP3;
+        case P3PrecomputedDouble:
+            return zeroP3PrecomputedDouble;
         case PRECOMP:
             return zeroPrecomp;
         default:
@@ -64,9 +79,7 @@ public class Curve implements Serializable {
     }
 
     public GroupElement createPoint(byte[] P, boolean precompute) {
-        GroupElement ge = new GroupElement(this, P);
-        if (precompute)
-            ge.precompute(true);
+        GroupElement ge = new GroupElement(this, P, precompute);
         return ge;
     }
 

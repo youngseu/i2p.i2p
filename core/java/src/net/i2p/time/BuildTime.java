@@ -34,10 +34,10 @@ public class BuildTime {
     private static final long _latestTime;
     private static final long YEARS_25 = 25L*365*24*60*60*1000;
     /** update this periodically */
-    private static final String EARLIEST = "2017-10-11 12:00:00 UTC";
+    private static final String EARLIEST = "2025-05-26 12:00:00 UTC";
     // fallback if parse fails ticket #1976
-    // date -d 201x-xx-xx +%s
-    private static final long EARLIEST_LONG = 1507694400 * 1000L;
+    // date -d 202x-xx-xx +%s
+    private static final long EARLIEST_LONG = 1748217600 * 1000L;
 
     static {
         // this is the standard format of build.timestamp as set in the top-level build.xml
@@ -116,7 +116,7 @@ public class BuildTime {
     private static long getBuildTime(SimpleDateFormat fmt, String jar) {
         if (SystemVersion.isAndroid())
             return 0;
-        File f = new File(I2PAppContext.getGlobalContext().getBaseDir(), "lib");
+        File f = I2PAppContext.getGlobalContext().getLibDir();
         f = new File(f, jar);
         Attributes atts = attributes(f);
         if (atts == null)
@@ -146,18 +146,20 @@ public class BuildTime {
         }
     }
 
-/****
     public static void main(String[] args) {
+        System.out.println("Hard earliest:      " + new Date(EARLIEST_LONG));
         long date = getEarliestTime();
-        System.out.println("Earliest date: " + new Date(date));
+        System.out.println("Earliest date:      " + new Date(date));
         date = getBuildTime();
-        System.out.println("Build date:    " + new Date(date));
+        System.out.println("Build date:         " + new Date(date));
+        SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US);
+        date = getBuildTime(fmt, "i2p.jar");
+        System.out.println("i2p.jar build date: " + (date > 0 ? new Date(date) : "not found"));
         date = System.currentTimeMillis();
-        System.out.println("System time:   " + new Date(date));
+        System.out.println("System time:        " + new Date(date));
         date = I2PAppContext.getGlobalContext().clock().now();
-        System.out.println("I2P time:      " + new Date(date));
+        System.out.println("I2P time:           " + new Date(date));
         date = getLatestTime();
-        System.out.println("Latest date:   " + new Date(date));
+        System.out.println("Latest date:        " + new Date(date));
     }
-****/
 }

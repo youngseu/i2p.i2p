@@ -1,7 +1,7 @@
 <%@page contentType="text/html"%>
 <%@page trimDirectiveWhitespaces="true"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!DOCTYPE html>
 <%
 /*
  * All links in the summary bar must have target="_top"
@@ -10,7 +10,7 @@
 %>
 <html><head>
 <%@include file="css.jsi" %>
-<title>Summary Bar</title>
+<title>Sidebar</title>
 <%
     // try hard to avoid an error page in the iframe after shutdown
     String action = request.getParameter("action");
@@ -23,7 +23,7 @@
     if (!shutdownSoon) {
         if (d == null || "".equals(d)) {
             // set below
-        } else if (net.i2p.router.web.CSSHelper.getNonce().equals(conNonceParam)) {
+        } else if (net.i2p.router.web.CSSHelper.validateNonce(session, conNonceParam, true)) {
             d = net.i2p.data.DataHelper.stripHTML(d);  // XSS
             intl.setRefresh(d);
             intl.setDisableRefresh(d);
@@ -43,7 +43,7 @@
                     } catch(InterruptedException ie) {}
                 }
             }
-            long timeleft = net.i2p.router.web.ConfigRestartBean.getRestartTimeRemaining();
+            long timeleft = net.i2p.router.web.helpers.ConfigRestartBean.getRestartTimeRemaining();
             long delay = 60;
             try { delay = Long.parseLong(d); } catch (NumberFormatException nfe) {}
             if (delay*1000 < timeleft + 5000)
@@ -55,7 +55,7 @@
 %>
 </head><body style="margin: 0;"><div class="routersummary">
 <jsp:useBean class="net.i2p.router.web.NewsHelper" id="newshelper" scope="request" />
-<jsp:setProperty name="newshelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
+<jsp:setProperty name="newshelper" property="contextId" value="<%=i2pcontextId%>" />
 <%
     java.io.File newspath = new java.io.File(net.i2p.I2PAppContext.getGlobalContext().getRouterDir(), "docs/news.xml");
 %>

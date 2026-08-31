@@ -46,3 +46,20 @@ sloccount.sc
 
 # but allow debian/patches
 !/debian/patches/*.(patch|diff)
+
+# IDE project files
+# Eclipse
+.classpath
+.project
+.settings/
+# IDEA
+*.iml
+.idea
+
+# Gradle
+.gradle
+
+# TODO: why does this file appear?
+apps/routerconsole/jsp/favicon.ico
+.tx
+/*.sh

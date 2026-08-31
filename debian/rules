@@ -25,6 +25,7 @@ build:
 	@echo 'The build target is disabled. Use the appropriate binary target.'
 
 JAVA_HOME=/usr/lib/jvm/default-java
+
 I2P=$(CURDIR)/pkg-temp
 ROUTERVERSION=$(CURDIR)/router/java/src/net/i2p/router/RouterVersion.java
 export DEB_BUILD_HARDENING=1
@@ -37,8 +38,20 @@ export DEBIANVERSION := $(shell dpkg-parsechangelog |awk -F' ' '/^Version:/{prin
 export BITS := $(shell dpkg-architecture -qDEB_HOST_ARCH_BITS)
 #export DEB_HOST_ARCH_CPU := $(shell dpkg-architecture -qDEB_HOST_ARCH_CPU)
 
+# debian: bullseye - transitioning
+JSON_SIMPLE_VERSION = $(shell dpkg -l libjson-simple-java | grep '^ii' | awk '{print $$3}')
+JSON_SIMPLE_3 = $(shell dpkg --compare-versions '$(JSON_SIMPLE_VERSION)' 'gt' '3.1.1-1~' && echo yes || echo no)
+ifeq (yes,$(JSON_SIMPLE_3))
+JSON_SIMPLE_PACKAGE = com.github.cliftonlabs.json_simple
+JSON_EXCEPTION = JsonException
+else
+JSON_SIMPLE_PACKAGE = org.json.simple
+JSON_EXCEPTION = DeserializationException
+endif
+
+
 %:
-	dh $@ --with systemd,quilt,bash-completion
+	dh $@ --with systemd,bash-completion
 
 clean: createcopyright
 
@@ -52,7 +65,11 @@ override_dh_auto_clean:
 	rm -rf $(CURDIR)/debian/python-i2p
 	rm -f $(CURDIR)/override.properties
 	rm -f $(CURDIR)/apps/susidns/src/lib/standard.jar
+	rm -f $(CURDIR)/apps/susidns/src/lib/jstl.jar
+	rm -f $(CURDIR)/apps/susidns/src/lib/jstlel.jar
 	debconf-updatepo
+	find . -type f -name \*.java.json-simple \
+	  -exec sh -c 'file={} && mv $$file $${file%.json-simple}' \; -print
 
 override_dh_auto_build:
 
@@ -70,68 +87,70 @@ build-indep:
 		cp $(ROUTERVERSION) $(CURDIR)/debian/routerversion.java.bak; \
 	fi
 ifeq "$(findstring deb,$(shell grep 'deb' $(ROUTERVERSION)))" ""
-	sed -e "s/\(.*EXTRA\ =\ \)[^ ]*\"\(.*\)\"/\1\"\2-$$EXTRAPREFIX$$DEBIANVERSION\"/" < $(ROUTERVERSION) > $(ROUTERVERSION).tmp
+	sed -e "s/\(.*EXTRA\ =\ \)[^ ]*\"\(.*\)\"/\1\"-$$EXTRAPREFIX$$DEBIANVERSION\"/" < $(ROUTERVERSION) > $(ROUTERVERSION).tmp
 	mv -f $(ROUTERVERSION).tmp $(ROUTERVERSION)
 else
 	@echo "Already found deb in version, not doing anything"
 endif
 	@# build options
-	@/bin/echo -e "javac.version=1.7" > $(CURDIR)/override.properties
-	@/bin/echo -e "javac.compilerargs=-bootclasspath $(JAVA_HOME)/jre/lib/rt.jar:$(JAVA_HOME)/jre/lib/jce.jar" >> $(CURDIR)/override.properties
-	@/bin/echo -e "javac.compilerargs7=-bootclasspath $(JAVA_HOME)/jre/lib/rt.jar:$(JAVA_HOME)/jre/lib/jce.jar" >> $(CURDIR)/override.properties
+	@/bin/echo -e "javac.release=17" > $(CURDIR)/override.properties
 	@/bin/echo -e "build.built-by=debian" >> $(CURDIR)/override.properties
+	@/bin/echo -e "build.reproducible=true" >> $(CURDIR)/override.properties
 
 	@# debian and ubuntu: everywhere
 	@/bin/echo -e "with-geoip-database=true" >> $(CURDIR)/override.properties
 
-	@# ubuntu: in xenial
-	@# debian: in jessie-backports stretch sid
-	@/bin/echo -e "with-libjetty9-java=true" >> $(CURDIR)/override.properties
+	@/bin/echo -e "with-libjetty12-java=true" >> $(CURDIR)/override.properties
 	mkdir -p $(CURDIR)/apps/jetty/jettylib
-	ln -sf /usr/share/java/jetty9-continuation.jar $(CURDIR)/apps/jetty/jettylib/jetty-continuation.jar
-	ln -sf /usr/share/java/jetty9-deploy.jar $(CURDIR)/apps/jetty/jettylib/jetty-deploy.jar
-	ln -sf /usr/share/java/jetty9-http.jar $(CURDIR)/apps/jetty/jettylib/jetty-http.jar
-	ln -sf /usr/share/java/jetty9-io.jar $(CURDIR)/apps/jetty/jettylib/jetty-io.jar
-	ln -sf /usr/share/java/jetty9-rewrite.jar $(CURDIR)/apps/jetty/jettylib/jetty-rewrite-handler.jar
-	ln -sf /usr/share/java/jetty9-security.jar $(CURDIR)/apps/jetty/jettylib/jetty-security.jar
-	ln -sf /usr/share/java/jetty9-servlet.jar $(CURDIR)/apps/jetty/jettylib/jetty-servlet.jar
-	ln -sf /usr/share/java/jetty9-servlets.jar $(CURDIR)/apps/jetty/jettylib/jetty-servlets.jar
-	ln -sf /usr/share/java/jetty9-start.jar $(CURDIR)/apps/jetty/jettylib/jetty-start.jar
-	ln -sf /usr/share/java/jetty9-util.jar $(CURDIR)/apps/jetty/jettylib/jetty-util.jar
-	ln -sf /usr/share/java/jetty9-webapp.jar $(CURDIR)/apps/jetty/jettylib/jetty-webapp.jar
-	ln -sf /usr/share/java/jetty9-xml.jar $(CURDIR)/apps/jetty/jettylib/jetty-xml.jar
-	ln -sf /usr/share/java/jetty9-server.jar $(CURDIR)/apps/jetty/jettylib/org.mortbay.jetty.jar
-	ln -sf /usr/share/java/jetty9-jmx.jar $(CURDIR)/apps/jetty/jettylib/org.mortbay.jmx.jar
-	@# following two are from libservlet3.1-java which is a dependency of libjetty9-java
-	ln -sf /usr/share/java/servlet-api-3.1.jar $(CURDIR)/apps/jetty/jettylib/javax.servlet.jar
+	ln -sf /usr/share/java/jetty12-deploy.jar $(CURDIR)/apps/jetty/jettylib/jetty-deploy.jar
+	ln -sf /usr/share/java/jetty12-ee.jar $(CURDIR)/apps/jetty/jettylib/jetty-ee.jar
+	ln -sf /usr/share/java/jetty12-http.jar $(CURDIR)/apps/jetty/jettylib/jetty-http.jar
+	ln -sf /usr/share/java/jetty12-io.jar $(CURDIR)/apps/jetty/jettylib/jetty-io.jar
+	ln -sf /usr/share/java/jetty12-rewrite.jar $(CURDIR)/apps/jetty/jettylib/jetty-rewrite-handler.jar
+	ln -sf /usr/share/java/jetty12-security.jar $(CURDIR)/apps/jetty/jettylib/jetty-security.jar
+	@# debian 12.0.32-2 package DOES contain these ee8 jars
+	ln -sf /usr/share/java/jetty12-ee8-apache-jsp.jar $(CURDIR)/apps/jetty/jettylib/jetty-apache-jsp.jar
+	ln -sf /usr/share/java/jetty12-ee8-servlet.jar $(CURDIR)/apps/jetty/jettylib/jetty-servlet.jar
+	ln -sf /usr/share/java/jetty12-ee8-servlets.jar $(CURDIR)/apps/jetty/jettylib/jetty-servlets.jar
+	ln -sf /usr/share/java/jetty12-ee8-webapp.jar $(CURDIR)/apps/jetty/jettylib/jetty-webapp.jar
+	@# debian 12.0.32-2 package DOES NOT contain these ee8 jars
+	@#ln -sf /usr/share/java/jetty12-ee8-nested.jar $(CURDIR)/apps/jetty/jettylib/jetty-nested.jar
+	@#ln -sf /usr/share/java/jetty12-ee8-security.jar $(CURDIR)/apps/jetty/jettylib/jetty-security.jar
+	ln -sf /usr/share/java/jetty12-session.jar $(CURDIR)/apps/jetty/jettylib/jetty-session.jar
+	ln -sf /usr/share/java/jetty12-start.jar $(CURDIR)/apps/jetty/jettylib/jetty-start.jar
+	ln -sf /usr/share/java/jetty12-util.jar $(CURDIR)/apps/jetty/jettylib/jetty-util.jar
+	ln -sf /usr/share/java/jetty12-xml.jar $(CURDIR)/apps/jetty/jettylib/jetty-xml.jar
+	ln -sf /usr/share/java/jetty12-server.jar $(CURDIR)/apps/jetty/jettylib/org.mortbay.jetty.jar
+	ln -sf /usr/share/java/jetty12-jmx.jar $(CURDIR)/apps/jetty/jettylib/org.mortbay.jmx.jar
+
+	@# following two are formerly from libservlet3.1-java, now in their own packages
+	ln -sf /usr/share/java/servlet-api.jar $(CURDIR)/apps/jetty/jettylib/javax.servlet.jar
 	@# this is roughly the same as tomcat8-jsp-api.jar, we use this one
-	ln -sf /usr/share/java/jsp-api-2.3.jar $(CURDIR)/apps/jetty/jettylib/jsp-api.jar
+	ln -sf /usr/share/java/jsp-api.jar $(CURDIR)/apps/jetty/jettylib/jsp-api.jar
 
-	@# debian and ubuntu: wheezy-backports, jessie+, xenial+
-	@/bin/echo -e "with-libtomcat8-java=true" >> $(CURDIR)/override.properties
+	@# ubuntu: plucky+
+	@# debian: trixie+
+	@# the libslf4j2-java package does NOT provide a non-versioned file except in the maven-repo dir
+	@/bin/echo -e "with-libslf4j2-java=true" >> $(CURDIR)/override.properties
+	ln -sf /usr/share/maven-repo/org/slf4j/slf4j-api/2.x/slf4j-api-2.x.jar $(CURDIR)/apps/jetty/jettylib/slf4j2-api.jar
+
+	@# debian and ubuntu: buster, disco
+	@/bin/echo -e "with-libtomcat9-java=true" >> $(CURDIR)/override.properties
 	mkdir -p $(CURDIR)/apps/jetty/jettylib
-	ln -sf /usr/share/java/tomcat8-api.jar $(CURDIR)/apps/jetty/jettylib/tomcat-api.jar
-	ln -sf /usr/share/java/tomcat8-coyote.jar $(CURDIR)/apps/jetty/jettylib/tomcat-coyote.jar
-	ln -sf /usr/share/java/tomcat8-el-api.jar $(CURDIR)/apps/jetty/jettylib/commons-el.jar
-	ln -sf /usr/share/java/tomcat8-jasper.jar $(CURDIR)/apps/jetty/jettylib/jasper-runtime.jar
-	ln -sf /usr/share/java/tomcat8-jasper-el.jar $(CURDIR)/apps/jetty/jettylib/jasper-el.jar
-	ln -sf /usr/share/java/tomcat8-juli.jar $(CURDIR)/apps/jetty/jettylib/commons-logging.jar
-	ln -sf /usr/share/java/tomcat8-util.jar $(CURDIR)/apps/jetty/jettylib/tomcat-util.jar
-	ln -sf /usr/share/java/tomcat8-util-scan.jar $(CURDIR)/apps/jetty/jettylib/tomcat-util-scan.jar
+	ln -sf /usr/share/java/tomcat9-api.jar $(CURDIR)/apps/jetty/jettylib/tomcat-api.jar
+	ln -sf /usr/share/java/tomcat9-coyote.jar $(CURDIR)/apps/jetty/jettylib/tomcat-coyote.jar
+	ln -sf /usr/share/java/tomcat9-el-api.jar $(CURDIR)/apps/jetty/jettylib/commons-el.jar
+	ln -sf /usr/share/java/tomcat9-jasper.jar $(CURDIR)/apps/jetty/jettylib/jasper-runtime.jar
+	ln -sf /usr/share/java/tomcat9-jasper-el.jar $(CURDIR)/apps/jetty/jettylib/jasper-el.jar
+	ln -sf /usr/share/java/tomcat9-juli.jar $(CURDIR)/apps/jetty/jettylib/commons-logging.jar
+	ln -sf /usr/share/java/tomcat9-util.jar $(CURDIR)/apps/jetty/jettylib/tomcat-util.jar
+	ln -sf /usr/share/java/tomcat9-util-scan.jar $(CURDIR)/apps/jetty/jettylib/tomcat-util-scan.jar
 
-	@# debian and ubuntu: everywhere
-	@/bin/echo -e "with-glassfish-javaee=true" >> $(CURDIR)/override.properties
-	@# glassfish-javaee.jar has ancient and conflicting classes, e.g. javax.mail
-	@#ln -sf /usr/share/java/glassfish-javaee.jar $(CURDIR)/apps/susidns/src/lib/jstl.jar
-	ln -sf /usr/share/java/glassfish-appserv-jstl.jar $(CURDIR)/apps/susidns/src/lib/standard.jar
-
-	@# debian and ubuntu: everywhere
-	@#/bin/echo -e "with-libjakarta-taglibs-standard-java=true" >> $(CURDIR)/override.properties
-	@#ln -sf /usr/share/java/standard.jar $(CURDIR)/apps/susidns/src/lib/standard.jar
-
-	@# debian and ubuntu: everywhere
-	@#/bin/echo -e "with-libjstl1.1-java=true" >> $(CURDIR)/override.properties
-	@#ln -sf /usr/share/java/jstl1.1.jar $(CURDIR)/apps/susidns/src/lib/jstl.jar
+	@# debian and ubuntu: stretch+, zesty+
+	@/bin/echo -e "with-libtaglibs-standard=true" >> $(CURDIR)/override.properties
+	ln -sf /usr/share/java/taglibs-standard-spec.jar $(CURDIR)/apps/susidns/src/lib/jstl.jar
+	ln -sf /usr/share/java/taglibs-standard-impl.jar $(CURDIR)/apps/susidns/src/lib/standard.jar
+	ln -sf /usr/share/java/taglibs-standard-jstlel.jar $(CURDIR)/apps/susidns/src/lib/jstlel.jar
 
 	@# debian and ubuntu: everywhere
 	@/bin/echo -e "with-gettext-base=true" >> $(CURDIR)/override.properties
@@ -143,14 +162,25 @@ endif
 	@mkdir -p $(CURDIR)/core/java/build
 	ln -sf /usr/share/java/gnu-getopt.jar $(CURDIR)/core/java/build/gnu-getopt.jar
 
-	@# 2 MB of dependencies vs. 20 KB of copied source
-	@# Requires 4.4 or higher.
-	@# Debian: Not in wheezy/jessie
-	@# Ubuntu: Only in wily and later
-	@#/bin/echo -e "with-libhttpclient-java=true" >> $(CURDIR)/override.properties
-	@#mkdir -p $(CURDIR)/core/java/build
-	@#ln -sf /usr/share/java/httpclient.jar $(CURDIR)/core/java/build/httpclient.jar
-	@#ln -sf /usr/share/java/httpcore.jar $(CURDIR)/core/java/build/httpcore.jar
+	@# debian: jessie+; ubuntu: trusty+
+	@/bin/echo -e "with-libjson-simple-java=true" >> $(CURDIR)/override.properties
+	@mkdir -p $(CURDIR)/core/java/build
+	ln -sf /usr/share/java/json-simple.jar $(CURDIR)/core/java/build/json-simple.jar
+
+	@# 1.80 or higher debian: trixie+; ubuntu: questing+
+	@/bin/echo -e "with-libbcprov-java=true" >> $(CURDIR)/override.properties
+	@mkdir -p $(CURDIR)/router/java/build
+	ln -sf /usr/share/java/bcprov.jar $(CURDIR)/router/java/build/bcprov.jar
+
+	@# debian: bullseye - transitioning
+	find . -type f -name \*.java -exec grep -q 'import @JSON_SIMPLE@' {} \; \
+	  -exec sed -i.json-simple \
+		    -e 's,@JSON_SIMPLE@,$(JSON_SIMPLE_PACKAGE),' \
+		    -e 's/@JSON_EXCEPTION@/$(JSON_EXCEPTION)/' \
+		    {} \; -print
+
+	@# debian: everywhere; ubuntu: trusty+
+	@/bin/echo -e "with-famfamfam-flag-png=true" >> $(CURDIR)/override.properties
 
 	TZ=UTC JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF8 ant preppkg-unix javadoc
 	echo router.updateDisabled=true > $(I2P)/router.config
@@ -189,7 +219,7 @@ override_dh_installchangelogs:
 	dh_installchangelogs history.txt
 
 override_dh_installdocs:
-	dh_installdocs -pi2p -plibjbigi-jni --link-doc=i2p-router
+	dh_installdocs -pi2p --link-doc=i2p-router
 	dh_installdocs --remaining-packages
 
 override_dh_shlibdeps:
@@ -197,9 +227,6 @@ override_dh_shlibdeps:
 
 #override_dh_installinit:
 #	dh_installinit -r
-
-override_dh_builddeb:
-	dh_builddeb -- -Zxz
 
 get-orig-source:
 	uscan --verbose --rename --destdir $(CURDIR)/.. --watchfile debian/watch --force-download

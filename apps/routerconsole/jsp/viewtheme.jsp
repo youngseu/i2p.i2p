@@ -4,12 +4,15 @@
  * Trailing whitespace OR NEWLINE on the last line will cause
  * IllegalStateExceptions !!!
  *
+ * Note: this also handles /javadoc/ URLs
+ *
  * Do not tag this file for translation.
  */
 
 String uri = request.getRequestURI();
 if (uri.endsWith(".css")) {
   response.setContentType("text/css");
+  response.setCharacterEncoding("UTF-8");
 } else if (uri.endsWith(".png")) {
   response.setContentType("image/png");
 } else if (uri.endsWith(".gif")) {
@@ -20,7 +23,16 @@ if (uri.endsWith(".css")) {
   response.setContentType("image/x-icon");
 } else if (uri.endsWith(".svg")) {
   response.setContentType("image/svg+xml");
+} else if (uri.endsWith(".html")) {
+  // /javadoc/
+  response.setContentType("text/html");
+  response.setCharacterEncoding("UTF-8");
+} else if (uri.endsWith(".js")) {
+  // /javadoc/
+  response.setContentType("application/x-javascript");
+  response.setCharacterEncoding("UTF-8");
 }
+response.setHeader("Accept-Ranges", "none");
 response.setHeader("X-Content-Type-Options", "nosniff");
 /*
  * User or plugin themes
@@ -52,7 +64,7 @@ if (lastmod > 0) {
     long iflast = request.getDateHeader("If-Modified-Since");
     // iflast is -1 if not present; round down file time
     if (iflast >= ((lastmod / 1000) * 1000)) {
-        response.sendError(304, "Not Modified");
+        response.setStatus(304);
         return;
     }
     response.setDateHeader("Last-Modified", lastmod);

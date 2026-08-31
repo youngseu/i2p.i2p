@@ -87,11 +87,6 @@ class FragmentedMessage {
         _lastReceived = _lastReceived || isLast;
         if (fragmentNum > _highFragmentNum)
             _highFragmentNum = fragmentNum;
-        if (isLast && fragmentNum <= 0) {
-            if (_log.shouldLog(Log.ERROR))
-                _log.error("hmm, isLast and fragmentNum=" + fragmentNum + " for message " + _messageId);
-            return false;
-        }
         return true;
     }
     
@@ -295,7 +290,7 @@ class FragmentedMessage {
         buf.append(" last received? ").append(_lastReceived);
         buf.append(" lifetime: ").append(DataHelper.formatDuration(_context.clock().now()-_createdOn));
         if (_toRouter != null) {
-            buf.append(" targetting ").append(_toRouter.toBase64().substring(0,4));
+            buf.append(" targetting ").append(_toRouter.toBase64(), 0, 4);
             if (_toTunnel != null)
                 buf.append(":").append(_toTunnel.getTunnelId());
         }

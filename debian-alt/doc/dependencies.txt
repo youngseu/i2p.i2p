@@ -8,7 +8,7 @@ improve our official packages and support other packagers.
 Our packages are available at https://deb.i2p2.de/ and
 instructions are at https://geti2p.net/debian
 
-This document is current as of release 0.9.30, 2017-05-03.
+This document is current as of release 0.9.47, 2020-08-xx.
 
 
 Build-only Dependencies
@@ -17,17 +17,21 @@ Build-only Dependencies
 * ant
   This is the standard java build system.
 
+* Java JDK
+  We require openjdk-8-java or higher to build.
+  For 9 or higher, require the same or higher runtime, since bootclasspath
+  isn't possible.
+
+* libgmp-dev
+
 
 Current Runtime Dependencies
 ----------------------------
 
-* Java JDK/JRE
-  We require openjdk-7-java to build, and any Java 7, 8, or 9 runtime to run.
-  Java 9 may still have some issues; see https://trac.i2p2.de/ticket/1870 for status
-
-* libecj-java
-  This is for compilation on-the-fly of webapps, but we don't really support that,
-  not sure why it's in there, to be researched, candidate for removal.
+* Java JRE
+  We require Java 8 or higher runtime, if built with Java 8 or bootclasspath was set
+  in the build. If built with 8 or higher and bootclasspath was not set,
+  then require the same JRE or higher.
 
 * geoip-database
   In non-Debian builds we bundle our own geoip data;
@@ -41,41 +45,39 @@ Current Runtime Dependencies
   For /usr/share/java/gnu-getopt.jar.
   In non-Debian builds we bundle the source code; it's removed in the Debian source package.
 
-* libjetty9-java
-  For /usr/share/java/jetty9-*.jar.
-  In non-Debian builds we bundle the jars; it's removed in the Debian source package.
+* libjson-simple-java (jessie and later, trusty and later only)
+  For /usr/share/java/json-simple.jar.
+  In non-Debian builds we bundle the 2.x API portion of the 2.3.0 source code; it's removed in the Debian source package.
+  Compatible with 2.x only; not compatible with 3.x.
 
-* libtomcat8-java
-  For /usr/share/java/tomcat8-*.jar.
+* libjetty12-java
+  For /usr/share/java/jetty12-*.jar.
+  In non-Debian builds we bundle the jars; it's removed in the Debian source package.
+  This is for Jetty 12.0.x.
+
+* libtomcat9-java
+  For /usr/share/java/tomcat9-*.jar.
   In non-Debian builds we bundle the jars as packaged in the Jetty 9.2 binary release,
   which are different than the way they are packaged for Debian.
   They are removed in the Debian source package.
+  This is for Tomcat 9.0.x, which is what's in recent Debian/Ubuntu.
+  Tomcat 8.5.x in Xenial also works.
 
-* glassfish-javaee
-  We need jstl.jar and standard.jar version 1.2.
-  This is an ancient and terrible package, but it's the only place we've found version 1.2 jars.
-  standard.jar classes are inside /usr/share/java/glassfish-appserv-jstl.jar
-  jstl.jar classes are inside /usr/share/java/glassfish-javaee.jar but we can't use it
-  because there are too many conflicting, old, unrelated classes in there, so we currently
-  bundle jstl.jar even in Debian builds.
-  We've found some other packages that contain version 1.1 jars:
-  libjakarta-taglibs-standard-java (containing standard.jar only)
-  and libjstl1.1-java (containing jstl.jar only).
-  Jetty 9 does contain JSTL 1.2 ??? but not in packages???
-  It's not clear why there isn't a libjstl1.2-java package.
-  It also isn't clear why we upgraded to 1.2 years ago, but the rest of the world didn't.
-  And it isn't clear why 1.1 won't work for us.
+* libtaglibs-standard-*-java (stretch and later, artful and later only)
+  Provides JSTL 1.2, solves the glassfish-javaee problem described below.
 
 * service-wrapper
   In non-Debian builds we bundle the jars; it's removed in the Debian source package.
   For some Debian and Ubuntu releases, these seem to be much older than what we're bundling,
-  which is 3.5.30, but there's no particular version that we need.
+  but there's no particular version that we need.
 
-* libgmp-dev
+* libgmp10
   In non-Debian builds we bundle compiled C code; in the Debian packages we have a small
   C shim that links to the libgmp .so file.
-  We depend on libgmp-dev for both the build and the runtime, but perhaps only the
-  libgmp10 package is required for runtime? To be researched.
+
+* famfamfam-flag-png
+  Country flags (all except precise)
+  In non-Debian builds we bundle the flags.
 
 
 Bundled code, NOT current dependencies
@@ -104,19 +106,10 @@ the binaries or sources.
   From https://github.com/PauloMigAlmeida/identicon
   No package or not widely available.
 
-* jrobin
+* rrd4j (jrobin.jar)
   This is the Java graphing package.
-  We bundle a large portion of the 1.6.0 source from https://github.com/OpenNMS/jrobin
+  We bundle most of the source from https://github.com/rrd4j/rrd4j
   No package or not widely available.
-  There is an old 1.5.9 Maven jrobin package at http://search.maven.org/#search%7Cga%7C1%7Cg%3A%22org.jrobin%22
-  Jrobin is in Gentoo.
-
-* libhttpclient-java
-  We only use a few classes from this large package.
-  We require 4.4 or higher which is not available in older distributions.
-  This is 2 MB of dependencies, instead we bundle 20 KB of copied source.
-  If we do add this dependency, we use only the code in
-  /usr/share/java/httpclient.jar and /usr/share/java/httpcore.jar.
 
 * UPnP (cybergarage)
   Large subsystem, large number of Java source files, modified with several fixes.
@@ -182,3 +175,6 @@ Other Issues and TODO
   We don't have a strategy for building, installing, or finding packages for
   3rd-party plugins using our plugin system. If we do that, then we can
   have packages for popular plugins such as i2p-bote.
+
+* AppArmor
+  Needs work. In complain-only mode now.

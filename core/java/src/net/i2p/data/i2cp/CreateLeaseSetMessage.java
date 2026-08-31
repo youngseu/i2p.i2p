@@ -9,7 +9,6 @@ package net.i2p.data.i2cp;
  *
  */
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -17,6 +16,7 @@ import net.i2p.data.DataFormatException;
 import net.i2p.data.LeaseSet;
 import net.i2p.data.PrivateKey;
 import net.i2p.data.SigningPrivateKey;
+import net.i2p.util.ByteArrayStream;
 
 /**
  * Defines the message a client sends to a router when authorizing
@@ -26,10 +26,10 @@ import net.i2p.data.SigningPrivateKey;
  */
 public class CreateLeaseSetMessage extends I2CPMessageImpl {
     public final static int MESSAGE_TYPE = 4;
-    private SessionId _sessionId;
-    private LeaseSet _leaseSet;
+    protected SessionId _sessionId;
+    protected LeaseSet _leaseSet;
     private SigningPrivateKey _signingPrivateKey;
-    private PrivateKey _privateKey;
+    protected PrivateKey _privateKey;
 
     public CreateLeaseSetMessage() {
     }
@@ -105,7 +105,7 @@ public class CreateLeaseSetMessage extends I2CPMessageImpl {
                  + _signingPrivateKey.length()
                  + PrivateKey.KEYSIZE_BYTES
                  + _leaseSet.size();
-        ByteArrayOutputStream os = new ByteArrayOutputStream(size);
+        ByteArrayStream os = new ByteArrayStream(size);
         try {
             _sessionId.writeBytes(os);
             _signingPrivateKey.writeBytes(os);

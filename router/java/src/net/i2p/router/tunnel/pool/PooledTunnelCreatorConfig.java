@@ -3,38 +3,33 @@ package net.i2p.router.tunnel.pool;
 import java.util.Properties;
 
 import net.i2p.data.Hash;
-import net.i2p.router.Job;
+import net.i2p.data.TunnelId;
 import net.i2p.router.RouterContext;
-import net.i2p.router.TunnelInfo;
 import net.i2p.router.tunnel.TunnelCreatorConfig;
-import net.i2p.util.Log;
 
 /**
  *  Data about a tunnel we created
  */
-class PooledTunnelCreatorConfig extends TunnelCreatorConfig {
-    private TunnelPool _pool;
-    private TestJob _testJob;
-    /** Creates a new instance of PooledTunnelCreatorConfig */
-    
-    public PooledTunnelCreatorConfig(RouterContext ctx, int length, boolean isInbound) {
-        this(ctx, length, isInbound, null);
-    }
-    public PooledTunnelCreatorConfig(RouterContext ctx, int length, boolean isInbound, Hash destination) {
+public class PooledTunnelCreatorConfig extends TunnelCreatorConfig {
+    private final TunnelPool _pool;
+    // we don't store the config, that leads to OOM
+    private TunnelId _pairedGW;
+
+    /**
+     *  Creates a new instance of PooledTunnelCreatorConfig
+     *
+     *  @param destination may be null
+     *  @param pool non-null
+     */
+    public PooledTunnelCreatorConfig(RouterContext ctx, int length, boolean isInbound,
+                                     Hash destination, TunnelPool pool) {
         super(ctx, length, isInbound, destination);
-    }
-    
-    /** calls TestJob */
-    @Override
-    public void testSuccessful(int ms) {
-        if (_testJob != null)
-            _testJob.testSuccessful(ms);
-        super.testSuccessful(ms);
+        _pool = pool; 
     }
     
     /** called from TestJob */
     public void testJobSuccessful(int ms) {
-        super.testSuccessful(ms);
+        testSuccessful(ms);
     }
     
     /**
@@ -51,39 +46,52 @@ class PooledTunnelCreatorConfig extends TunnelCreatorConfig {
             // Todo: Maybe delay or prevent failing if we are near tunnel build capacity,
             // to prevent collapse (loss of all tunnels)
             _pool.tunnelFailed(this);
-            if (_testJob != null) // just in case...
-                _context.jobQueue().removeJob(_testJob);
         }
         return rv;
     }
     
+    /**
+     * We failed to contact the first hop for an outbound tunnel,
+     * so immediately stop using it.
+     * For outbound non-zero-hop tunnels only.
+     *
+     * @since 0.9.53
+     */
+    public void tunnelFailedFirstHop() {
+        if (isInbound() || getLength() <= 1)
+            return;
+        tunnelFailedCompletely();
+        _pool.tunnelFailed(this, getPeer(1));
+    }
+    
+    /**
+     *  @return non-null
+     */
     @Override
     public Properties getOptions() {
-        if (_pool == null) return null;
         return _pool.getSettings().getUnknownOptions();
     }
     
-    public void setTunnelPool(TunnelPool pool) {
-        if (pool != null) {
-            _pool = pool; 
-        } else {
-            Log log = _context.logManager().getLog(getClass());
-            log.error("Null tunnel pool?", new Exception("foo"));
-        }
-    }
-    public TunnelPool getTunnelPool() { return _pool; }
-    
-
-    /** @deprecated unused, which makes _testJob unused - why is it here */
-    @Deprecated
-    void setTestJob(TestJob job) { _testJob = job; }
-    /** does nothing, to be deprecated */
-    public void setExpireJob(Job job) { /* _expireJob = job; */ }
-    
     /**
-     * @deprecated Fix memory leaks caused by references if you need to use pairedTunnel
+     *  @return non-null
      */
-    @Deprecated
-    public void setPairedTunnel(TunnelInfo tunnel) { /* _pairedTunnel = tunnel; */}
-    // public TunnelInfo getPairedTunnel() { return _pairedTunnel; }
+    public TunnelPool getTunnelPool() { return _pool; }
+
+    /**
+     *  The ID of the gateway of the paired tunnel used to send/receive the build request
+     *
+     *  @param gw for paired inbound, the GW rcv tunnel ID; for paired outbound, the GW send tunnel ID.
+     *  @since 0.9.53
+     */
+    public void setPairedGW(TunnelId gw) { _pairedGW = gw; }
+
+
+    /**
+     *  The ID of the gateway of the paired tunnel used to send/receive the build request
+     *
+     *  @return for paired inbound, the GW rcv tunnel ID; for paired outbound, the GW send tunnel ID.
+     *          null if not previously set
+     *  @since 0.9.53
+     */
+    public TunnelId getPairedGW() { return _pairedGW; }
 }

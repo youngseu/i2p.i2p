@@ -8,6 +8,8 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.channels.SocketChannel;
 
+import net.i2p.I2PAppContext;
+
 /**
  *  A simple in-JVM Socket using Piped Streams.
  *  We use port numbers just like regular sockets.
@@ -17,11 +19,13 @@ import java.nio.channels.SocketChannel;
 public class InternalSocket extends Socket {
     private InputStream _is;
     private OutputStream _os;
+    private final int _port;
 
     /** server side */
     InternalSocket(InputStream is, OutputStream os) {
         _is = is;
         _os = os;
+        _port = 1;
     }
 
     /**
@@ -31,6 +35,7 @@ public class InternalSocket extends Socket {
     public InternalSocket(int port) throws IOException {
          if (port <= 0)
              throw new IOException("bad port number");
+         _port = port;
          InternalServerSocket.internalConnect(port, this);
     }
 
@@ -39,7 +44,7 @@ public class InternalSocket extends Socket {
      *  @param port &gt; 0
      */
     public static Socket getSocket(String host, int port) throws IOException {
-        if (System.getProperty("router.version") != null &&
+        if (I2PAppContext.getGlobalContext().isRouterContext() &&
             (host.equals("127.0.0.1") || host.equals("localhost"))) {
             try {
                 return new InternalSocket(port);
@@ -93,17 +98,29 @@ public class InternalSocket extends Socket {
         return ("Internal socket");
     }
 
-    // ignored stuff
-    /** warning - unsupported */
+    /**
+     *  Supported as of 0.9.34, if constructed with TimeoutPipedInputStream
+     *  and TimeoutPipedOutputStream. Otherwise, does nothing.
+     *  @see TimeoutPipedInputStream
+     */
     @Override
-    public void setSoTimeout(int timeout) {}
+    public synchronized void setSoTimeout(int timeout) {
+        if (_is != null && _is instanceof TimeoutPipedInputStream)
+            ((TimeoutPipedInputStream) _is).setReadTimeout(timeout);
+    }
 
+    // ignored stuff
+
+    /**
+     *  Always returns 0, even if setSoTimeout() was called.
+     */
     @Override
     public int getSoTimeout () {
         return 0;
     }
 
-    // everything below here unsupported
+    // everything below here unsupported unless otherwise noted
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -146,12 +163,16 @@ public class InternalSocket extends Socket {
     public InetAddress getLocalAddress() {
         throw new UnsupportedOperationException();
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     * @return 1 if connected, -1 if not
+     */
     @Override
     public int getLocalPort() {
-        throw new UnsupportedOperationException();
+        return isConnected() ? 1 : -1;
     }
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -164,11 +185,14 @@ public class InternalSocket extends Socket {
     public boolean getOOBInline() {
         throw new UnsupportedOperationException();
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     * @return if connected: actual port for clients, 1 for servers; -1 if not
+     */
     @Override
     public int getPort() {
-        throw new UnsupportedOperationException();
+        return isConnected() ? _port : 0;
     }
     /** @deprecated unsupported */
     @Deprecated
@@ -194,12 +218,16 @@ public class InternalSocket extends Socket {
     public int getSendBufferSize() {
         throw new UnsupportedOperationException();
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     * @return -1 always
+     */
     @Override
     public int getSoLinger() {
-        throw new UnsupportedOperationException();
+        return -1;
     }
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -218,24 +246,31 @@ public class InternalSocket extends Socket {
     public boolean isBound() {
         throw new UnsupportedOperationException();
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     */
     @Override
-    public boolean isConnected() {
-        throw new UnsupportedOperationException();
+    public synchronized boolean isConnected() {
+        return _is != null || _os != null;
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     */
     @Override
-    public boolean isInputShutdown() {
-        throw new UnsupportedOperationException();
+    public synchronized boolean isInputShutdown() {
+        return _is == null;
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     */
     @Override
-    public boolean isOutputShutdown() {
-        throw new UnsupportedOperationException();
+    public synchronized boolean isOutputShutdown() {
+        return _os == null;
     }
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -272,12 +307,13 @@ public class InternalSocket extends Socket {
     public void setSendBufferSize(int size) {
         throw new UnsupportedOperationException();
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Does nothing as of 0.9.33, prior to that threw UnsupportedOperationException
+     */
     @Override
-    public void setSoLinger(boolean on, int linger) {
-        throw new UnsupportedOperationException();
-    }
+    public void setSoLinger(boolean on, int linger) {}
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -290,16 +326,38 @@ public class InternalSocket extends Socket {
     public void setTrafficClass(int cize) {
         throw new UnsupportedOperationException();
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     */
     @Override
-    public void shutdownInput() {
-        throw new UnsupportedOperationException();
+    public synchronized void shutdownInput() throws IOException {
+        if (_is != null) {
+            _is.close();
+            _is = null;
+        }
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Flushes (as the Socket javadocs advise) and closes.
+     * Supported as of 0.9.33, prior to that threw UnsupportedOperationException
+     */
     @Override
-    public void shutdownOutput() {
-        throw new UnsupportedOperationException();
+    public void shutdownOutput() throws IOException {
+        OutputStream out;
+        synchronized(this) {
+            out = _os;
+        }
+        if (out == null)
+            return;
+        // PipedOutputStream may not flush on close, not clear from javadocs
+        try {
+            out.flush();
+            out.close();
+        } finally {
+            synchronized(this) {
+                _os = null;
+            }
+        }
     }
 }

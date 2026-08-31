@@ -4,14 +4,13 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.Reader;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+
+import javax.servlet.http.HttpSession;
 
 import net.i2p.data.DataHelper;
 import net.i2p.router.RouterContext;
 import net.i2p.router.update.ConsoleUpdateManager;
 import static net.i2p.update.UpdateType.*;
-import net.i2p.util.TranslateReader;
 
 /**
  *  If news file does not exist, use file from the initialNews directory
@@ -28,6 +27,10 @@ public class NewsHelper extends ContentHelper {
     public static final String PROP_LAST_CHECKED = "routerconsole.newsLastChecked";
     /** @since 0.9.4 */
     public static final String PROP_LAST_UPDATED = "routerconsole.newsLastUpdated";
+    /** @since 0.9.55 */
+    public static final String PROP_LAST_NEW_ENTRY = "routerconsole.newsLastNewEntry";
+    /** @since 0.9.62 */
+    public static final String PROP_LAST_LANG = "routerconsole.newsLastLanguage";
     /**
      * Default true
      * @since 0.9.21
@@ -70,6 +73,18 @@ public class NewsHelper extends ContentHelper {
         if (mgr == null) return false;
         return mgr.getUpdateAvailable(ROUTER_SIGNED) != null ||
                mgr.getUpdateAvailable(ROUTER_SIGNED_SU3) != null;
+    }
+
+    /**
+     *  A router update had been downloaded and handled by an UpdatePostProcessor.
+     *  It will provide wrapper-like function to install the update and restart after shutdown.
+     *
+     *  @since 0.9.51
+     */
+    public static boolean isExternalRestartPending() {
+        ConsoleUpdateManager mgr = ConsoleUpdateManager.getInstance();
+        if (mgr == null) return false;
+        return mgr.isExternalRestartPending();
     }
 
     /**
@@ -202,7 +217,7 @@ public class NewsHelper extends ContentHelper {
 
     /**
      *  Convert long date stamp to
-     *  '07-Jul 21:09 UTC' with month name in the system locale
+     *  date/time in the system locale, local time zone
      *  @return null if ver = null
      *  @since 0.9.4 moved from NewsFetcher
      */
@@ -210,7 +225,7 @@ public class NewsHelper extends ContentHelper {
         if (ver != null) {
             try {
                 long modtime = Long.parseLong(ver);
-                return (new SimpleDateFormat("dd-MMM HH:mm")).format(new Date(modtime)) + " UTC";
+                return DataHelper.formatTime(modtime);
             } catch (NumberFormatException nfe) {}
         }
         return null;
@@ -247,7 +262,7 @@ public class NewsHelper extends ContentHelper {
      *  @since 0.9.4
      */
     public static boolean shouldShowNews(RouterContext ctx) {
-        long lastUpdated = lastUpdated(ctx);
+        long lastUpdated = lastNewEntry(ctx);
         if (lastUpdated <= 0)
             return true;
         long last = ctx.getProperty(PROP_LAST_HIDDEN, 0L);
@@ -267,23 +282,16 @@ public class NewsHelper extends ContentHelper {
      *  @since 0.9.4
      */
     public static void showNews(RouterContext ctx, boolean yes) {
-        long stamp = yes ? 0 : lastUpdated(ctx);
+        long stamp = yes ? 0 : lastNewEntry(ctx);
         ctx.router().saveConfig(PROP_LAST_HIDDEN, Long.toString(stamp));
     }
 
     /**
+     *  @param session non-null to include hide/show links, null to omit
      *  @return HTML
      *  @since 0.9.4 moved from NewsFetcher
      */
-    public String status() {
-        return status(_context);
-    }
-
-    /**
-     *  @return HTML
-     *  @since 0.9.4 moved from NewsFetcher
-     */
-    public static String status(RouterContext ctx) {
+    public static String status(RouterContext ctx, HttpSession session) {
          StringBuilder buf = new StringBuilder(128);
          long now = ctx.clock().now();
          buf.append("<span id=\"newsStatus\"><i>");
@@ -300,14 +308,15 @@ public class NewsHelper extends ContentHelper {
                                            DataHelper.formatDuration2(now - lastFetch),
                                            ctx));
          }
-         buf.append("</i></span><span id=\"newsDisplay\">");
-         String consoleNonce = CSSHelper.getNonce();
-         if (lastUpdated > 0 && consoleNonce != null) {
+         buf.append("</i></span>");
+         if (lastUpdated > 0 && session != null) {
+             buf.append("<span id=\"newsDisplay\">");
+             String consoleNonce = CSSHelper.getNonce(session);
              if (shouldShowNews(ctx)) {
-                 buf.append(" <a href=\"/?news=0&amp;consoleNonce=").append(consoleNonce).append("\">")
+                 buf.append(" <a href=\"?news=0&amp;consoleNonce=").append(consoleNonce).append("\">")
                     .append(Messages.getString("Hide news", ctx));
              } else {
-                 buf.append(" <a href=\"/?news=1&amp;consoleNonce=").append(consoleNonce).append("\">")
+                 buf.append(" <a href=\"?news=1&amp;consoleNonce=").append(consoleNonce).append("\">")
                     .append(Messages.getString("Show news", ctx));
              }
              buf.append("</a>" +
@@ -359,6 +368,19 @@ public class NewsHelper extends ContentHelper {
         File newsFile = new File(ctx.getRouterDir(), NEWS_FILE);
         rv = newsFile.lastModified();
         ctx.router().saveConfig(PROP_LAST_UPDATED, Long.toString(rv));
+        return rv;
+    }
+
+    /**
+     *  When we last got a new news entry
+     *  @since 0.9.55
+     */
+    private static long lastNewEntry(RouterContext ctx) {
+        long rv = ctx.getProperty(PROP_LAST_NEW_ENTRY, 0L);
+        if (rv > 0)
+            return rv;
+        rv = lastUpdated(ctx);
+        ctx.router().saveConfig(PROP_LAST_NEW_ENTRY, Long.toString(rv));
         return rv;
     }
 }

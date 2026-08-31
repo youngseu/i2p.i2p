@@ -1,72 +1,86 @@
 package net.i2p.data;
 /*
  * free (adj.): unencumbered; not under the control of others
- * Written by jrandom in 2003 and released into the public domain 
- * with no warranty of any kind, either expressed or implied.  
- * It probably won't make your computer catch on fire, or eat 
+ * Written by jrandom in 2003 and released into the public domain
+ * with no warranty of any kind, either expressed or implied.
+ * It probably won't make your computer catch on fire, or eat
  * your children, but it might.  Use at your own risk.
  *
  */
+
+import static org.junit.Assert.*;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-import junit.framework.TestCase;
+import org.junit.Before;
+import org.junit.Test;
 
 /**
  * @author Comwiz
  */
-public class DataStructureImplTest extends TestCase{
+public class DataStructureImplTest {
     DataStructure _struct;
-    
-    protected void setUp(){
+
+    @Before
+    public void setUp(){
         _struct = new DataStructureImpl(){
             private int x = 0;
             public void writeBytes(OutputStream out) throws IOException, DataFormatException{
                 if(x++==0)
                     throw new DataFormatException("let it enfold you", new Exception());
                 else
-                    throw new IOException();    
+                    throw new IOException();
             }
             public void readBytes(InputStream in) throws IOException{
                 throw new IOException();
             }
         };
     }
-    
-    public void testNulls() throws Exception{
+
+    @Test
+    public void toBase64ReturnsNull() {
         assertNull(_struct.toBase64());
-        
-        boolean error = false;
-        try{
-            _struct.fromBase64(null);
-        }catch(DataFormatException dfe){
-            error = true;
-        }
-        assertTrue(error);
-        
-        assertNull(_struct.calculateHash());
-        
-        error = false;
-        try{
-            _struct.fromByteArray(null);
-        }catch(DataFormatException dfe){
-            error = true;
-        }
-        assertTrue(error);
     }
-    
-    public void testErrors() throws Exception{
-        boolean error = false;
-        try{
-            _struct.fromByteArray(DataHelper.getASCII("water is poison"));
-        }catch(DataFormatException dfe){
-            error = true;
+
+    @Test
+    public void fromBase64ThrowsOnNull() {
+        try {
+            _struct.fromBase64(null);
+            fail("exception not thrown");
+        } catch (DataFormatException expected) {
+            assertEquals("Null data passed in", expected.getMessage());
         }
-        assertTrue(error);
-        
-        assertNull(_struct.toByteArray());
+    }
+
+    @Test
+    public void calculateHashReturnsNull() {
+        assertNull(_struct.calculateHash());
+    }
+
+    @Test
+    public void fromByteArrayThrowsOnNull() {
+        try {
+            _struct.fromByteArray(null);
+            fail("exception not thrown");
+        } catch (DataFormatException expected) {
+            assertEquals("Null data passed in", expected.getMessage());
+        }
+    }
+
+    @Test
+    public void fromByteArrayThrowsOnError() {
+        try {
+            _struct.fromByteArray(DataHelper.getASCII("water is poison"));
+            fail("exception not thrown");
+        } catch (DataFormatException expected) {
+            assertEquals("Error reading the byte array", expected.getMessage());
+        }
+    }
+
+    @Test
+    public void toByteArrayReturnsNullOnError() {
         assertNull(_struct.toByteArray());
     }
 }

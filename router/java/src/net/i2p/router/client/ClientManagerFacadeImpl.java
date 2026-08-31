@@ -13,6 +13,7 @@ import java.io.Writer;
 import java.util.Collections;
 import java.util.Set;
 
+import net.i2p.client.I2PClient;
 import net.i2p.client.I2PSessionException;
 import net.i2p.crypto.SessionKeyManager;
 import net.i2p.data.DataHelper;
@@ -27,6 +28,7 @@ import net.i2p.router.ClientManagerFacade;
 import net.i2p.router.ClientMessage;
 import net.i2p.router.Job;
 import net.i2p.router.RouterContext;
+import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
 import net.i2p.util.Log;
 
 /**
@@ -40,7 +42,7 @@ public class ClientManagerFacadeImpl extends ClientManagerFacade implements Inte
     private final RouterContext _context;
     /** note that this is different than the property the client side uses, i2cp.tcp.port */
     public final static String PROP_CLIENT_PORT = "i2cp.port";
-    public final static int DEFAULT_PORT = 7654;
+    public final static int DEFAULT_PORT = I2PClient.DEFAULT_LISTEN_PORT;
     /** note that this is different than the property the client side uses, i2cp.tcp.host */
     public final static String PROP_CLIENT_HOST = "i2cp.hostname";
     public final static String DEFAULT_HOST = "127.0.0.1";
@@ -96,7 +98,7 @@ public class ClientManagerFacadeImpl extends ClientManagerFacade implements Inte
             long howLongAgo = _context.clock().now() - ls.getEarliestLeaseDate();
             if (howLongAgo > MAX_TIME_TO_REBUILD) {
                 if (_log.shouldLog(Log.ERROR))
-                    _log.error("Client " + dest.calculateHash().toBase64().substring(0,6)
+                    _log.error("Client " + dest.toBase32()
                                + " has a leaseSet that expired " + DataHelper.formatDuration(howLongAgo) + " ago");
                 lively = false;
             }
@@ -190,7 +192,7 @@ public class ClientManagerFacadeImpl extends ClientManagerFacade implements Inte
     
     /**
      *  @param id the router's ID for this message
-     *  @param messageNonce the client's ID for this message
+     *  @param messageNonce the client's ID for this message, greater than zero
      *  @param status see I2CP MessageStatusMessage for success/failure codes
      */
     public void messageDeliveryStatusUpdate(Destination fromDest, MessageId id, long messageNonce, int status) {
@@ -265,4 +267,58 @@ public class ClientManagerFacadeImpl extends ClientManagerFacade implements Inte
             return _manager.internalConnect();
         throw new I2PSessionException("No manager yet");
     }
+
+    /**
+     *  Declare that we're going to publish a meta LS for this destination.
+     *  Must be called before publishing the leaseset.
+     *
+     *  @throws I2PSessionException on duplicate dest
+     *  @since 0.9.41
+     */
+    @Override
+    public void registerMetaDest(Destination dest) throws I2PSessionException {
+        if (_manager != null)
+            _manager.registerMetaDest(dest);
+    }
+
+    /**
+     *  Declare that we're no longer going to publish a meta LS for this destination.
+     *
+     *  @since 0.9.41
+     */
+    @Override
+    public void unregisterMetaDest(Destination dest) {
+        if (_manager != null)
+            _manager.unregisterMetaDest(dest);
+    }
+
+    /**
+     * get the FloodfillNetworkDatabaseFacade associated with a particular client destination.
+     * This is inside the runner, so it won't be there if the runner isn't ready.
+     * 
+     * @param destHash destination hash associated with the client who's subDb we're looking for
+     * @return the netdb or null
+     * @since 0.9.61
+     */
+    @Override
+    public FloodfillNetworkDatabaseFacade getClientFloodfillNetworkDatabaseFacade(Hash destHash) {
+        if (_manager != null)
+            return _manager.getClientFloodfillNetworkDatabaseFacade(destHash);
+        else
+            return null;
+    }
+
+    /**
+     * get all the primary hashes for all the clients and return them as a set
+     * 
+     * @return all the hashes or an empty set, non-null
+     * @since 0.9.61
+     */
+    @Override
+    public Set<Hash> getPrimaryHashes() {
+        if (_manager != null)
+            return _manager.getPrimaryHashes();
+        else
+            return Collections.emptySet();
+    }    
 }

@@ -25,7 +25,6 @@ class Sorters {
      */
     private static final Pattern PATTERN_DE, PATTERN_EN, PATTERN_ES, PATTERN_FR,
                                  PATTERN_IT, PATTERN_NL, PATTERN_PT;
-    private static Pattern _pattern;
 
     /**
      *  Negative is reverse
@@ -47,7 +46,7 @@ class Sorters {
      *
      *  @param servlet for file type callback only
      */
-    public static Comparator<Snark> getComparator(int type, I2PSnarkServlet servlet) {
+    public static Comparator<Snark> getComparator(int type, String lang, I2PSnarkServlet servlet) {
         boolean rev = type < 0;
         Comparator<Snark> rv;
         switch (type) {
@@ -56,64 +55,64 @@ class Sorters {
           case 0:
           case 1:
           default:
-              rv = new TorrentNameComparator();
+              rv = new TorrentNameComparator(lang);
               if (rev)
                   rv = Collections.reverseOrder(rv);
               break;
 
           case -2:
           case 2:
-              rv = new StatusComparator(rev);
+              rv = new StatusComparator(rev, lang);
               break;
 
           case -3:
           case 3:
-              rv = new PeersComparator(rev);
+              rv = new PeersComparator(rev, lang);
               break;
 
           case -4:
           case 4:
-              rv = new ETAComparator(rev);
+              rv = new ETAComparator(rev, lang);
               break;
 
           case -5:
           case 5:
-              rv = new SizeComparator(rev);
+              rv = new SizeComparator(rev, lang);
               break;
 
           case -6:
           case 6:
-              rv = new DownloadedComparator(rev);
+              rv = new DownloadedComparator(rev, lang);
               break;
 
           case -7:
           case 7:
-              rv = new UploadedComparator(rev);
+              rv = new UploadedComparator(rev, lang);
               break;
 
           case -8:
           case 8:
-              rv = new DownRateComparator(rev);
+              rv = new DownRateComparator(rev, lang);
               break;
 
           case -9:
           case 9:
-              rv = new UpRateComparator(rev);
+              rv = new UpRateComparator(rev, lang);
               break;
 
           case -10:
           case 10:
-              rv = new RemainingComparator(rev);
+              rv = new RemainingComparator(rev, lang);
               break;
 
           case -11:
           case 11:
-              rv = new RatioComparator(rev);
+              rv = new RatioComparator(rev, lang);
               break;
 
           case -12:
           case 12:
-              rv = new FileTypeComparator(rev, servlet);
+              rv = new FileTypeComparator(rev, lang, servlet);
               break;
 
         }
@@ -128,11 +127,20 @@ class Sorters {
      */
     private static class TorrentNameComparator implements Comparator<Snark>, Serializable {
 
-        public int compare(Snark l, Snark r) {
-            return comp(l, r);
+        private final Pattern _p;
+        private static final Collator _c = Collator.getInstance();
+
+        /** @param lang may be null */
+        private TorrentNameComparator(String lang) {
+            _p = getPattern(lang);
         }
 
-        public static int comp(Snark l, Snark r) {
+        public int compare(Snark l, Snark r) {
+            return comp(l, r, _p);
+        }
+
+        /** @param p may be null */
+        public static int comp(Snark l, Snark r, Pattern p) {
             // put downloads and magnets first
             if (l.getStorage() == null && r.getStorage() != null)
                 return -1;
@@ -140,7 +148,6 @@ class Sorters {
                 return 1;
             String ls = l.getBaseName();
             String rs = r.getBaseName();
-            Pattern p = _pattern;
             if (p != null) {
                 Matcher m = p.matcher(ls);
                 if (m.matches())
@@ -149,7 +156,7 @@ class Sorters {
                 if (m.matches())
                     rs = rs.substring(m.group(1).length());
             }
-            return Collator.getInstance().compare(ls, rs);
+            return _c.compare(ls, rs);
         }
     }
 
@@ -159,50 +166,48 @@ class Sorters {
     private static abstract class Sort implements Comparator<Snark>, Serializable {
 
         private final boolean _rev;
+        private final Pattern _p;
 
-        public Sort(boolean rev) {
+        public Sort(boolean rev, String lang) {
             _rev = rev;
+            _p = getPattern(lang);
         }
 
         public int compare(Snark l, Snark r) {
             int rv = compareIt(l, r);
             if (rv != 0)
                 return _rev ? 0 - rv : rv;
-            return TorrentNameComparator.comp(l, r);
+            return TorrentNameComparator.comp(l, r, _p);
         }
 
         protected abstract int compareIt(Snark l, Snark r);
-
-        protected static int compLong(long l, long r) {
-            if (l < r)
-                return -1;
-            if (l > r)
-                return 1;
-            return 0;
-        }
     }
 
 
     private static class StatusComparator extends Sort {
 
-        private StatusComparator(boolean rev) { super(rev); }
+        private StatusComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
             int rv = getStatus(l) - getStatus(r);
             if (rv != 0)
                 return rv;
             // use reverse remaining as first tie break
-            return compLong(r.getNeededLength(), l.getNeededLength());
+            rv = Long.compare(r.getNeededLength(), l.getNeededLength());
+            if (rv != 0)
+                return rv;
+            // use reverse peer count as second tie break
+            return r.getPeerCount() - l.getPeerCount();
         }
 
         private static int getStatus(Snark snark) {
             long remaining = snark.getRemainingLength(); 
             if (snark.isStopped()) {
                 if (remaining < 0)
-                    return 0;
+                    return 10;
                 if (remaining > 0)
                     return 5;
-                return 10;
+                return 0;
             }
             if (snark.isStarting())
                 return 15;
@@ -226,7 +231,7 @@ class Sorters {
 
     private static class PeersComparator extends Sort {
 
-        public PeersComparator(boolean rev) { super(rev); }
+        public PeersComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
             return l.getPeerCount() - r.getPeerCount();
@@ -235,19 +240,19 @@ class Sorters {
 
     private static class RemainingComparator extends Sort {
 
-        public RemainingComparator(boolean rev) { super(rev); }
+        public RemainingComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            return compLong(l.getNeededLength(), r.getNeededLength());
+            return Long.compare(l.getNeededLength(), r.getNeededLength());
         }
     }
 
     private static class ETAComparator extends Sort {
 
-        public ETAComparator(boolean rev) { super(rev); }
+        public ETAComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            return compLong(eta(l), eta(r));
+            return Long.compare(eta(l), eta(r));
         }
 
         private static long eta(Snark snark) {
@@ -266,63 +271,65 @@ class Sorters {
 
     private static class SizeComparator extends Sort {
 
-        public SizeComparator(boolean rev) { super(rev); }
+        public SizeComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            return compLong(l.getTotalLength(), r.getTotalLength());
+            return Long.compare(l.getTotalLength(), r.getTotalLength());
         }
     }
 
     private static class DownloadedComparator extends Sort {
 
-        public DownloadedComparator(boolean rev) { super(rev); }
+        public DownloadedComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
             long ld = l.getTotalLength() - l.getRemainingLength();
             long rd = r.getTotalLength() - r.getRemainingLength();
-            return compLong(ld, rd);
+            return Long.compare(ld, rd);
         }
     }
 
     private static class UploadedComparator extends Sort {
 
-        public UploadedComparator(boolean rev) { super(rev); }
+        public UploadedComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            return compLong(l.getUploaded(), r.getUploaded());
+            return Long.compare(l.getUploaded(), r.getUploaded());
         }
     }
 
     private static class DownRateComparator extends Sort {
 
-        public DownRateComparator(boolean rev) { super(rev); }
+        public DownRateComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            return compLong(l.getDownloadRate(), r.getDownloadRate());
+            return Long.compare(l.getDownloadRate(), r.getDownloadRate());
         }
     }
 
     private static class UpRateComparator extends Sort {
 
-        public UpRateComparator(boolean rev) { super(rev); }
+        public UpRateComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            return compLong(l.getUploadRate(), r.getUploadRate());
+            return Long.compare(l.getUploadRate(), r.getUploadRate());
         }
     }
 
     private static class RatioComparator extends Sort {
 
-        private static final long M = 128 * 1024 * 1024;
-
-        public RatioComparator(boolean rev) { super(rev); }
+        public RatioComparator(boolean rev, String lang) { super(rev, lang); }
 
         public int compareIt(Snark l, Snark r) {
-            long lt = l.getTotalLength();
-            long ld = lt > 0 ? ((M * l.getUploaded()) / lt) : 0;
-            long rt = r.getTotalLength();
-            long rd = rt > 0 ? ((M * r.getUploaded()) / rt) : 0;
-            return compLong(ld, rd);
+            double lt = l.getTotalLength();
+            double ld = lt > 0 ? (l.getUploaded() / lt) : 0d;
+            double rt = r.getTotalLength();
+            double rd = rt > 0 ? (r.getUploaded() / rt) : 0d;
+            if (ld < rd)
+                return -1;
+            if (ld > rd)
+                return 1;
+            return 0;
         }
     }
 
@@ -330,8 +337,8 @@ class Sorters {
 
         private final I2PSnarkServlet servlet;
 
-        public FileTypeComparator(boolean rev, I2PSnarkServlet servlet) {
-            super(rev);
+        public FileTypeComparator(boolean rev, String lang, I2PSnarkServlet servlet) {
+            super(rev, lang);
             this.servlet = servlet;
         }
 
@@ -363,6 +370,7 @@ class Sorters {
         public final boolean isDirectory;
         public final long length;
         public final long remaining;
+        public final long preview;
         public final int priority;
         public final int index;
 
@@ -371,15 +379,25 @@ class Sorters {
          *  @param remainingArray precomputed, non-null iff storage is non-null
          */
         public FileAndIndex(File file, Storage storage, long[] remainingArray) {
+            this(file, storage, remainingArray, null);
+        }
+
+        /**
+         *  @param storage may be null
+         *  @param remainingArray precomputed, non-null iff storage is non-null
+         */
+        public FileAndIndex(File file, Storage storage, long[] remainingArray, long[] previewArray) {
             this.file = file;
             index = storage != null ? storage.indexOf(file) : -1;
             if (index >= 0) {
                 isDirectory = false;
                 remaining = remainingArray[index];
+                preview = previewArray != null ? previewArray[index] : 0;
                 priority = storage.getPriority(index);
             } else {
                 isDirectory = file.isDirectory();
                 remaining = -1;
+                preview = 0;
                 priority = -999;
             }
             length = isDirectory ? 0 : file.length();
@@ -480,14 +498,6 @@ class Sorters {
         }
 
         protected abstract int compareIt(FileAndIndex l, FileAndIndex r);
-
-        protected static int compLong(long l, long r) {
-            if (l < r)
-                return -1;
-            if (l > r)
-                return 1;
-            return 0;
-        }
     }
 
     private static class FAIRemainingComparator extends FAISort {
@@ -495,7 +505,7 @@ class Sorters {
         public FAIRemainingComparator(boolean rev) { super(rev); }
 
         public int compareIt(FileAndIndex l, FileAndIndex r) {
-            return compLong(l.remaining, r.remaining);
+            return Long.compare(l.remaining, r.remaining);
         }
     }
 
@@ -504,7 +514,7 @@ class Sorters {
         public FAISizeComparator(boolean rev) { super(rev); }
 
         public int compareIt(FileAndIndex l, FileAndIndex r) {
-            return compLong(l.length, r.length);
+            return Long.compare(l.length, r.length);
         }
     }
 
@@ -592,11 +602,11 @@ class Sorters {
     }
 
     /**
-     * Sets static field, oh well
      * @param lang null for none
+     * @return null for none
      * @since 0.9.23
      */
-    public static void setPattern(String lang) {
+    private static Pattern getPattern(String lang) {
         Pattern p;
         if (lang == null)
             p = null;
@@ -616,7 +626,7 @@ class Sorters {
             p = PATTERN_PT;
         else
             p = null;
-        _pattern = p;
+        return p;
     }
 
 /****

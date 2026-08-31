@@ -43,6 +43,10 @@ public abstract class Translate {
 
     /** lang in routerconsole.lang property, else current locale */
     public static String getString(String key, I2PAppContext ctx, String bun) {
+        if (key == null) {
+            (new NullPointerException("null translation string")).printStackTrace();
+            return "";
+        }
         String lang = getLanguage(ctx);
         if (lang.equals("en"))
             return key;
@@ -147,6 +151,25 @@ public abstract class Translate {
         if (lang == null || lang.length() <= 0)
             lang = _localeLang;
         return lang;
+    }
+
+    /**
+     *  Are we configured for a right-to-left language?
+     *  @return true for supported RTL languages
+     *  @since 0.9.46
+     */
+    public static boolean isRTL(I2PAppContext ctx) {
+        return isRTL(getLanguage(ctx));
+    }
+
+    /**
+     *  Is this a right-to-left language?
+     *  @param lang Two- or three-letter lower case
+     *  @return true for supported RTL languages
+     *  @since 0.9.46
+     */
+    public static boolean isRTL(String lang) {
+        return lang.equals("ar") || lang.equals("fa") || lang.equals("iw");
     }
 
     /**

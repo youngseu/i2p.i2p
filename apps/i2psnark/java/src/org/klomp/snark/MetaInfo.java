@@ -31,6 +31,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
+import gnu.getopt.Getopt;
+
 import net.i2p.I2PAppContext;
 import net.i2p.crypto.SHA1;
 import net.i2p.data.DataHelper;
@@ -50,22 +52,25 @@ import org.klomp.snark.bencode.InvalidBEncodingException;
 public class MetaInfo
 {  
   private final Log _log = I2PAppContext.getGlobalContext().logManager().getLog(MetaInfo.class);
-  private final String announce;
+  // non-final for reannounce()
+  private String announce;
   private final byte[] info_hash;
   private final String name;
-  private final String name_utf8;
   private final List<List<String>> files;
-  private final List<List<String>> files_utf8;
+  private final List<String> attributes;
   private final List<Long> lengths;
   private final int piece_length;
   private final byte[] piece_hashes;
   private final long length;
-  private final boolean privateTorrent;
-  private final List<List<String>> announce_list;
+  private final int privateTorrent; // 0: not present; 1: = 1; -1: = 0
+  // non-final for reannounce()
+  private List<List<String>> announce_list;
   private final String comment;
   private final String created_by;
   private final long creation_date;
+  private final List<String> url_list;
   private Map<String, BEValue> infoMap;
+  private int infoBytesLength;
 
   /**
    *  Called by Storage when creating a new torrent from local data
@@ -75,25 +80,30 @@ public class MetaInfo
    *  @param lengths null for single-file torrent
    *  @param announce_list may be null
    *  @param created_by may be null
+   *  @param url_list may be null
+   *  @param comment may be null
+   *  @since public since 0.9.53, was package private
    */
-  MetaInfo(String announce, String name, String name_utf8, List<List<String>> files, List<Long> lengths,
+  public MetaInfo(String announce, String name, List<List<String>> files, List<Long> lengths,
            int piece_length, byte[] piece_hashes, long length, boolean privateTorrent,
-           List<List<String>> announce_list, String created_by)
+           List<List<String>> announce_list, String created_by, List<String> url_list, String comment)
   {
     this.announce = announce;
     this.name = name;
-    this.name_utf8 = name_utf8;
     this.files = files == null ? null : Collections.unmodifiableList(files);
-    this.files_utf8 = null;
     this.lengths = lengths == null ? null : Collections.unmodifiableList(lengths);
     this.piece_length = piece_length;
     this.piece_hashes = piece_hashes;
     this.length = length;
-    this.privateTorrent = privateTorrent;
+    this.privateTorrent = privateTorrent ? 1 : 0;
     this.announce_list = announce_list;
-    this.comment = null;
+    this.comment = comment;
     this.created_by = created_by;
     this.creation_date = I2PAppContext.getGlobalContext().clock().now();
+    this.url_list = url_list;
+
+    // TODO BEP 52 hybrid torrent with piece layers, meta version and file tree
+    this.attributes = null;
 
     // TODO if we add a parameter for other keys
     //if (other != null) {
@@ -106,8 +116,67 @@ public class MetaInfo
   }
 
   /**
+   *  Preserves privateTorrent int value, for main()
+   *
+   *  @since 0.9.62
+   */
+  public MetaInfo(String announce, String name, List<List<String>> files, List<Long> lengths,
+           int piece_length, byte[] piece_hashes, long length, int privateTorrent,
+           List<List<String>> announce_list, String created_by, List<String> url_list, String comment)
+  {
+    this.announce = announce;
+    this.name = name;
+    this.files = files == null ? null : Collections.unmodifiableList(files);
+    this.lengths = lengths == null ? null : Collections.unmodifiableList(lengths);
+    this.piece_length = piece_length;
+    this.piece_hashes = piece_hashes;
+    this.length = length;
+    this.privateTorrent = privateTorrent;
+    this.announce_list = announce_list;
+    this.comment = comment;
+    this.created_by = created_by;
+    this.creation_date = I2PAppContext.getGlobalContext().clock().now();
+    this.url_list = url_list;
+    this.attributes = null;
+    this.info_hash = calculateInfoHash();
+  }
+
+  /**
+   *  Will not change infohash.
+   *  Retains creation date of old MetaInfo if nonzero.
+   *
+   *  @param new_announce may be null
+   *  @param new_announce_list may be null
+   *  @param new_comment may be null
+   *  @param new_created_by may be null
+   *  @param new_url_list may be null
+   *  @since 0.9.64
+   */
+  public MetaInfo(MetaInfo old, String new_announce, List<List<String>> new_announce_list, String new_comment,
+                  String new_created_by, List<String> new_url_list)
+  {
+    this.announce = new_announce;
+    this.info_hash = old.info_hash;
+    this.name = old.name;
+    this.files = old.files;
+    this.attributes = old.attributes;
+    this.lengths = old.lengths;
+    this.piece_length = old.piece_length;
+    this.piece_hashes = old.piece_hashes;
+    this.length = old.length;
+    this.privateTorrent = old.privateTorrent;
+    this.announce_list = new_announce_list;
+    this.comment = new_comment;
+    this.created_by = new_created_by;
+    this.creation_date = old.creation_date > 0 ? old.creation_date : I2PAppContext.getGlobalContext().clock().now();
+    this.url_list = new_url_list;
+    this.infoMap = old.infoMap;
+    this.infoBytesLength = old.infoBytesLength;
+  }
+
+  /**
    * Creates a new MetaInfo from the given InputStream.  The
-   * InputStream must start with a correctly bencoded dictonary
+   * InputStream must start with a correctly bencoded dictionary
    * describing the torrent.
    * Caller must close the stream.
    */
@@ -132,7 +201,7 @@ public class MetaInfo
 
   /**
    * Creates a new MetaInfo from a Map of BEValues and the SHA1 over
-   * the original bencoded info dictonary (this is a hack, we could
+   * the original bencoded info dictionary (this is a hack, we could
    * reconstruct the bencoded stream and recalculate the hash). Will
    * NOT throw a InvalidBEncodingException if the given map does not
    * contain a valid announce string.
@@ -167,6 +236,27 @@ public class MetaInfo
             }
             this.announce_list.add(sl2);
         }
+    }
+
+    // BEP 19
+    val = m.get("url-list");
+    if (val == null) {
+        this.url_list = null;
+    } else {
+        List<String> urllist;
+        try {
+            List<BEValue> bl1 = val.getList();
+            urllist = new ArrayList<String>(bl1.size());
+            for (BEValue bev : bl1) {
+                urllist.add(bev.getString());
+            }
+        } catch (InvalidBEncodingException ibee) {
+            // BEP 19 says it's a list but the example there
+            // is for a single byte string, and we've seen this
+            // in the wild.
+            urllist = Collections.singletonList(val.getString());
+        }
+        this.url_list = urllist;
     }
 
     // misc. optional  top-level stuff
@@ -209,12 +299,6 @@ public class MetaInfo
     if (name.indexOf('/') >= 0)
         throw new InvalidBEncodingException("Invalid name containing '/' " + name);
 
-    val = info.get("name.utf-8");
-    if (val != null)
-        name_utf8 = val.getString();
-    else
-        name_utf8 = null;
-
     // BEP 27
     val = info.get("private");
     if (val != null) {
@@ -224,10 +308,11 @@ public class MetaInfo
         // Transmission does numbers. So does libtorrent.
         // We handle both as of 0.9.9.
         // We switch to storing as number as of 0.9.14.
-        privateTorrent = "1".equals(o) ||
+        boolean privat = "1".equals(o) ||
                          ((o instanceof Number) && ((Number) o).intValue() == 1);
+        privateTorrent = privat ? 1 : -1;
     } else {
-        privateTorrent = false;
+        privateTorrent = 0;
     }
 
     val = info.get("piece length");
@@ -236,8 +321,18 @@ public class MetaInfo
     piece_length = val.getInt();
 
     val = info.get("pieces");
-    if (val == null)
+    if (val == null) {
+        // BEP 52
+        // We do the check here because a torrent file could be combined v1/v2,
+        // so a version 2 value isn't by itself fatal
+        val = info.get("meta version");
+        if (val != null) {
+            int version = val.getInt();
+            if (version != 1)
+                throw new InvalidBEncodingException("Version " + version + " torrent file not supported");
+        }
         throw new InvalidBEncodingException("Missing piece bytes");
+    }
     piece_hashes = val.getBytes();
 
     val = info.get("length");
@@ -246,8 +341,8 @@ public class MetaInfo
         // Single file case.
         length = val.getLong();
         files = null;
-        files_utf8 = null;
         lengths = null;
+        attributes = null;
       }
     else
       {
@@ -263,8 +358,8 @@ public class MetaInfo
           throw new InvalidBEncodingException("zero size files list");
 
         List<List<String>> m_files = new ArrayList<List<String>>(size);
-        List<List<String>> m_files_utf8 = new ArrayList<List<String>>(size);
         List<Long> m_lengths = new ArrayList<Long>(size);
+        List<String> m_attributes = null;
         long l = 0;
         for (int i = 0; i < list.size(); i++)
           {
@@ -308,23 +403,26 @@ public class MetaInfo
 
             m_files.add(Collections.unmodifiableList(file));
             
-            val = desc.get("path.utf-8");
+            // BEP 47
+            val = desc.get("attr");
             if (val != null) {
-                path_list = val.getList();
-                path_length = path_list.size();
-                if (path_length > 0) {
-                    file = new ArrayList<String>(path_length);
-                    it = path_list.iterator();
-                    while (it.hasNext())
-                        file.add(it.next().getString());
-                    m_files_utf8.add(Collections.unmodifiableList(file));
+                String s = val.getString();
+                if (m_attributes == null) {
+                    m_attributes = new ArrayList<String>(size);
+                    for (int j = 0; j < i; j++) {
+                        m_attributes.add("");
+                    }
                 }
+                m_attributes.add(s);
+            } else {
+                if (m_attributes != null)
+                    m_attributes.add("");
             }
           }
         files = Collections.unmodifiableList(m_files);
-        files_utf8 = Collections.unmodifiableList(m_files_utf8);
         lengths = Collections.unmodifiableList(m_lengths);
         length = l;
+        attributes = m_attributes;
       }
 
     info_hash = calculateInfoHash();
@@ -371,6 +469,15 @@ public class MetaInfo
   }
 
   /**
+   * Returns a list of urls or null.
+   *
+   * @since 0.9.48
+   */
+  public List<String> getWebSeedURLs() {
+    return url_list;
+  }
+
+  /**
    * Returns the original 20 byte SHA1 hash over the bencoded info map.
    */
   public byte[] getInfoHash()
@@ -380,9 +487,12 @@ public class MetaInfo
   }
 
   /**
-   * Returns the piece hashes. Only used by storage so package local.
+   *  Returns the piece hashes.
+   *
+   *  @return not a copy, do not modify
+   *  @since public since 0.9.53, was package private
    */
-  byte[] getPieceHashes()
+  public byte[] getPieceHashes()
   {
     return piece_hashes;
   }
@@ -402,6 +512,14 @@ public class MetaInfo
    * @since 0.9
    */
   public boolean isPrivate() {
+    return privateTorrent > 0;
+  }
+
+  /**
+   * @return 0 (default), 1 (set to 1), -1 (set to 0)
+   * @since 0.9.62
+   */
+  public int getPrivateTrackerStatus() {
     return privateTorrent;
   }
 
@@ -413,6 +531,16 @@ public class MetaInfo
   public List<List<String>> getFiles()
   {
     return files;
+  }
+
+  /**
+   * Is this file a padding file?
+   * @since 0.9.48
+   */
+  public boolean isPaddingFile(int filenum) {
+      if (attributes == null)
+          return false;
+      return attributes.get(filenum).indexOf('p') >= 0;
   }
 
   /**
@@ -480,49 +608,14 @@ public class MetaInfo
         
   /**
    * Checks that the given piece has the same SHA1 hash as the given
-   * byte array. Returns random results or IndexOutOfBoundsExceptions
-   * when the piece number is unknown.
+   * byte array.
+   *
+   * @param hash 20 bytes
+   * @throws IndexOutOfBoundsException
+   * @since 0.9.71 replaces check of full piece in-memory
    */
-  public boolean checkPiece(int piece, byte[] bs, int off, int length)
-  {
-    //if (true)
-        return fast_checkPiece(piece, bs, off, length);
-    //else
-    //    return orig_checkPiece(piece, bs, off, length);
-  }
-
-/****
-  private boolean orig_checkPiece(int piece, byte[] bs, int off, int length) {
-    // Check digest
-    MessageDigest sha1;
-    try
-      {
-        sha1 = MessageDigest.getInstance("SHA");
-      }
-    catch (NoSuchAlgorithmException nsae)
-      {
-        throw new InternalError("No SHA digest available: " + nsae);
-      }
-
-    sha1.update(bs, off, length);
-    byte[] hash = sha1.digest();
-    for (int i = 0; i < 20; i++)
-      if (hash[i] != piece_hashes[20 * piece + i])
-        return false;
-    return true;
-  }
-****/
-  
-  private boolean fast_checkPiece(int piece, byte[] bs, int off, int length) {
-    MessageDigest sha1 = SHA1.getInstance();
-
-    sha1.update(bs, off, length);
-    byte[] hash = sha1.digest();
-    for (int i = 0; i < 20; i++) {
-      if (hash[i] != piece_hashes[20 * piece + i])
-        return false;
-    }
-    return true;
+  public boolean checkPiece(int piece, byte[] hash) {
+      return DataHelper.eq(hash, 0, piece_hashes, 20 * piece, 20);
   }
   
   /**
@@ -550,6 +643,7 @@ public class MetaInfo
 
   /**
    * Returns the total length of the torrent in bytes.
+   * This includes any padding files.
    */
   public long getTotalLength()
   {
@@ -571,16 +665,30 @@ public class MetaInfo
 
   /**
    * Creates a copy of this MetaInfo that shares everything except the
-   * announce URL.
-   * Drops any announce-list.
+   * announce and announce-list URLs.
    * Preserves infohash and info map, including any non-standard fields.
-   * @param announce may be null
+   *
+   * As of 0.9.71, also changes the announce and announce-list on this
+   * metainfo.
+   *
+   * @param announce may be null. First will be used as primary.
    */
-  public MetaInfo reannounce(String announce) throws InvalidBEncodingException
+  public MetaInfo reannounce(List<String> announces) throws InvalidBEncodingException
   {
         Map<String, BEValue> m = new HashMap<String, BEValue>();
-        if (announce != null)
-            m.put("announce", new BEValue(DataHelper.getUTF8(announce)));
+        if (announces != null && !announces.isEmpty()) {
+            m.put("announce", new BEValue(DataHelper.getUTF8(announces.get(0))));
+            announce = announces.get(0);
+            if (announces.size() > 1) {
+                List<BEValue> anns = new ArrayList<BEValue>(announces.size());
+                for (String s : announces) {
+                    anns.add(new BEValue(DataHelper.getUTF8(s)));
+                }
+                List<BEValue> alist = Collections.singletonList(new BEValue(anns));
+                m.put("announce-list", new BEValue(alist));
+                announce_list = Collections.singletonList(announces);
+            }
+        }
         Map<String, BEValue> info = createInfoMap();
         m.put("info", new BEValue(info));
         return new MetaInfo(m);
@@ -597,6 +705,8 @@ public class MetaInfo
         if (announce_list != null)
             m.put("announce-list", announce_list);
         // misc. optional  top-level stuff
+        if (url_list != null)
+            m.put("url-list", url_list);
         if (comment != null)
             m.put("comment", comment);
         if (created_by != null)
@@ -610,11 +720,27 @@ public class MetaInfo
         return BEncoder.bencode(m);
   }
 
-  /** @since 0.8.4 */
+  /**
+   *  Side effect: Caches infoBytesLength.
+   *  @since 0.8.4
+   */
   public synchronized byte[] getInfoBytes() {
     if (infoMap == null)
         createInfoMap();
-    return BEncoder.bencode(infoMap);
+    byte[] rv = BEncoder.bencode(infoMap);
+    infoBytesLength = rv.length;
+    return rv;
+  }
+
+  /**
+   *  The size of getInfoBytes().
+   *  Cached.
+   *  @since 0.9.48
+   */
+  public synchronized int getInfoBytesLength() {
+    if (infoBytesLength > 0)
+        return infoBytesLength;
+    return getInfoBytes().length;
   }
 
   /** @return an unmodifiable view of the Map */
@@ -625,18 +751,17 @@ public class MetaInfo
     if (infoMap != null)
         return Collections.unmodifiableMap(infoMap);
     // we should only get here if serving a magnet on a torrent we created
-    if (_log.shouldLog(Log.WARN))
-        _log.warn("Creating new infomap", new Exception());
+    // or on edit torrent save
+    if (_log.shouldDebug())
+        _log.debug("Creating new infomap", new Exception());
     // otherwise we must create it
     Map<String, BEValue> info = new HashMap<String, BEValue>();
     info.put("name", new BEValue(DataHelper.getUTF8(name)));
-    if (name_utf8 != null)
-        info.put("name.utf-8", new BEValue(DataHelper.getUTF8(name_utf8)));
     // BEP 27
-    if (privateTorrent)
+    if (privateTorrent != 0)
         // switched to number in 0.9.14
         //info.put("private", new BEValue(DataHelper.getUTF8("1")));
-        info.put("private", new BEValue(Integer.valueOf(1)));
+        info.put("private", new BEValue(Integer.valueOf(privateTorrent > 0 ? 1 : 0)));
 
     info.put("piece length", new BEValue(Integer.valueOf(piece_length)));
     info.put("pieces", new BEValue(piece_hashes));
@@ -654,19 +779,19 @@ public class MetaInfo
                 befiles.add(new BEValue(DataHelper.getUTF8(fi.get(j))));
             }
             file.put("path", new BEValue(befiles));
-            if ( (files_utf8 != null) && (files_utf8.size() > i) ) {
-                List<String> fiu = files_utf8.get(i);
-                List<BEValue> beufiles = new ArrayList<BEValue>(fiu.size());
-                for (int j = 0; j < fiu.size(); j++) {
-                    beufiles.add(new BEValue(DataHelper.getUTF8(fiu.get(j))));
-                }
-                file.put("path.utf-8", new BEValue(beufiles));
-            }
             file.put("length", new BEValue(lengths.get(i)));
+            String attr = null;
+            if (attributes != null) {
+                attr = attributes.get(i);
+                if (attr.length() > 0)
+                    file.put("attr", new BEValue(DataHelper.getASCII(attr)));
+            }
             l.add(new BEValue(file));
           }
         info.put("files", new BEValue(l));
       }
+
+    // TODO BEP 52 meta version and file tree
 
     // TODO if we add the ability for other keys in the first constructor
     //if (otherInfo != null)
@@ -701,20 +826,89 @@ public class MetaInfo
 
   /** @since 0.8.5 */
   public static void main(String[] args) {
-      if (args.length <= 0) {
-          System.err.println("Usage: MetaInfo files...");
-          return;
+      boolean error = false;
+      String created_by = null;
+      String announce = null;
+      List<String> url_list = null;
+      String comment = null;
+      Getopt g = new Getopt("MetaInfo", args, "a:c:m:w:");
+      try {
+          int c;
+          while ((c = g.getopt()) != -1) {
+            switch (c) {
+              case 'a':
+                  announce = g.getOptarg();
+                  break;
+
+              case 'c':
+                  created_by = g.getOptarg();
+                  break;
+
+              case 'm':
+                  comment = g.getOptarg();
+                  break;
+
+              case 'w':
+                  if (url_list == null)
+                      url_list = new ArrayList<String>();
+                  url_list.add(g.getOptarg());
+                  break;
+
+              case '?':
+              case ':':
+              default:
+                  error = true;
+                  break;
+            }  // switch
+          } // while
+      } catch (RuntimeException e) {
+          e.printStackTrace();
+          error = true;
       }
-      for (int i = 0; i < args.length; i++) {
+      if (error || args.length - g.getOptind() <= 0) {
+          System.err.println("Usage: MetaInfo [-a announceURL] [-c created-by] [-m comment] [-w webseed-url]* file.torrent [file2.torrent...]");
+          System.exit(1);
+      }
+      for (int i = g.getOptind(); i < args.length; i++) {
           InputStream in = null;
+          java.io.OutputStream out = null;
           try {
               in = new FileInputStream(args[i]);
               MetaInfo meta = new MetaInfo(in);
-              System.out.println(args[i] + " InfoHash: " + I2PSnarkUtil.toHex(meta.getInfoHash()));
+              System.out.println(args[i] +
+                                 "\nInfoHash:     " + I2PSnarkUtil.toHex(meta.getInfoHash()) +
+                                 "\nAnnounce:     " + meta.getAnnounce() +
+                                 "\nWebSeed URLs: " + meta.getWebSeedURLs() +
+                                 "\nCreated By:   " + meta.getCreatedBy() +
+                                 "\nComment:      " + meta.getComment());
+              if (created_by != null || announce != null || url_list != null || comment != null) {
+                  String cb = created_by != null ? created_by : meta.getCreatedBy();
+                  String an = announce != null ? announce : meta.getAnnounce();
+                  String cm = comment != null ? comment : meta.getComment();
+                  List<String> urls = url_list != null ? url_list : meta.getWebSeedURLs();
+                  MetaInfo meta2 = new MetaInfo(meta, an, meta.getAnnounceList(), cm, cb, urls);
+                  java.io.File from = new java.io.File(args[i]);
+                  java.io.File to = new java.io.File(args[i] + ".bak");
+                  if (net.i2p.util.FileUtil.copy(from, to, true, false)) {
+                      out = new java.io.FileOutputStream(from);
+                      out.write(meta2.getTorrentData());
+                      out.close();
+                      System.out.println("Modified " + from + " and backed up old file to " + to);
+                      System.out.println(args[i] +
+                                         "\nInfoHash:     " + I2PSnarkUtil.toHex(meta2.getInfoHash()) +
+                                         "\nAnnounce:     " + meta2.getAnnounce() +
+                                         "\nWebSeed URLs: " + meta2.getWebSeedURLs() +
+                                         "\nCreated By:   " + meta2.getCreatedBy() +
+                                         "\nComment:      " + meta2.getComment());
+                  } else {
+                      System.out.println("Failed backup of " + from + " to " + to);
+                  }
+              }
           } catch (IOException ioe) {
               System.err.println("Error in file " + args[i] + ": " + ioe);
           } finally {
               try { if (in != null) in.close(); } catch (IOException ioe) {}
+              try { if (out != null) out.close(); } catch (IOException ioe) {}
           }
       }
   }

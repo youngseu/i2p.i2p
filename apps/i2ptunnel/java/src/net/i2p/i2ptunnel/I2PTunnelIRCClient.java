@@ -30,7 +30,8 @@ public class I2PTunnelIRCClient extends I2PTunnelClientBase {
 
     /** list of Destination objects that we point at */
     private final List<I2PSocketAddress> _addrs;
-    private static final long DEFAULT_READ_TIMEOUT = 5*60*1000; // -1
+    // application should ping timeout before this
+    private static final long DEFAULT_READ_TIMEOUT = 10*60*1000;
     protected long readTimeout = DEFAULT_READ_TIMEOUT;
     private final boolean _dccEnabled;
     private I2PTunnelDCCServer _DCCServer;
@@ -61,6 +62,10 @@ public class I2PTunnelIRCClient extends I2PTunnelClientBase {
               l, 
               notifyThis, 
               "IRC Client on " + tunnel.listenHost + ':' + localPort, tunnel, pkf);
+        // force connect delay and bulk profile
+        Properties opts = tunnel.getClientOptions();
+        opts.setProperty("i2p.streaming.connectDelay", "200");
+        opts.remove("i2p.streaming.maxWindowSize");
         
         _addrs = new ArrayList<I2PSocketAddress>(4);
         buildAddresses(destinations);
@@ -132,7 +137,18 @@ public class I2PTunnelIRCClient extends I2PTunnelClientBase {
             if (clientDest == null)
                 throw new UnknownHostException("Could not resolve " + addr.getHostName());
             int port = addr.getPort();
-            i2ps = createI2PSocket(clientDest, port);
+            try {
+                i2ps = createI2PSocket(clientDest, port);
+            } catch (RuntimeException re) {
+                // tunnel build failure
+                _log.error("Error connecting", re);
+                try {
+                    String name = addr != null ? addr.getHostName() : "undefined";
+                    String msg = ":" + name + " 499 you :" + re.getMessage() + "\r\n";
+                    s.getOutputStream().write(DataHelper.getUTF8(msg));
+                } catch (IOException ioe) {}
+                throw re;
+            }
             i2ps.setReadTimeout(readTimeout);
             StringBuffer expectedPong = new StringBuffer();
             DCCHelper dcc = _dccEnabled ? new DCC(s.getLocalAddress().getAddress()) : null;
@@ -155,12 +171,6 @@ public class I2PTunnelIRCClient extends I2PTunnelClientBase {
                 String msg = ":" + name + " 499 you :" + ex + "\r\n";
                 s.getOutputStream().write(DataHelper.getUTF8(msg));
             } catch (IOException ioe) {}
-            closeSocket(s);
-            if (i2ps != null) {
-                synchronized (sockLock) {
-                    mySockets.remove(sockLock);
-                }
-            }
         } catch (I2PException ex) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Error connecting", ex);
@@ -172,10 +182,13 @@ public class I2PTunnelIRCClient extends I2PTunnelClientBase {
                 String msg = ":" + name + " 499 you :" + ex + "\r\n";
                 s.getOutputStream().write(DataHelper.getUTF8(msg));
             } catch (IOException ioe) {}
+        } finally {
+            // only because we are running it inline
             closeSocket(s);
             if (i2ps != null) {
+                try { i2ps.close(); } catch (IOException ioe) {}
                 synchronized (sockLock) {
-                    mySockets.remove(sockLock);
+                    mySockets.remove(i2ps);
                 }
             }
         }

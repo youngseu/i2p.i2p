@@ -35,19 +35,24 @@ public class StatisticsManager {
     private final String _networkID;
     
     public final static String PROP_PUBLISH_RANKINGS = "router.publishPeerRankings";
-    private static final String PROP_CONTACT_NAME = "netdb.contact";
+    //private static final String PROP_CONTACT_NAME = "netdb.contact";
     /** enhance anonymity by only including build stats one out of this many times */
     private static final int RANDOM_INCLUDE_STATS = 16;
+    //// remove after release ////
+    private static final boolean SIMPLE_STATS = CoreVersion.PUBLISHED_VERSION.equals("0.9.58");
 
     private final DecimalFormat _fmt;
     private final DecimalFormat _pct;
 
     public StatisticsManager(RouterContext context) {
         _context = context;
-        _fmt = new DecimalFormat("###,##0.00", new DecimalFormatSymbols(Locale.UK));
+        _fmt = SIMPLE_STATS ? new DecimalFormat("0.00", new DecimalFormatSymbols(Locale.UK)) :
+                              new DecimalFormat("###,##0.00", new DecimalFormatSymbols(Locale.UK));
         _pct = new DecimalFormat("#0.00%", new DecimalFormatSymbols(Locale.UK));
         _log = context.logManager().getLog(StatisticsManager.class);
-        _networkID = Integer.toString(context.router().getNetworkID());
+        // null for some tests
+        Router r = context.router();
+        _networkID = r != null ? Integer.toString(r.getNetworkID()) : "2";
     }
         
     /**
@@ -70,42 +75,15 @@ public class StatisticsManager {
      */
     public Properties publishStatistics(Hash h) { 
         Properties stats = new Properties();
-        stats.setProperty("router.version", RouterVersion.VERSION);
-        // never used
-        //stats.setProperty("coreVersion", CoreVersion.VERSION);
+        stats.setProperty("router.version", CoreVersion.PUBLISHED_VERSION);
         stats.setProperty(RouterInfo.PROP_NETWORK_ID, _networkID);
-        stats.setProperty(RouterInfo.PROP_CAPABILITIES, _context.router().getCapabilities());
+        String caps = _context.router().getCapabilities();
+        stats.setProperty(RouterInfo.PROP_CAPABILITIES, caps);
 
-        // No longer expose, to make build tracking more expensive
-        // stats.setProperty("router.id", RouterVersion.ID);
-        // stats.setProperty("core.id", CoreVersion.ID);
-
-/***
-        int newlines = 0;
-        FileInputStream in = null;
-        try {
-            in = new FileInputStream(Router.IDENTLOG);
-            int c = -1;
-            // perhaps later filter this to only include ident changes this
-            // day/week/month
-            while ( (c = in.read()) != -1) {
-                if (c == '\n')
-                    newlines++;
-            }
-        } catch (IOException ioe) {
-            // ignore
-        } finally {
-            if (in != null)
-                try { in.close(); } catch (IOException ioe) {}
-        }
-        if (newlines > 0)
-            stats.setProperty("stat_identities", newlines+"");
-***/
-        
         if (_context.getBooleanPropertyDefaultTrue(PROP_PUBLISH_RANKINGS) &&
-            _context.random().nextInt(RANDOM_INCLUDE_STATS) == 0) {
-            //long publishedUptime = _context.router().getUptime();
-            // Don't publish these for first hour
+            _context.random().nextInt(RANDOM_INCLUDE_STATS) == 0 &&
+            _context.router().getUptime() > 62*60*1000) {
+
             // Disabled in 0.9
             //if (publishedUptime > 62*60*1000)
             //    includeAverageThroughput(stats);
@@ -168,7 +146,7 @@ public class StatisticsManager {
 
         // So that we will still get build requests - not required since 0.7.9 2010-01-12
         //stats.setProperty("stat_uptime", "90m");
-        if (FloodfillNetworkDatabaseFacade.isFloodfill(_context.router().getRouterInfo())) {
+        if (caps.indexOf(FloodfillNetworkDatabaseFacade.CAPABILITY_FLOODFILL) >= 0) {
             int ri = _context.router().getUptime() > 30*60*1000 ?
                      _context.netDb().getKnownRouters() :
                      3000 + _context.random().nextInt(1000);   // so it isn't obvious we restarted
@@ -179,13 +157,14 @@ public class StatisticsManager {
             stats.setProperty("netdb.knownLeaseSets", String.valueOf(ls));
         }
 
+/*
         String contact = _context.getProperty(PROP_CONTACT_NAME);
         if (contact != null)
             stats.setProperty("contact", contact);
+*/
 
         String family = _context.getProperty(FamilyKeyCrypto.PROP_FAMILY_NAME);
         if (family != null) {
-            stats.setProperty(FamilyKeyCrypto.OPT_NAME, family);
             String sig = null;
             String key = null;
             RouterInfo oldRI = _context.router().getRouterInfo();
@@ -199,10 +178,12 @@ public class StatisticsManager {
                             // we changed the separator from ';' to ':'
                             key = null;
                         } else {
-                            stats.setProperty(FamilyKeyCrypto.OPT_KEY, key);
                             sig = oldRI.getOption(FamilyKeyCrypto.OPT_SIG);
-                            if (sig != null)
+                            if (sig != null) {
+                                stats.setProperty(FamilyKeyCrypto.OPT_NAME, family);
+                                stats.setProperty(FamilyKeyCrypto.OPT_KEY, key);
                                 stats.setProperty(FamilyKeyCrypto.OPT_SIG, sig);
+                            }
                         }
                     }
                 }
@@ -260,7 +241,25 @@ public class StatisticsManager {
         }
     }
     
+    /**
+     *  Simple format, only what stats.i2p needs:
+     *<pre>
+     *  average
+     *</pre>
+     *
+     *  Previous format:
+     *<pre>
+     *  avg;extreme avg;pct of lifetime avg;
+     *  if lifetime total event time greater than zero:
+     *       lastEventSaturation;lastSaturationLimit;extremeEventSaturation;extremeSaturationLimit;
+     *  event count;
+     *  if number of periods greater than zero:
+     *       avg freq;exteremeEventCount;lifetimeEventCount;
+     *</pre>
+     */
     private String renderRate(Rate rate, boolean fudgeQuantity) {
+        if (SIMPLE_STATS)
+            return num(rate.getAverageValue());
         StringBuilder buf = new StringBuilder(128);
         buf.append(num(rate.getAverageValue())).append(';');
         buf.append(num(rate.getExtremeAverageValue())).append(';');
@@ -318,7 +317,17 @@ public class StatisticsManager {
         }
     }
     
+    /**
+     *  Simple format, only what stats.i2p needs:
+     *<pre>
+     *  0;0;0;percent or event count
+     *</pre>
+     *
+     *  Previous format: see above
+     */
     private String renderRate(Rate rate, double fudgeQuantity) {
+        if (SIMPLE_STATS)
+            return "0;0;0;" + num(fudgeQuantity);
         StringBuilder buf = new StringBuilder(128);
         buf.append(num(rate.getAverageValue())).append(';');
         buf.append(num(rate.getExtremeAverageValue())).append(';');
@@ -332,6 +341,7 @@ public class StatisticsManager {
     }
 
     /* report the same data for tx and rx, for enhanced anonymity */
+/*
     private void includeAverageThroughput(Properties stats) {
         RateStat sendRate = _context.statManager().getRate("bw.sendRate");
         RateStat recvRate = _context.statManager().getRate("bw.recvRate");
@@ -347,6 +357,7 @@ public class StatisticsManager {
         stats.setProperty("stat_bandwidthSendBps.60m", str);
         stats.setProperty("stat_bandwidthReceiveBps.60m", str);
     }
+*/
 
     private static String getPeriod(Rate rate) { return DataHelper.formatDuration(rate.getPeriod()); }
 

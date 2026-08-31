@@ -17,8 +17,6 @@ import java.util.Date;
 import java.util.Map;
 import java.util.Properties;
 
-import org.apache.http.conn.util.InetAddressUtils;
-
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
 import net.i2p.data.DataStructureImpl;
@@ -146,7 +144,10 @@ public class RouterAddress extends DataStructureImpl {
      */
     @Deprecated
     public void setExpiration(Date expiration) {
-        _expiration = expiration.getDate();
+        if (expiration != null)
+            _expiration = expiration.getDate();
+        else
+            _expiration = 0;
     }
 
     /**
@@ -214,11 +215,11 @@ public class RouterAddress extends DataStructureImpl {
     
     /**
      *  Caching version of InetAddress.getByName(getOption("host")).getAddress(), which is slow.
-     *  Caches numeric host names, and negative caches also.
+     *  Caches numeric hostnames, and negative caches also.
      *
-     *  As of 0.9.32, this works for literal IP addresses only, and does NOT resolve host names.
-     *  If a host name is specified in the options, this will return null.
-     *  Use getHost() if you need the host name.
+     *  As of 0.9.32, this works for literal IP addresses only, and does NOT resolve hostnames.
+     *  If a hostname is specified in the options, this will return null.
+     *  Use getHost() if you need the hostname.
      *
      *  @return IP or null
      *  @since 0.9.3
@@ -227,7 +228,7 @@ public class RouterAddress extends DataStructureImpl {
         if (_ip == NOT_LOOKED_UP) {
             // Only look up once, even if it fails, so we don't generate excessive DNS lookups.
             // The lifetime of a RouterAddress object is a few hours at most,
-            // it will get republished or expired, so it's OK even for host names.
+            // it will get republished or expired, so it's OK even for hostnames.
             String host = getHost();
             if (host != null)
                 _ip = Addresses.getIPOnly(host);
@@ -278,15 +279,22 @@ public class RouterAddress extends DataStructureImpl {
     public void readBytes(InputStream in) throws DataFormatException, IOException {
         if (_transportStyle != null)
             throw new IllegalStateException();
-        _cost = (short) DataHelper.readLong(in, 1);
+        // EOF will be thrown in next read
+        _cost = (short) in.read();
         _expiration = DataHelper.readLong(in, 8);
         _transportStyle = DataHelper.readString(in);
         // reduce Object proliferation
         if (_transportStyle.equals("SSU"))
             _transportStyle = "SSU";
+        else if (_transportStyle.equals("NTCP2"))
+            _transportStyle = "NTCP2";
         else if (_transportStyle.equals("NTCP"))
             _transportStyle = "NTCP";
-        DataHelper.readProperties(in, _options);
+        else if (_transportStyle.equals("SSU2"))
+            _transportStyle = "SSU2";
+        // enforce mapping order so bad ones will fail-fast
+        // before the signature check
+        DataHelper.readProperties(in, _options, true);
     }
     
     /**
@@ -311,12 +319,16 @@ public class RouterAddress extends DataStructureImpl {
         if (object == this) return true;
         if ((object == null) || !(object instanceof RouterAddress)) return false;
         RouterAddress addr = (RouterAddress) object;
-        return
+        boolean rv =
                getPort() == addr.getPort() &&
                DataHelper.eq(getHost(), addr.getHost()) &&
                DataHelper.eq(_transportStyle, addr._transportStyle);
                //DataHelper.eq(_options, addr._options) &&
                //DataHelper.eq(_expiration, addr._expiration);
+        if (!rv || !_transportStyle.equals("SSU"))
+               return rv;
+        // SSU 4/6 caps
+        return DataHelper.eq(_options.getProperty("caps"), addr._options.getProperty("caps"));
     }
     
     /**

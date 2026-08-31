@@ -1,8 +1,6 @@
 package net.i2p.crypto;
 
 /**
- * PRELIMINARY - unused - subject to change
- *
  * Base encryption algorithm type
  *
  * @since 0.9.18
@@ -10,7 +8,17 @@ package net.i2p.crypto;
 public enum EncAlgo {
 
     ELGAMAL("ElGamal"),
-    EC("EC");
+    EC("EC"),
+
+    /** @since 0.9.38 */
+    ECIES("ECIES"),
+
+    /** @since 0.9.67 */
+    ECIES_MLKEM("ECIES-MLKEM"),
+
+    /** @since 0.9.67 */
+    ECIES_MLKEM_INT("ECIES-MLKEM-Internal");
+
 
     private final String name;
 

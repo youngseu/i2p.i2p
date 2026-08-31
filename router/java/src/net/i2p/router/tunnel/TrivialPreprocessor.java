@@ -13,7 +13,7 @@ import net.i2p.util.SimpleByteCache;
 /** 
  * Do the simplest thing possible for preprocessing - for each message available,
  * turn it into the minimum number of fragmented preprocessed blocks, sending 
- * each of those out.  This does not coallesce message fragments or delay for more
+ * each of those out.  This does not coalesce message fragments or delay for more
  * optimal throughput.
  *
  * See FragmentHandler Javadoc for tunnel message fragment format
@@ -34,7 +34,7 @@ class TrivialPreprocessor implements TunnelGateway.QueuePreprocessor {
      * (since ByteCache only maintains once instance for each size)
      * Used in BatchedPreprocessor; see add'l comments there
      */
-    protected static final ByteCache _dataCache = ByteCache.getInstance(32, PREPROCESSED_SIZE);
+    protected static final ByteCache _dataCache = ByteCache.getInstance(512, PREPROCESSED_SIZE);
 
     public TrivialPreprocessor(RouterContext ctx) {
         _context = ctx;

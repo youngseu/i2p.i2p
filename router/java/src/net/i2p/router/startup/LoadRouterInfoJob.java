@@ -15,6 +15,7 @@ import java.io.InputStream;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.KeyGenerator;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Certificate;
@@ -34,6 +35,7 @@ import net.i2p.router.RouterContext;
 import net.i2p.router.crypto.FamilyKeyCrypto;
 import net.i2p.router.networkdb.kademlia.PersistentDataStore;
 import net.i2p.util.Log;
+import net.i2p.util.SystemVersion;
 
 /**
  *  Run once or twice at startup by StartupJob,
@@ -43,6 +45,8 @@ class LoadRouterInfoJob extends JobImpl {
     private final Log _log;
     private RouterInfo _us;
     private static final AtomicBoolean _keyLengthChecked = new AtomicBoolean();
+    // 1 chance in this many to rekey if the defaults changed
+    private static final int REKEY_PROBABILITY = 1;
     
     public LoadRouterInfoJob(RouterContext ctx) {
         super(ctx);
@@ -100,11 +104,43 @@ class LoadRouterInfoJob extends JobImpl {
                 if (_log.shouldLog(Log.DEBUG))
                     _log.debug("Reading in routerInfo from " + rif.getAbsolutePath() + " and it has " + info.getAddresses().size() + " addresses");
                 // don't reuse if family name changed
-                if (DataHelper.eq(info.getOption(FamilyKeyCrypto.OPT_NAME),
-                                  getContext().getProperty(FamilyKeyCrypto.PROP_FAMILY_NAME))) {
+                String oldFamily = info.getOption(FamilyKeyCrypto.OPT_NAME);
+                if (oldFamily == null) {
                     _us = info;
+                } else if (oldFamily.equals(getContext().getProperty(FamilyKeyCrypto.PROP_FAMILY_NAME))) {
+                    // This keeps the signature the same across restarts,
+                    // which is good because ECDSA creates a different signature each time,
+                    // but in some situations such as leaving and re-joining or recreating a family,
+                    // or copying router.info to a new router,
+                    // could lead to a bad signature being perpetuated forever.
+                    // Here we ignore and delete router.info if the sig is invalid.
+                    FamilyKeyCrypto fkc = getContext().router().getFamilyKeyCrypto();
+                    if (fkc != null && fkc.verifyOurFamily(info)) {
+                        _us = info;
+                    } else {
+                        _log.logAlways(Log.WARN, "NetDb family keys are invalid");
+                        // close and delete so we don't infinite loop
+                        try { fis1.close(); } catch (IOException ioe2) {}
+                        fis1 = null;
+                        rif.delete();
+                    }
                 } else {
                     _log.logAlways(Log.WARN, "NetDb family name changed");
+                    // close and delete so we don't infinite loop
+                    try { fis1.close(); } catch (IOException ioe2) {}
+                    fis1 = null;
+                    rif.delete();
+                }
+                if (_us != null) {
+                    long now = getContext().clock().now();
+                    long riTime = _us.getPublished();
+                    if (riTime > now || now - riTime > 45*60*1000) {
+                        // prevent netdb store failure and rekey
+                        _us = null;
+                        try { fis1.close(); } catch (IOException ioe2) {}
+                        fis1 = null;
+                        rif.delete();
+                    }
                 }
             }
             
@@ -115,22 +151,26 @@ class LoadRouterInfoJob extends JobImpl {
                 PrivateKey privkey = kd.privateKey;
                 SigningPrivateKey signingPrivKey = kd.signingPrivateKey;
                 SigType stype = signingPubKey.getType();
+                EncType etype = pubkey.getType();
 
-                // check if the sigtype config changed
+                // check if the sigtype or enctype config changed
                 SigType cstype = CreateRouterInfoJob.getSigTypeConfig(getContext());
                 boolean sigTypeChanged = stype != cstype;
-                if (sigTypeChanged && getContext().getProperty(CreateRouterInfoJob.PROP_ROUTER_SIGTYPE) == null) {
+                EncType cetype = CreateRouterInfoJob.getEncTypeConfig(getContext());
+                boolean encTypeChanged = etype != cetype;
+                if ((sigTypeChanged && getContext().getProperty(CreateRouterInfoJob.PROP_ROUTER_SIGTYPE) == null) ||
+                    (encTypeChanged && getContext().getProperty(CreateRouterInfoJob.PROP_ROUTER_ENCTYPE) == null)) {
                     // Not explicitly configured, and default has changed
-                    // Give a 25% chance of rekeying for each restart
-                    // TODO reduce to ~3 (i.e. increase probability) in future release
-                    if (getContext().random().nextInt(4) > 0) {
+                    // Give a chance of rekeying for each restart
+                    if (!SystemVersion.isSlow() && getContext().random().nextInt(REKEY_PROBABILITY) > 0) {
                         sigTypeChanged = false;
+                        encTypeChanged = false;
                         if (_log.shouldWarn())
-                            _log.warn("Deferring RI rekey from " + stype + " to " + cstype);
+                            _log.warn("Deferring RI rekey from " + stype + '/' + etype + " to " + cstype + '/' + cetype);
                     }
                 }
 
-                if (sigTypeChanged || shouldRebuild(privkey)) {
+                if (sigTypeChanged || encTypeChanged || shouldRebuild(privkey)) {
                     if (_us != null) {
                         Hash h = _us.getIdentity().getHash();
                         _log.logAlways(Log.WARN, "Deleting old router identity " + h.toBase64());
@@ -143,6 +183,8 @@ class LoadRouterInfoJob extends JobImpl {
                     }
                     if (sigTypeChanged)
                         _log.logAlways(Log.WARN, "Rebuilding RouterInfo with new signature type " + cstype);
+                    if (encTypeChanged)
+                        _log.logAlways(Log.WARN, "Rebuilding RouterInfo with new encryption type " + cetype);
                     // windows... close before deleting
                     if (fis1 != null) {
                         try { fis1.close(); } catch (IOException ioe) {}
@@ -184,11 +226,13 @@ class LoadRouterInfoJob extends JobImpl {
     }
 
     /**
-     *  Does our RI private key length match the configuration?
+     *  Does our RI ElGamal private key length match the configuration?
      *  If not, return true.
      *  @since 0.9.8
      */
     private boolean shouldRebuild(PrivateKey privkey) {
+        if (privkey.getType() != EncType.ELGAMAL_2048)
+            return false;
         // Prevent returning true more than once, ever.
         // If we are called a second time, it's probably because we failed
         // to delete router.keys for some reason.

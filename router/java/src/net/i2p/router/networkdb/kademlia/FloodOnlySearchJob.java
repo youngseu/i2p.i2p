@@ -37,7 +37,7 @@ import net.i2p.util.Log;
  * after it loses (or never had) floodfill references, as long as it
  * knows one peer that is up.
  */
-class FloodOnlySearchJob extends FloodSearchJob {
+abstract class FloodOnlySearchJob extends FloodSearchJob {
     private boolean _shouldProcessDSRM;
     private final HashSet<Hash> _unheardFrom;
     
@@ -56,15 +56,32 @@ class FloodOnlySearchJob extends FloodSearchJob {
         _timeoutMs = Math.min(timeoutMs, SearchJob.PER_FLOODFILL_PEER_TIMEOUT);
         _expiration = _timeoutMs + ctx.clock().now();
         _unheardFrom = new HashSet<Hash>(CONCURRENT_SEARCHES);
-        _replySelector = new FloodOnlyLookupSelector(getContext(), this);
-        _onReply = new FloodOnlyLookupMatchJob(getContext(), this);
-        _onTimeout = new FloodOnlyLookupTimeoutJob(getContext(), this);
+        _replySelector = new FloodOnlyLookupSelector(ctx, this);
+        _onReply = new FloodOnlyLookupMatchJob(ctx, this);
+        _onTimeout = new FloodOnlyLookupTimeoutJob(ctx, this);
+    }
+
+    /**
+     * For DirectLookupJob extension, RI only, different match job
+     *
+     * @since 0.9.56
+     */
+    protected FloodOnlySearchJob(RouterContext ctx, FloodfillNetworkDatabaseFacade facade, Hash key, Job onFind, Job onFailed, int timeoutMs) {
+        super(ctx, facade, key, onFind, onFailed, timeoutMs, false);
+        _timeoutMs = timeoutMs;
+        _expiration = _timeoutMs + ctx.clock().now();
+        _unheardFrom = new HashSet<Hash>(1);
+        _replySelector = new FloodOnlyLookupSelector(ctx, this);
+        _onReply = new DirectLookupMatchJob(ctx, this);
+        _onTimeout = new FloodOnlyLookupTimeoutJob(ctx, this);
     }
 
     public boolean shouldProcessDSRM() { return _shouldProcessDSRM; }
 
     @Override
     public void runJob() {
+        throw new UnsupportedOperationException("use override");
+/****
         // pick some floodfill peers and send out the searches
         // old
         //List<Hash> floodfillPeers = _facade.getFloodfillPeers();
@@ -105,7 +122,6 @@ class FloodOnlySearchJob extends FloodSearchJob {
         // so we can register a reply selector.
         _out = getContext().messageRegistry().registerPending(_replySelector, _onReply, _onTimeout);
 
-/********
         // We need to randomize our ff selection, else we stay with the same ones since
         // getFloodfillPeers() is sorted by closest distance. Always using the same
         // ones didn't help reliability.
@@ -140,7 +156,6 @@ class FloodOnlySearchJob extends FloodSearchJob {
         } else {
             _shouldProcessDSRM = true;
         }
-********/
 
         int count = 0; // keep a separate count since _lookupsRemaining could be decremented elsewhere
         for (int i = 0; _lookupsRemaining.get() < CONCURRENT_SEARCHES && i < floodfillPeers.size(); i++) {
@@ -172,6 +187,7 @@ class FloodOnlySearchJob extends FloodSearchJob {
             dlm.setMessageExpiration(getContext().clock().now() + SINGLE_SEARCH_MSG_TIME);
             dlm.setReplyTunnel(replyTunnel.getReceiveTunnelId(0));
             dlm.setSearchKey(_key);
+            dlm.setSearchType(_isLease ? DatabaseLookupMessage.Type.LS : DatabaseLookupMessage.Type.RI);
             
             if (_log.shouldLog(Log.INFO))
                 _log.info(getJobId() + ": Floodfill search for " + _key + " to " + peer);
@@ -186,6 +202,7 @@ class FloodOnlySearchJob extends FloodSearchJob {
             // no floodfill peers, fail
             failed();
         }
+****/
     }
 
     @Override

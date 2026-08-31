@@ -59,7 +59,7 @@ cygwin*)
 darwin*|osx)
         COMPILEFLAGS="-fPIC -Wall"
         INCLUDES="-I. -I../../jbigi/include -I$JAVA_HOME/include -I$JAVA_HOME/include/$BUILD_OS -I/usr/local/include"
-        LINKFLAGS="-dynamiclib -framework JavaVM"
+        LINKFLAGS="-dynamiclib"
         LIBFILE="libjbigi.jnilib";;
 sunos*|openbsd*|netbsd*|*freebsd*|linux*)
         if [ $BUILD_OS = "sunos" ]; then
@@ -68,8 +68,24 @@ sunos*|openbsd*|netbsd*|*freebsd*|linux*)
             BUILD_OS="linux"
         fi
         COMPILEFLAGS="-fPIC -Wall $CFLAGS"
-        INCLUDES="-I. -I../../jbigi/include -I$JAVA_HOME/include -I$JAVA_HOME/include/$BUILD_OS -I/usr/local/include"
+        # change the path that build_jbigi.sh expects to find the source files at.
+        # formerly 0002-jbigi-soname.patch
+        if [ "$DEBIANVERSION" ] ; then
+            INCLUDES="-I. -I./jbigi/include -I$JAVA_HOME/include -I$JAVA_HOME/include/$BUILD_OS -I/usr/local/include"
+        else
+            INCLUDES="-I. -I../../jbigi/include -I$JAVA_HOME/include -I$JAVA_HOME/include/$BUILD_OS -I/usr/local/include"
+        fi
         LINKFLAGS="-shared -Wl,-soname,libjbigi.so"
+        LIBFILE="libjbigi.so";;
+android)
+        BUILD_OS="linux"
+        if [ $BITS -eq 32 ]; then
+            COMPILEFLAGS="-O2 -pedantic -fomit-frame-pointer -march=armv7-a -mfloat-abi=softfp -mtune=cortex-a5 -fPIC -DPIC"
+        else
+            COMPILEFLAGS="-O2 -pedantic -march=armv8-a -Wa,--noexecstack -fPIC -DPIC"
+        fi
+        LINKFLAGS="-shared -Wl,-soname,libjbigi.so"
+        INCLUDES="-I. -I../../jbigi/include -I$JAVA_HOME/include -I$JAVA_HOME/include/$BUILD_OS -I/usr/local/include"
         LIBFILE="libjbigi.so";;
 *)
         echo "Unsupported system type."
@@ -85,13 +101,27 @@ else
         STATICLIBS=".libs/libgmp.a"
 fi
 
-[ $BITS -eq 32 -a "${UNAME#*86}" != "$UNAME" ] && COMPILEFLAGS="-m32 $COMPILEFLAGS" && LINKFLAGS="-m32 $LINKFLAGS"
-[ $BITS -eq 64 -a "${UNAME#*86}" != "$UNAME" ] && COMPILEFLAGS="-m64 $COMPILEFLAGS" && LINKFLAGS="-m64 $LINKFLAGS"
+# Debian builds are presumed to be native, we don't need the -mxx flag unless cross-compile,
+# and this breaks the x32 build
+if [ -z "$DEBIANVERSION" ] ; then
+    [ $BITS -eq 32 -a "${UNAME#*86}" != "$UNAME" ] && COMPILEFLAGS="-m32 $COMPILEFLAGS" && LINKFLAGS="-m32 $LINKFLAGS"
+    [ $BITS -eq 64 -a "${UNAME#*86}" != "$UNAME" ] && COMPILEFLAGS="-m64 $COMPILEFLAGS" && LINKFLAGS="-m64 $LINKFLAGS"
+fi
 
 echo "Compiling C code..."
-echo "Compile: \"$CC -c $COMPILEFLAGS $INCLUDES ../../jbigi/src/jbigi.c\""
-$CC -c $COMPILEFLAGS $INCLUDES ../../jbigi/src/jbigi.c || exit 1
+# change the path that build_jbigi.sh expects to find the source files at.
+# formerly 0002-jbigi-soname.patch
+if [ "$DEBIANVERSION" ] ; then
+    echo "Compile: \"$CC -c $COMPILEFLAGS $INCLUDES ./jbigi/src/jbigi.c\""
+    $CC -c $COMPILEFLAGS $INCLUDES ./jbigi/src/jbigi.c || exit 1
+else
+    echo "Compile: \"$CC -c $COMPILEFLAGS $INCLUDES ../../jbigi/src/jbigi.c\""
+    $CC -c $COMPILEFLAGS $INCLUDES ../../jbigi/src/jbigi.c || exit 1
+fi
 echo "Link: \"$CC $LINKFLAGS $INCLUDES -o $LIBFILE jbigi.o $INCLUDELIBS $STATICLIBS $LIBPATH\""
 $CC $LINKFLAGS $INCLUDES -o $LIBFILE jbigi.o $INCLUDELIBS $STATICLIBS $LIBPATH || exit 1
-
+if [ ! -z "$STRIP" ]; then
+    echo "Strip: \"$STRIP $LIBFILE\""
+    $STRIP $LIBFILE
+fi
 exit 0

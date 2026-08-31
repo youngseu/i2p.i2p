@@ -9,11 +9,10 @@ import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
-import java.util.Set;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -25,6 +24,7 @@ import net.i2p.util.FileUtil;
 import net.i2p.util.Log;
 import net.i2p.util.SecureDirectory;
 import net.i2p.util.SecureFileOutputStream;
+import net.i2p.util.SystemVersion;
 
 /**
  *  Write profiles to disk at shutdown,
@@ -47,14 +47,8 @@ class ProfilePersistenceHelper {
     private static final int MIN_NAME_LENGTH = PREFIX.length() + 44 + OLD_SUFFIX.length();
     private static final String DIR_PREFIX = "p";
     private static final String B64 = Base64.ALPHABET_I2P;
-    
-    /**
-     * If we haven't been able to get a message through to the peer in this much time,
-     * drop the profile.  They may reappear, but if they do, their config may
-     * have changed (etc).
-     *
-     */
-    private static final long EXPIRE_AGE = 15*24*60*60*1000;
+    // Max to read in at startup
+    private static final int LIMIT_PROFILES = SystemVersion.isSlow() ? 1000 : 4000;
     
     private final File _profileDir;
     private Hash _us;
@@ -75,29 +69,40 @@ class ProfilePersistenceHelper {
     
     public void setUs(Hash routerIdentHash) { _us = routerIdentHash; }
     
-    /** write out the data from the profile to the stream */
-    public void writeProfile(PeerProfile profile) {
-        if (isExpired(profile.getLastSendSuccessful()))
-            return;
-        
+    /**
+     * write out the data from the profile to the file
+     * @return success
+     */
+    public boolean writeProfile(PeerProfile profile) {
         File f = pickFile(profile);
-        long before = _context.clock().now();
         OutputStream fos = null;
         try {
             fos = new BufferedOutputStream(new GZIPOutputStream(new SecureFileOutputStream(f)));
-            writeProfile(profile, fos);
+            writeProfile(profile, fos, false);
         } catch (IOException ioe) {
             _log.error("Error writing profile to " + f);
+            return false;
         } finally {
             if (fos != null) try { fos.close(); } catch (IOException ioe) {}
         }
-        long delay = _context.clock().now() - before;
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Writing the profile to " + f.getName() + " took " + delay + "ms");
+        return true;
     }
 
-    /** write out the data from the profile to the stream */
+    /**
+     * write out the data from the profile to the stream
+     * includes comments
+     */
     public void writeProfile(PeerProfile profile, OutputStream out) throws IOException {
+        writeProfile(profile, out, true);
+    }
+
+    /**
+     * write out the data from the profile to the stream
+     * @param addComments add comment lines to the output
+     * @since 0.9.41
+     */
+    @SuppressWarnings("deprecation")
+    public void writeProfile(PeerProfile profile, OutputStream out, boolean addComments) throws IOException {
         String groups = null;
         if (_context.profileOrganizer().isFailing(profile.getPeer())) {
             groups = "Failing";
@@ -114,80 +119,106 @@ class ProfilePersistenceHelper {
         }
         
         StringBuilder buf = new StringBuilder(512);
-        buf.append("########################################################################").append(NL);
-        buf.append("# Profile for peer ").append(profile.getPeer().toBase64()).append(NL);
-        if (_us != null)
-            buf.append("# as calculated by ").append(_us.toBase64()).append(NL);
-        buf.append("#").append(NL);
-        buf.append("# Speed: ").append(profile.getSpeedValue()).append(NL);
-        buf.append("# Capacity: ").append(profile.getCapacityValue()).append(NL);
-        buf.append("# Integration: ").append(profile.getIntegrationValue()).append(NL);
-        buf.append("# Groups: ").append(groups).append(NL);
-        buf.append("#").append(NL);
-        buf.append("########################################################################").append(NL);
-        buf.append("##").append(NL);
-        add(buf, "speedBonus", profile.getSpeedBonus(), "Manual adjustment to the speed score");
-        add(buf, "capacityBonus", profile.getCapacityBonus(), "Manual adjustment to the capacity score");
-        add(buf, "integrationBonus", profile.getIntegrationBonus(), "Manual adjustment to the integration score");
-        addDate(buf, "firstHeardAbout", profile.getFirstHeardAbout(), "When did we first get a reference to this peer?");
-        addDate(buf, "lastHeardAbout", profile.getLastHeardAbout(), "When did we last get a reference to this peer?");
-        addDate(buf, "lastHeardFrom", profile.getLastHeardFrom(), "When did we last get a message from the peer?");
-        addDate(buf, "lastSentToSuccessfully", profile.getLastSendSuccessful(), "When did we last send the peer a message successfully?");
-        addDate(buf, "lastFailedSend", profile.getLastSendFailed(), "When did we last fail to send a message to the peer?");
-        add(buf, "tunnelTestTimeAverage", profile.getTunnelTestTimeAverage(), "Moving average as to how fast the peer replies");
-        add(buf, "tunnelPeakThroughput", profile.getPeakThroughputKBps(), "KBytes/sec");
-        add(buf, "tunnelPeakTunnelThroughput", profile.getPeakTunnelThroughputKBps(), "KBytes/sec");
-        add(buf, "tunnelPeakTunnel1mThroughput", profile.getPeakTunnel1mThroughputKBps(), "KBytes/sec");
-        buf.append(NL);
+        if (addComments) {
+            buf.append("########################################################################").append(NL);
+            buf.append("# Profile for peer ").append(profile.getPeer().toBase64()).append(NL);
+            if (_us != null)
+                buf.append("# as calculated by ").append(_us.toBase64()).append(NL);
+            buf.append("#").append(NL);
+            buf.append("# Speed: ").append(profile.getSpeedValue()).append(NL);
+            buf.append("# Capacity: ").append(profile.getCapacityValue()).append(NL);
+            buf.append("# Integration: ").append(profile.getIntegrationValue()).append(NL);
+            buf.append("# Groups: ").append(groups).append(NL);
+            buf.append("#").append(NL);
+            buf.append("########################################################################").append(NL);
+            buf.append("##").append(NL);
+        }
+        add(buf, addComments, "speedBonus", profile.getSpeedBonus(), "Manual adjustment to the speed score");
+        add(buf, addComments, "capacityBonus", profile.getCapacityBonus(), "Manual adjustment to the capacity score");
+        add(buf, addComments, "integrationBonus", profile.getIntegrationBonus(), "Manual adjustment to the integration score");
+        addDate(buf, addComments, "firstHeardAbout", profile.getFirstHeardAbout(), "When did we first get a reference to this peer?");
+        addDate(buf, addComments, "lastHeardAbout", profile.getLastHeardAbout(), "When did we last get a reference to this peer?");
+        addDate(buf, addComments, "lastHeardFrom", profile.getLastHeardFrom(), "When did we last get a message from the peer?");
+        addDate(buf, addComments, "lastSentToSuccessfully", profile.getLastSendSuccessful(), "When did we last send the peer a message successfully?");
+        addDate(buf, addComments, "lastFailedSend", profile.getLastSendFailed(), "When did we last fail to send a message to the peer?");
+        if (PeerProfile.ENABLE_TUNNEL_TEST_RESPONSE_TIME)
+            add(buf, addComments, "tunnelTestTimeAverage", profile.getTunnelTestTimeAverage(), "Moving average as to how fast the peer replies");
+        add(buf, addComments, "tunnelPeakThroughput", profile.getPeakThroughputKBps(), "KBytes/sec");
+        add(buf, addComments, "tunnelPeakTunnelThroughput", profile.getPeakTunnelThroughputKBps(), "KBytes/sec");
+        add(buf, addComments, "tunnelPeakTunnel1mThroughput", profile.getPeakTunnel1mThroughputKBps(), "KBytes/sec");
+        if (addComments)
+            buf.append(NL);
         
         out.write(buf.toString().getBytes("UTF-8"));
         
         if (profile.getIsExpanded()) {
             // only write out expanded data if, uh, we've got it
-            profile.getTunnelHistory().store(out);
+            profile.getTunnelHistory().store(out, addComments);
             //profile.getReceiveSize().store(out, "receiveSize");
             //profile.getSendSuccessSize().store(out, "sendSuccessSize");
-            profile.getTunnelCreateResponseTime().store(out, "tunnelCreateResponseTime");
-            profile.getTunnelTestResponseTime().store(out, "tunnelTestResponseTime");
+            profile.getTunnelCreateResponseTime().store(out, "tunnelCreateResponseTime", addComments);
+            if (PeerProfile.ENABLE_TUNNEL_TEST_RESPONSE_TIME)
+                profile.getTunnelTestResponseTime().store(out, "tunnelTestResponseTime", addComments);
         }
 
         if (profile.getIsExpandedDB()) {
-            profile.getDBHistory().store(out);
-            profile.getDbIntroduction().store(out, "dbIntroduction");
-            profile.getDbResponseTime().store(out, "dbResponseTime");
+            profile.getDBHistory().store(out, addComments);
+            profile.getDbIntroduction().store(out, "dbIntroduction", addComments);
+            profile.getDbResponseTime().store(out, "dbResponseTime", addComments);
         }
     }
     
     /** @since 0.8.5 */
-    private static void addDate(StringBuilder buf, String name, long val, String description) {
-        String when = val > 0 ? (new Date(val)).toString() : "Never";
-        add(buf, name, val, description + ' ' + when);
+    private static void addDate(StringBuilder buf, boolean addComments, String name, long val, String description) {
+        if (addComments) {
+            String when = val > 0 ? (new Date(val)).toString() : "Never";
+            add(buf, true, name, val, description + ' ' + when);
+        } else {
+            add(buf, false, name, val, description);
+        }
     }
     
     /** @since 0.8.5 */
-    private static void add(StringBuilder buf, String name, long val, String description) {
-        buf.append("# ").append(name).append(NL).append("# ").append(description).append(NL);
-        buf.append(name).append('=').append(val).append(NL).append(NL);
+    private static void add(StringBuilder buf, boolean addComments, String name, long val, String description) {
+        if (addComments)
+            buf.append("# ").append(name).append(NL).append("# ").append(description).append(NL);
+        buf.append(name).append('=').append(val).append(NL);
+        if (addComments)
+            buf.append(NL);
     }
     
     /** @since 0.8.5 */
-    private static void add(StringBuilder buf, String name, float val, String description) {
-        buf.append("# ").append(name).append(NL).append("# ").append(description).append(NL);
-        buf.append(name).append('=').append(val).append(NL).append(NL);
+    private static void add(StringBuilder buf, boolean addComments, String name, float val, String description) {
+        if (addComments)
+            buf.append("# ").append(name).append(NL).append("# ").append(description).append(NL);
+        buf.append(name).append('=').append(val).append(NL);
+        if (addComments)
+            buf.append(NL);
     }
     
-    public Set<PeerProfile> readProfiles() {
-        long start = _context.clock().now();
+    public List<PeerProfile> readProfiles() {
+        long start = System.currentTimeMillis();
+        long down = _context.router().getEstimatedDowntime();
+        long cutoff = down < 15*24*60*60*1000L ? start - down - 24*60*60*1000 : start;
         List<File> files = selectFiles();
-        Set<PeerProfile> profiles = new HashSet<PeerProfile>(files.size());
+        if (files.size() > LIMIT_PROFILES)
+            Collections.shuffle(files, _context.random());
+        List<PeerProfile> profiles = new ArrayList<PeerProfile>(Math.min(LIMIT_PROFILES, files.size()));
+        int count = 0;
         for (File f :  files) {
-            PeerProfile profile = readProfile(f);
-            if (profile != null)
+            if (count >= LIMIT_PROFILES) {
+                f.delete();
+                continue;
+            }
+            PeerProfile profile = readProfile(f, cutoff);
+            if (profile != null) {
                 profiles.add(profile);
+                count++;
+            }
         }
-        long duration = _context.clock().now() - start;
+        long duration = System.currentTimeMillis() - start;
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Loading " + profiles.size() + " took " + duration + "ms");
+            _log.debug("Loading " + count + " profiles took " + duration + "ms");
         return profiles;
     }
     
@@ -233,9 +264,10 @@ class ProfilePersistenceHelper {
     
     /**
      *  Delete profile files with timestamps older than 'age' ago
+     *  @return number deleted
      *  @since 0.9.28
      */
-    public void deleteOldProfiles(long age) {
+    public int deleteOldProfiles(long age) {
         long cutoff = System.currentTimeMillis() - age;
         List<File> files = selectFiles();
         int i = 0;
@@ -247,16 +279,20 @@ class ProfilePersistenceHelper {
                 f.delete();
             }
         }
-        if (_log.shouldWarn())
-            _log.warn("Deleted " + i + " old profiles");
+        if (_log.shouldInfo())
+            _log.info("Deleted " + i + " old profiles");
+        return i;
     }
 
-    private boolean isExpired(long lastSentToSuccessfully) {
-        long timeSince = _context.clock().now() - lastSentToSuccessfully;
-        return (timeSince > EXPIRE_AGE);
-    }
-    
-    public PeerProfile readProfile(File file) {
+    /**
+     *  @param cutoff delete and return null if older than this (absolute time)
+     */
+    @SuppressWarnings("deprecation")
+    public PeerProfile readProfile(File file, long cutoff) {
+        if (file.lastModified() < cutoff) {
+            file.delete();
+            return null;
+        }
         Hash peer = getHash(file.getName());
         try {
             if (peer == null) {
@@ -269,7 +305,7 @@ class ProfilePersistenceHelper {
             loadProps(props, file);
             
             long lastSentToSuccessfully = getLong(props, "lastSentToSuccessfully");
-            if (isExpired(lastSentToSuccessfully)) {
+            if (lastSentToSuccessfully <= cutoff) {
                 if (_log.shouldLog(Log.INFO))
                     _log.info("Dropping old profile " + file.getName() + 
                               ", since we haven't heard from them in a long time");
@@ -289,12 +325,21 @@ class ProfilePersistenceHelper {
             profile.setIntegrationBonus((int) getLong(props, "integrationBonus"));
             profile.setSpeedBonus((int) getLong(props, "speedBonus"));
             
-            profile.setLastHeardAbout(getLong(props, "lastHeardAbout"));
-            profile.setFirstHeardAbout(getLong(props, "firstHeardAbout"));
+            long fh = getLong(props, "firstHeardAbout");
+            if (fh <= 0)
+                fh = file.lastModified();
+            profile.setFirstHeardAbout(fh);
+            long lh = getLong(props, "lastHeardAbout");
+            if (lh <= 0)
+                lh = fh;
+            profile.setLastHeardAbout(lh);
             profile.setLastSendSuccessful(getLong(props, "lastSentToSuccessfully"));
             profile.setLastSendFailed(getLong(props, "lastFailedSend"));
             profile.setLastHeardFrom(getLong(props, "lastHeardFrom"));
-            profile.setTunnelTestTimeAverage(getFloat(props, "tunnelTestTimeAverage"));
+
+            if (PeerProfile.ENABLE_TUNNEL_TEST_RESPONSE_TIME)
+                profile.setTunnelTestTimeAverage(getFloat(props, "tunnelTestTimeAverage"));
+
             profile.setPeakThroughputKBps(getFloat(props, "tunnelPeakThroughput"));
             profile.setPeakTunnelThroughputKBps(getFloat(props, "tunnelPeakTunnelThroughput"));
             profile.setPeakTunnel1mThroughputKBps(getFloat(props, "tunnelPeakTunnel1mThroughput"));
@@ -317,14 +362,16 @@ class ProfilePersistenceHelper {
             //profile.getReceiveSize().load(props, "receiveSize", true);
             //profile.getSendSuccessSize().load(props, "sendSuccessSize", true);
             profile.getTunnelCreateResponseTime().load(props, "tunnelCreateResponseTime", true);
-            profile.getTunnelTestResponseTime().load(props, "tunnelTestResponseTime", true);
+
+            if (PeerProfile.ENABLE_TUNNEL_TEST_RESPONSE_TIME)
+                profile.getTunnelTestResponseTime().load(props, "tunnelTestResponseTime", true);
             
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("Loaded the profile for " + peer.toBase64() + " from " + file.getName());
             
             fixupFirstHeardAbout(profile);
             return profile;
-        } catch (IOException e) {
+        } catch (Exception e) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Error loading properties from " + file.getAbsolutePath(), e);
             file.delete();
@@ -431,6 +478,8 @@ class ProfilePersistenceHelper {
     }
 
     private Hash getHash(String name) {
+        if (name.length() < PREFIX.length() + 44)
+            return null;
         String key = name.substring(PREFIX.length());
         key = key.substring(0, 44);
         //Hash h = new Hash();

@@ -12,7 +12,6 @@ public enum UpdateType {
     ROUTER_SIGNED,
     ROUTER_UNSIGNED,
     PLUGIN,
-    /** unused */
     GEOIP,
     BLOCKLIST,
     /** unused */
@@ -26,5 +25,7 @@ public enum UpdateType {
     /** @since 0.9.15 */
     NEWS_SU3,
     /** @since 0.9.17 */
-    ROUTER_DEV_SU3
+    ROUTER_DEV_SU3,
+    /** @since 0.9.53 */
+    API
 }

@@ -9,6 +9,7 @@ package net.i2p.data.i2cp;
  *
  */
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -44,19 +45,16 @@ public class I2CPMessageHandler {
             throw new IOException("Connection closed");
         }
         if (length > MAX_LENGTH)
-            throw new I2CPMessageException("Invalid message length specified");
-        try {
-            int type = (int) DataHelper.readLong(in, 1);
-            I2CPMessage msg = createMessage(type);
-            // Note that the readMessage() calls don't, in general, read and discard
-            // extra data, so we can't add new fields to the end of messages
-            // in a compatible way. And the readers could read beyond the length too.
-            // To fix this we'd have to read into a BAOS/BAIS or use a filter input stream
-            msg.readMessage(in, length, type);
-            return msg;
-        } catch (DataFormatException dfe) {
-            throw new I2CPMessageException("Error reading the message", dfe);
-        }
+            throw new I2CPMessageException("Invalid message length: " + length);
+        int type = in.read();
+        if (type < 0)
+            throw new EOFException();
+        I2CPMessage msg = createMessage(type);
+        // extra data, so we can't add new fields to the end of messages
+        // in a compatible way. And the readers could read beyond the length too.
+        // To fix this we'd have to read into a BAOS/BAIS or use a filter input stream
+        msg.readMessage(in, length, type);
+        return msg;
     }
 
     /**
@@ -112,6 +110,10 @@ public class I2CPMessageHandler {
             return new HostLookupMessage();
         case HostReplyMessage.MESSAGE_TYPE:
             return new HostReplyMessage();
+        case CreateLeaseSet2Message.MESSAGE_TYPE:
+            return new CreateLeaseSet2Message();
+        case BlindingInfoMessage.MESSAGE_TYPE:
+            return new BlindingInfoMessage();
         default:
             throw new I2CPMessageException("The type " + type + " is an unknown I2CP message");
         }

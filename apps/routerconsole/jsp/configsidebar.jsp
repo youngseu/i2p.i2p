@@ -1,10 +1,9 @@
 <%@page contentType="text/html"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
-<%=intl.title("config summary bar")%>
+<%=intl.title("config sidebar")%>
 <style type='text/css'>
 input.default {
     width: 1px;
@@ -12,41 +11,54 @@ input.default {
     visibility: hidden;
 }
 </style>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
-
+<%
+    if ("POST".equals(request.getMethod())) {
+        // refresh the sidebar after page loads
+%>
+<script src="/js/configupdate.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<%
+    }
+%>
+</head><body>
 <%@include file="summary.jsi" %>
-<h1><%=intl._t("I2P Summary Bar Configuration")%></h1>
+<h1><%=intl._t("Configuration")%></h1>
 <div class="main" id="config_summarybar">
 <%@include file="confignav.jsi" %>
 
-<jsp:useBean class="net.i2p.router.web.ConfigSummaryHandler" id="formhandler" scope="request" />
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigSummaryHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
 <%
     formhandler.setMovingAction();
 %>
-<jsp:useBean class="net.i2p.router.web.SummaryHelper" id="summaryhelper" scope="request" />
-<jsp:setProperty name="summaryhelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
+<jsp:useBean class="net.i2p.router.web.helpers.SummaryHelper" id="summaryhelper" scope="request" />
+<jsp:setProperty name="summaryhelper" property="contextId" value="<%=i2pcontextId%>" />
 
 <h3 class="tabletitle"><%=intl._t("Refresh Interval")%></h3>
+<form action="" method="POST">
 <table class="configtable">
  <tr>
-<form action="" method="POST">
   <td>
  <input type="hidden" name="nonce" value="<%=pageNonce%>" >
  <input type="hidden" name="group" value="0">
- <input type="text" name="refreshInterval" value="<jsp:getProperty name="intl" property="refresh" />" >
+<%
+    String rval;
+    if (intl.getDisableRefresh())
+        rval = "0";
+    else
+        rval = intl.getRefresh();
+%>
+ <input type="text" name="refreshInterval" value="<%=rval%>" required>
  <%=intl._t("seconds")%>
   </td>
   <td class="optionsave">
  <input type="submit" name="action" class="accept" value="<%=intl._t("Save")%>" >
   </td>
-</form>
  </tr>
 </table>
+</form>
 
-<h3 class="tabletitle"><%=intl._t("Customize Summary Bar")%></h3>
+<h3 class="tabletitle"><%=intl._t("Customize Sidebar")%></h3>
 <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>" >
  <input type="hidden" name="group" value="2">

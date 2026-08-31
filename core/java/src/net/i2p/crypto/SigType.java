@@ -6,9 +6,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.Signature;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.InvalidParameterSpecException;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 
 import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable;
 import net.i2p.data.Hash;
@@ -64,6 +62,17 @@ public enum SigType {
      */
     EdDSA_SHA512_Ed25519ph(8, 32, 32, 64, 64, SigAlgo.EdDSA, "SHA-512", "NonewithEdDSA",
                            EdDSANamedCurveTable.getByName("ed25519-sha-512"), "1.3.101.101", "0.9.25"),
+
+    // 9 and 10 reserved for GOST - see proposal 134
+
+    /**
+     *  Blinded version of EdDSA, use for encrypted LS2
+     *  Pubkey 32 bytes; privkey 32 bytes; hash 64 bytes; sig 64 bytes
+     *
+     *  @since 0.9.39
+     */
+    RedDSA_SHA512_Ed25519(11, 32, 32, 64, 64, SigAlgo.EdDSA, "SHA-512", "SHA512withEdDSA",
+                          EdDSANamedCurveTable.getByName("ed25519-sha-512"), "1.3.101.101", "0.9.39"),
 
     ;
 
@@ -266,18 +275,25 @@ public enum SigType {
         return type.isAvailable();
     }
 
-    private static final Map<Integer, SigType> BY_CODE = new HashMap<Integer, SigType>();
+    private static final SigType[] BY_CODE;
 
     static {
-        for (SigType type : SigType.values()) {
-            if (BY_CODE.put(Integer.valueOf(type.getCode()), type) != null)
+        SigType[] values = values();
+        int max = values[values.length - 1].getCode();
+        BY_CODE = new SigType[max + 1];
+        for (SigType type : values) {
+            int i = type.getCode();
+            if (BY_CODE[i] != null)
                 throw new IllegalStateException("Duplicate SigType code");
+            BY_CODE[i] = type;
         }
     }
 
     /** @return null if not supported */
     public static SigType getByCode(int code) {
-        return BY_CODE.get(Integer.valueOf(code));
+        if (code < 0 || code >= BY_CODE.length)
+            return null;
+        return BY_CODE[code];
     }
 
     /**
@@ -295,6 +311,8 @@ public enum SigType {
                 return EdDSA_SHA512_Ed25519;
             if (uc.equals("EDDSA_SHA512_ED25519PH"))
                 return EdDSA_SHA512_Ed25519ph;
+            if (uc.equals("REDDSA_SHA512_ED25519"))
+                return RedDSA_SHA512_Ed25519;
             return valueOf(uc);
         } catch (IllegalArgumentException iae) {
             try {

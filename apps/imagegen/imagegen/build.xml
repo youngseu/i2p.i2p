@@ -8,6 +8,7 @@
         <pathelement location="../identicon/build/identicon.jar" />
         <pathelement location="../zxing/build/zxing.jar" />
         <pathelement location="../../../build/i2p.jar" />
+        <pathelement location="../../../build/jrobin.jar" />
     </path>
 
     <target name="all" depends="war" />
@@ -28,14 +29,17 @@
 
     <!-- only used if not set by a higher build.xml -->
     <property name="javac.compilerargs" value="" />
-    <property name="javac.version" value="1.7" />
+    <property name="javac.version" value="1.8" />
+    <property name="javac.release" value="8" />
 
     <target name="compile" depends="depend">
         <mkdir dir="./build" />
         <mkdir dir="./build/WEB-INF" />
         <mkdir dir="./build/WEB-INF/classes" />
         <javac srcdir="./webapp/src/main/java" debug="true" deprecation="on" source="${javac.version}" target="${javac.version}"
+               release="${javac.release}"
                includeAntRuntime="false"
+               encoding="UTF-8"
  	       classpathref="cp"
                destdir="./build/WEB-INF/classes" >
             <compilerarg line="${javac.compilerargs}" />
@@ -43,20 +47,27 @@
     </target>
 
     <target name="listChangedFiles" if="shouldListChanges" >
-        <exec executable="mtn" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="." />
         </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes}" outputproperty="workspace.changes.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
+        </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.sed}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
         </exec>
     </target>
 
-    <target name="war" depends="compile, warUpToDate" unless="war.uptodate" > 
+    <target name="war" depends="compile, warUpToDate, listChangedFiles" unless="war.uptodate" > 
         <!-- set if unset -->
         <property name="workspace.changes.tr" value="" />
         <!-- put the identicon and zxing classes in the war -->
@@ -90,7 +101,7 @@
                 <not>
                     <isset property="war.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>

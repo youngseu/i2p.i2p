@@ -17,8 +17,6 @@ public class RateStat {
     private final String _description;
     /** actual rate objects for this statistic */
     protected final Rate[] _rates;
-    /** component we tell about events as they occur */
-    private StatLog _statLog;
 
     public RateStat(String name, String description, String group, long periods[]) {
         _statName = name;
@@ -38,13 +36,11 @@ public class RateStat {
             _rates[i] = rate;
         }
     }
-    public void setStatLog(StatLog sl) { _statLog = sl; }
-    
+
     /** 
      * update all of the rates for the various periods with the given value.  
      */
     public void addData(long value, long eventDuration) {
-        if (_statLog != null) _statLog.addData(_groupName, _statName, value, eventDuration);
         for (Rate r: _rates)
             r.addData(value, eventDuration);
     }
@@ -55,7 +51,6 @@ public class RateStat {
      * @since 0.8.10
      */
     public void addData(long value) {
-        if (_statLog != null) _statLog.addData(_groupName, _statName, value, 0);
         for (Rate r: _rates)
             r.addData(value);
     }
@@ -177,22 +172,37 @@ public class RateStat {
                 && DataHelper.eq(getName(), rs.getName());
     }
 
+    /**
+     * Includes comment lines
+     */
     public void store(OutputStream out, String prefix) throws IOException {
+        store(out, prefix, true);
+    }
+
+    /**
+     * @param addComments add comment lines to the output
+     * @since 0.9.41
+     */
+    public void store(OutputStream out, String prefix, boolean addComments) throws IOException {
         StringBuilder buf = new StringBuilder(1024);
-        buf.append(NL);
-        buf.append("################################################################################").append(NL);
-        buf.append("# Rate: ").append(_groupName).append(": ").append(_statName).append(NL);
-        buf.append("# ").append(_description).append(NL);
-        buf.append("# ").append(NL).append(NL);
-        out.write(buf.toString().getBytes("UTF-8"));
-        buf.setLength(0);
-        for (Rate r: _rates){
-            buf.append("#######").append(NL);
-            buf.append("# Period : ").append(DataHelper.formatDuration(r.getPeriod())).append(" for rate ")
-                .append(_groupName).append(" - ").append(_statName).append(NL);
+        if (addComments) {
             buf.append(NL);
+            buf.append("################################################################################").append(NL);
+            buf.append("# Rate: ").append(_groupName).append(": ").append(_statName).append(NL);
+            buf.append("# ").append(_description).append(NL);
+            buf.append("# ").append(NL).append(NL);
+            out.write(buf.toString().getBytes("UTF-8"));
+            buf.setLength(0);
+        }
+        for (Rate r: _rates){
+            if (addComments) {
+                buf.append("#######").append(NL);
+                buf.append("# Period : ").append(DataHelper.formatDuration(r.getPeriod())).append(" for rate ")
+                    .append(_groupName).append(" - ").append(_statName).append(NL);
+                buf.append(NL);
+            }
             String curPrefix = prefix + "." + DataHelper.formatDuration(r.getPeriod());
-            r.store(curPrefix, buf);
+            r.store(curPrefix, buf, addComments);
             out.write(buf.toString().getBytes("UTF-8"));
             buf.setLength(0);
         }

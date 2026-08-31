@@ -1,3 +1,14 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa.math;
 
 import net.i2p.crypto.eddsa.Utils;
@@ -5,6 +16,7 @@ import net.i2p.crypto.eddsa.math.ed25519.*;
 import net.i2p.crypto.eddsa.spec.*;
 import org.hamcrest.core.IsEqual;
 import org.junit.*;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 import java.math.BigInteger;
 import java.security.SecureRandom;
@@ -15,7 +27,7 @@ import java.security.SecureRandom;
 public class MathUtils {
     private static final int[] exponents = {0, 26, 26 + 25, 2*26 + 25, 2*26 + 2*25, 3*26 + 2*25, 3*26 + 3*25, 4*26 + 3*25, 4*26 + 4*25, 5*26 + 4*25};
     private static final SecureRandom random = new SecureRandom();
-    private static final EdDSANamedCurveSpec ed25519 = EdDSANamedCurveTable.getByName("ed25519-sha-512");
+    private static final EdDSANamedCurveSpec ed25519 = EdDSANamedCurveTable.getByName(EdDSANamedCurveTable.ED_25519);
     private static final Curve curve = ed25519.getCurve();
     private static final BigInteger d = new BigInteger("-121665").multiply(new BigInteger("121666").modInverse(getQ()));
     private static final BigInteger groupOrder = BigInteger.ONE.shiftLeft(252).add(new BigInteger("27742317777372353535851937790883648493"));
@@ -157,7 +169,7 @@ public class MathUtils {
     }
 
     /**
-     * Gets a random field element where |t[i]| <= 2^24 for 0 <= i <= 9.
+     * Gets a random field element where |t[i]| &lt;= 2^24 for 0 &lt;= i &lt;= 9.
      *
      * @return The field element.
      */
@@ -178,12 +190,19 @@ public class MathUtils {
      *
      * @return The group element.
      */
-    public static GroupElement getRandomGroupElement() {
+    public static GroupElement getRandomGroupElement() { return getRandomGroupElement(false); }
+
+    /**
+     * Gets a random group element in P3 representation, with precmp and dblPrecmp populated.
+     *
+     * @return The group element.
+     */
+    public static GroupElement getRandomGroupElement(boolean precompute) {
         final byte[] bytes = new byte[32];
         while (true) {
             try {
                 random.nextBytes(bytes);
-                return new GroupElement(curve, bytes);
+                return new GroupElement(curve, bytes, precompute);
             } catch (IllegalArgumentException e) {
                 // Will fail in about 87.5%, so try again.
             }
@@ -242,6 +261,7 @@ public class MathUtils {
         switch (g.getRepresentation()) {
             case P2:
             case P3:
+            case P3PrecomputedDouble:
                 x = gX.multiply(gZ.modInverse(getQ())).mod(getQ());
                 y = gY.multiply(gZ.modInverse(getQ())).mod(getQ());
                 break;
@@ -275,7 +295,14 @@ public class MathUtils {
                         toFieldElement(x),
                         toFieldElement(y),
                         getField().ONE,
-                        toFieldElement(x.multiply(y).mod(getQ())));
+                        toFieldElement(x.multiply(y).mod(getQ())), false);
+            case P3PrecomputedDouble:
+                return GroupElement.p3(
+                        curve,
+                        toFieldElement(x),
+                        toFieldElement(y),
+                        getField().ONE,
+                        toFieldElement(x.multiply(y).mod(getQ())), true);
             case P1P1:
                 return GroupElement.p1p1(
                         curve,
@@ -425,8 +452,8 @@ public class MathUtils {
             final GroupElement h2 = addGroupElements(neutral, g);
 
             // Assert:
-            Assert.assertThat(g, IsEqual.equalTo(h1));
-            Assert.assertThat(g, IsEqual.equalTo(h2));
+            assertThat(g, IsEqual.equalTo(h1));
+            assertThat(g, IsEqual.equalTo(h2));
         }
 
         for (int i=0; i<1000; i++) {
@@ -434,24 +461,24 @@ public class MathUtils {
 
             // P3 -> P2.
             GroupElement h = toRepresentation(g, GroupElement.Representation.P2);
-            Assert.assertThat(h, IsEqual.equalTo(g));
+            assertThat(h, IsEqual.equalTo(g));
             // P3 -> P1P1.
             h = toRepresentation(g, GroupElement.Representation.P1P1);
-            Assert.assertThat(g, IsEqual.equalTo(h));
+            assertThat(g, IsEqual.equalTo(h));
 
             // P3 -> CACHED.
             h = toRepresentation(g, GroupElement.Representation.CACHED);
-            Assert.assertThat(h, IsEqual.equalTo(g));
+            assertThat(h, IsEqual.equalTo(g));
 
             // P3 -> P2 -> P3.
             g = toRepresentation(g, GroupElement.Representation.P2);
             h = toRepresentation(g, GroupElement.Representation.P3);
-            Assert.assertThat(g, IsEqual.equalTo(h));
+            assertThat(g, IsEqual.equalTo(h));
 
             // P3 -> P2 -> P1P1.
             g = toRepresentation(g, GroupElement.Representation.P2);
             h = toRepresentation(g, GroupElement.Representation.P1P1);
-            Assert.assertThat(g, IsEqual.equalTo(h));
+            assertThat(g, IsEqual.equalTo(h));
         }
 
         for (int i=0; i<10; i++) {
@@ -462,7 +489,7 @@ public class MathUtils {
             final GroupElement h = MathUtils.scalarMultiplyGroupElement(g, curve.getField().ZERO);
 
             // Assert:
-            Assert.assertThat(curve.getZero(GroupElement.Representation.P3), IsEqual.equalTo(h));
+            assertThat(curve.getZero(GroupElement.Representation.P3), IsEqual.equalTo(h));
         }
     }
     // End TODO BR: Remove when finished!

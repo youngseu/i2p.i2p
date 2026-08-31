@@ -9,8 +9,6 @@ package net.i2p.data.i2np;
  */
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 
 import net.i2p.I2PAppContext;
 import net.i2p.data.Base64;
@@ -50,26 +48,6 @@ public abstract class FastI2NPMessageImpl extends I2NPMessageImpl {
     }
     
     /**
-     *  @deprecated unused
-     *  @throws UnsupportedOperationException
-     */
-    @Deprecated
-    @Override
-    public void readBytes(InputStream in) throws DataFormatException, IOException {
-        throw new UnsupportedOperationException();
-    }
-
-    /**
-     *  @deprecated unused
-     *  @throws UnsupportedOperationException
-     */
-    @Deprecated
-    @Override
-    public int readBytes(InputStream in, int type, byte buffer[]) throws I2NPMessageException, IOException {
-        throw new UnsupportedOperationException();
-    }
-
-    /**
      *  Ignore, but save, the checksum, to be used later if necessary.
      *
      *  @param maxLen read no more than this many bytes from data starting at offset, even if it is longer
@@ -90,7 +68,7 @@ public abstract class FastI2NPMessageImpl extends I2NPMessageImpl {
             type = data[cur] & 0xff;
             cur++;
         }
-        _uniqueId = DataHelper.fromLong(data, cur, 4);
+        setUniqueId(DataHelper.fromLong(data, cur, 4));
         cur += 4;
         _expiration = DataHelper.fromLong(data, cur, DataHelper.DATE_LENGTH);
         cur += DataHelper.DATE_LENGTH;
@@ -114,16 +92,6 @@ public abstract class FastI2NPMessageImpl extends I2NPMessageImpl {
         if (VERIFY_TEST && _log.shouldLog(Log.INFO))
             _log.info("Ignored c/s " + getClass().getSimpleName());
         return cur - offset;
-    }
-    
-    /**
-     *  @deprecated unused
-     *  @throws UnsupportedOperationException
-     */
-    @Deprecated
-    @Override
-    public void writeBytes(OutputStream out) throws DataFormatException, IOException {
-        throw new UnsupportedOperationException();
     }
     
     /**
@@ -171,9 +139,8 @@ public abstract class FastI2NPMessageImpl extends I2NPMessageImpl {
             }
             int payloadLen = writtenLen - HEADER_LENGTH;
             int off = 0;
-            DataHelper.toLong(buffer, off, 1, getType());
-            off += 1;
-            DataHelper.toLong(buffer, off, 4, _uniqueId);
+            buffer[off++] = (byte) getType();
+            DataHelper.toLong(buffer, off, 4, getUniqueId());
             off += 4;
             DataHelper.toLong(buffer, off, DataHelper.DATE_LENGTH, _expiration);
             off += DataHelper.DATE_LENGTH;

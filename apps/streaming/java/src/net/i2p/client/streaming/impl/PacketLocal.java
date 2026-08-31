@@ -7,12 +7,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import net.i2p.I2PAppContext;
 import net.i2p.client.I2PSession;
+import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
-import net.i2p.data.SessionKey;
-import net.i2p.data.SessionTag;
 import net.i2p.data.SigningPrivateKey;
+import net.i2p.client.streaming.I2PSocketException;
 import net.i2p.util.Log;
-import net.i2p.util.SimpleTimer2;
 
 /**
  * This is the class used for outbound packets.
@@ -25,7 +24,7 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
     private final Log _log;
     private final Connection _connection;
     private final Destination _to;
-    private SessionKey _keyUsed;
+    //private SessionKey _keyUsed;
     private final long _createdOn;
     private final AtomicInteger _numSends = new AtomicInteger();
     private volatile long _lastSend;
@@ -35,7 +34,7 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
     private long _cancelledOn;
     private final AtomicInteger _nackCount = new AtomicInteger();
     private volatile boolean _retransmitted;
-    private volatile SimpleTimer2.TimedEvent _resendEvent;
+    private volatile int _timeout;
     
     /** not bound to a connection */
     public PacketLocal(I2PAppContext ctx, Destination to, I2PSession session) {
@@ -60,49 +59,27 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
         _lastSend = -1;
         _cancelledOn = -1;
     }
+
+    /** 
+     * This sets the from field in the packet to the Destination for the session
+     * provided in the constructor.
+     * This also sets flag FLAG_FROM_INCLUDED.
+     * Also, as of 0.9.39, sets the offline signing data if supported by the session.
+     *
+     * @since 0.9.39 moved from super
+     */
+    public void setOptionalFrom() { 
+        setFlag(FLAG_FROM_INCLUDED);
+        _optionFrom = _session.getMyDestination();
+        if (_session.isOffline()) {
+            setFlag(FLAG_SIGNATURE_OFFLINE);
+            _transientExpires = _session.getOfflineExpiration();
+            _transientSigningPublicKey = _session.getTransientSigningPublicKey();
+            _offlineSignature = _session.getOfflineSignature();
+        }
+    }
     
     public Destination getTo() { return _to; }
-    
-    /**
-     * @deprecated should always return null
-     */
-    @Deprecated
-    public SessionKey getKeyUsed() { return _keyUsed; }
-
-    /**
-     * @deprecated I2PSession throws out the tags
-     */
-    @Deprecated
-    public void setKeyUsed(SessionKey key) {
-        if (key != null)
-            _log.error("Who is sending tags thru the streaming lib?");
-        _keyUsed = key;
-    }
-    
-    /**
-     * @deprecated should always return null or an empty set
-     */
-    @Deprecated
-    public Set<SessionTag> getTagsSent() { return Collections.emptySet(); }
-
-    /**
-     * @deprecated I2PSession throws out the tags
-     */
-    @Deprecated
-    public void setTagsSent(Set<SessionTag> tags) { 
-        if (tags != null && !tags.isEmpty())
-            _log.error("Who is sending tags thru the streaming lib? " + tags.size());
-      /****
-        if ( (_tagsSent != null) && (!_tagsSent.isEmpty()) && (!tags.isEmpty()) ) {
-            //int old = _tagsSent.size();
-            //_tagsSent.addAll(tags);
-            if (!_tagsSent.equals(tags))
-                System.out.println("ERROR: dup tags: old=" + _tagsSent.size() + " new=" + tags.size() + " packet: " + toString());
-        } else {
-            _tagsSent = tags;
-        }
-      ****/
-    }
     
     public boolean shouldSign() { 
         return isFlagSet(FLAG_SIGNATURE_INCLUDED |
@@ -113,15 +90,15 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
     
     public long getCreatedOn() { return _createdOn; }
     public long getLifetime() { return _context.clock().now() - _createdOn; }
+
     public void incrementSends() { 
         _numSends.incrementAndGet();
         _lastSend = _context.clock().now();
     }
     
     private void cancelResend() {
-        SimpleTimer2.TimedEvent ev = _resendEvent;
-        if (ev != null) 
-            ev.cancel();
+        // fast restransmits are sent immediately and we don't keep a reference,
+        // can't be cancelled.
     }
     
     public void ackReceived() {
@@ -146,8 +123,6 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
             _log.debug("Cancelled! " + toString(), new Exception("cancelled"));
     }
 
-    public SimpleTimer2.TimedEvent getResendEvent() { return _resendEvent; }
-    
     /** how long after packet creation was it acked?
      * @return how long after packet creation the packet was ACKed in ms
      */
@@ -157,6 +132,7 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
         else
             return (int)(_ackOn - _createdOn);
     }
+
     public int getNumSends() { return _numSends.get(); }
     public long getLastSend() { return _lastSend; }
 
@@ -169,11 +145,11 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
      */
     public void incrementNACKs() { 
         final int cnt = _nackCount.incrementAndGet();
-        SimpleTimer2.TimedEvent evt = _resendEvent;
-        if (cnt >= Connection.FAST_RETRANSMIT_THRESHOLD && evt != null && (!_retransmitted) &&
+        if (cnt >= Connection.FAST_RETRANSMIT_THRESHOLD && (!_retransmitted) &&
             (_numSends.get() == 1 || _lastSend < _context.clock().now() - 4*1000)) {  // Don't fast retx if we recently resent it
             _retransmitted = true;
-            evt.reschedule(0);
+            Connection.ResendPacketEvent evt = _connection.newResendPacketEvent(this);
+            evt.fastRetransmit();
             // the predicate used to be '+', changing to '-' --zab
             
             if (_log.shouldLog(Log.DEBUG)) {
@@ -189,9 +165,27 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
                     _log.debug(log);
         }
     }
+
+    /**
+     * Warning: This is different than getNacks() in super
+     *
+     * @return Number of times this packet has been nacked
+     */
     public int getNACKs() { return _nackCount.get(); }
     
-    public void setResendPacketEvent(SimpleTimer2.TimedEvent evt) { _resendEvent = evt; }
+    /**
+     * Used by PacketQueue to feed an expiration to the router.
+     *
+     * @return time from now, not absolute time. May be zero if unset.
+     * @since 0.9.46
+     */
+    public int getTimeout() { return _timeout; }
+
+    /**
+     * @param timeout time from now, not absolute time
+     * @since 0.9.46
+     */
+    public void setTimeout(int timeout) { _timeout = timeout; }
 
     /**
      * Sign and write the packet to the buffer (starting at the offset) and return
@@ -204,6 +198,10 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
      * @since 0.9.20 moved from Packet
      */
     public int writeSignedPacket(byte buffer[], int offset) throws IllegalStateException {
+        if (isFlagSet(FLAG_SIGNATURE_OFFLINE)) {
+            if (_transientExpires < _context.clock().now())
+                throw new IllegalStateException("Offline signature expired " + DataHelper.formatTime(_transientExpires));
+        }
         setFlag(FLAG_SIGNATURE_INCLUDED);
         SigningPrivateKey key = _session.getPrivateKey();
         int size = writePacket(buffer, offset, key.getType().getSigLen());
@@ -226,11 +224,21 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
                               //+ 1 // resendDelay
                               //+ 2 // flags
                               //+ 2 // optionSize
-                              + 21
-                              + (_nacks != null ? 4*_nacks.length + 1 : 1)
-                              + (isFlagSet(FLAG_DELAY_REQUESTED) ? 2 : 0)
-                              + (isFlagSet(FLAG_FROM_INCLUDED) ? _optionFrom.size() : 0)
-                              + (isFlagSet(FLAG_MAX_PACKET_SIZE_INCLUDED) ? 2 : 0);
+                              //+ 1 // nacksSize
+                              + 22;
+        if (_nacks != null)
+            signatureOffset += 4 *_nacks.length;
+        if (isFlagSet(FLAG_DELAY_REQUESTED))
+            signatureOffset += 2;
+        if (isFlagSet(FLAG_FROM_INCLUDED))
+            signatureOffset += _optionFrom.size();
+        if (isFlagSet(FLAG_MAX_PACKET_SIZE_INCLUDED))
+            signatureOffset += 2;
+        if (isFlagSet(FLAG_SIGNATURE_OFFLINE)) {
+            signatureOffset += 6;
+            signatureOffset += _transientSigningPublicKey.length();
+            signatureOffset += _offlineSignature.length();
+        }
         System.arraycopy(_optionSignature.getData(), 0, buffer, signatureOffset, _optionSignature.length());
         return size;
     }
@@ -263,14 +271,14 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
                 buf.append(" from ");
                 Destination local = _session.getMyDestination();
                 if (local != null)
-                    buf.append(local.calculateHash().toBase64().substring(0,4));
+                    buf.append(local.calculateHash().toBase64(), 0, 4);
                 else
                     buf.append("unknown");
                 
                 buf.append(" to ");
                 Destination remote = con.getRemotePeer();
                 if (remote != null)
-                    buf.append(remote.calculateHash().toBase64().substring(0,4));
+                    buf.append(remote.calculateHash().toBase64(), 0, 4);
                 else
                     buf.append("unknown");
                 
@@ -321,8 +329,11 @@ class PacketLocal extends Packet implements MessageOutputStream.WriteStatus {
                 if ( (timeRemaining <= 0) && (maxWaitMs > 0) ) break;
                 synchronized (this) {
                     if (_ackOn > 0) break;
-                    if (!_connection.getIsConnected())
+                    if (!_connection.getIsConnected()) {
+                        if (_connection.getResetReceived())
+                            throw new I2PSocketException(I2PSocketException.STATUS_CONNECTION_RESET);
                         throw new IOException("disconnected");
+                    }
                     if (_cancelledOn > 0)
                         throw new IOException("cancelled");
                     if (timeRemaining > 60*1000)

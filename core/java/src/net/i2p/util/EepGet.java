@@ -19,7 +19,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.Formatter;
 import java.util.HashMap;
 import java.util.List;
@@ -35,7 +34,6 @@ import net.i2p.data.Base32;
 import net.i2p.data.Base64;
 import net.i2p.data.ByteArray;
 import net.i2p.data.DataHelper;
-import net.i2p.util.InternalSocket;
 
 /**
  * EepGet [-p 127.0.0.1:4444]
@@ -48,8 +46,8 @@ public class EepGet {
     protected final I2PAppContext _context;
     protected final Log _log;
     protected final boolean _shouldProxy;
-    private final String _proxyHost;
-    private final int _proxyPort;
+    protected final String _proxyHost;
+    protected final int _proxyPort;
     protected final int _numRetries;
     private final long _minSize; // minimum and maximum acceptable response size, -1 signifies unlimited,
     private final long _maxSize; // applied both against whole responses and chunks
@@ -85,10 +83,9 @@ public class EepGet {
     protected boolean _notModified;
     protected String _contentType;
     protected boolean _transferFailed;
-    protected boolean _headersRead;
-    protected boolean _aborted;
+    protected volatile boolean _aborted;
     protected int _fetchHeaderTimeout;
-    private long _fetchEndTime;
+    protected int _fetchTotalTimeout;
     protected int _fetchInactivityTimeout;
     protected int _redirects;
     protected String _redirectLocation;
@@ -142,12 +139,20 @@ public class EepGet {
         this(ctx, shouldProxy, proxyHost, proxyPort, numRetries, -1, -1, outputFile, null, url, allowCaching, etag, lastModified, null);
     }
 
+    /**
+     *  @param outputFile ignored if outputStream is non-null
+     *  @param outputStream takes precedence over outputFile
+     */
     public EepGet(I2PAppContext ctx, boolean shouldProxy, String proxyHost, int proxyPort,
                   int numRetries, long minSize, long maxSize, String outputFile, OutputStream outputStream,
                   String url, boolean allowCaching, String etag, String postData) {
         this(ctx, shouldProxy, proxyHost, proxyPort, numRetries, minSize, maxSize, outputFile, outputStream, url, allowCaching, etag, null, postData);
     }
 
+    /**
+     *  @param outputFile ignored if outputStream is non-null
+     *  @param outputStream takes precedence over outputFile
+     */
     public EepGet(I2PAppContext ctx, boolean shouldProxy, String proxyHost, int proxyPort,
                   int numRetries, long minSize, long maxSize,
                   String outputFile, OutputStream outputStream, String url, boolean allowCaching,
@@ -168,6 +173,7 @@ public class EepGet {
         _bytesRemaining = -1;
         _fetchHeaderTimeout = CONNECT_TIMEOUT;
         _listeners = new ArrayList<StatusListener>(1);
+        _allowCaching = allowCaching;
         _etag = etag;
         _lastModified = lastModified;
         _etagOrig = etag;
@@ -177,6 +183,7 @@ public class EepGet {
     /**
      * EepGet [-p 127.0.0.1:4444] [-n #retries] [-e etag] [-o outputFile] [-m markSize lineLen] url
      *
+     * As of 0.9.45, supports https and redirect to https
      */
     public static void main(String args[]) {
         String proxyHost = "127.0.0.1";
@@ -204,7 +211,8 @@ public class EepGet {
                     int colon = s.indexOf(':');
                     if (colon >= 0) {
                         // Todo IPv6 [a:b:c]:4444
-                        proxyHost = s.substring(0, colon);
+                        if (colon > 0)
+                            proxyHost = s.substring(0, colon);
                         String port = s.substring(colon + 1);
                         proxyPort = Integer.parseInt(port);
                     } else {
@@ -287,7 +295,20 @@ public class EepGet {
         if (saveAs == null)
             saveAs = suggestName(url);
 
-        EepGet get = new EepGet(I2PAppContext.getGlobalContext(), true, proxyHost, proxyPort, numRetries, saveAs, url, true, etag);
+        EepGet get;
+        if (url.startsWith("https://")) {
+            if (etag != null) {
+                System.err.println("Etag option unsupported with https");
+                System.exit(1);
+            }
+            boolean shouldProxy = proxyHost != null && proxyHost.length() > 0 && proxyPort > 0;
+            if (shouldProxy)
+                get = new SSLEepGet(I2PAppContext.getGlobalContext(), SSLEepGet.ProxyType.HTTP, proxyHost, proxyPort, saveAs, url);
+            else
+                get = new SSLEepGet(I2PAppContext.getGlobalContext(), saveAs, url);
+        } else {
+            get = new EepGet(I2PAppContext.getGlobalContext(), true, proxyHost, proxyPort, numRetries, saveAs, url, true, etag);
+        }
         if (extra != null) {
             for (int i = 0; i < extra.size(); i += 2) {
                 get.addHeader(extra.get(i), extra.get(i + 1));
@@ -311,7 +332,7 @@ public class EepGet {
             get.addAuthorization(username, password);
         }
         get.addStatusListener(get.new CLIStatusListener(markSize, lineLen));
-        if (!get.fetch(CONNECT_TIMEOUT, -1, inactivityTimeout))
+        if (!get.fetch(Math.min(CONNECT_TIMEOUT, inactivityTimeout), -1, inactivityTimeout))
             System.exit(1);
     }
 
@@ -328,6 +349,9 @@ public class EepGet {
         try {
             nameURL = new URI(url);
         } catch (URISyntaxException e) {
+            String msg = e.getLocalizedMessage();
+            if (msg != null)
+                System.err.println(msg);
             System.err.println("Please enter a properly formed URL.");
             System.exit(1);
         }
@@ -363,34 +387,30 @@ public class EepGet {
         return name;
     }
 
-
-/* Blacklist borrowed from snark */
-
-  private static final char[] ILLEGAL = new char[] {
+    /** Blacklist borrowed from snark */
+    private static final char[] ILLEGAL = new char[] {
         '<', '>', ':', '"', '/', '\\', '|', '?', '*',
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
         16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
         0x7f };
 
-  /**
-   * Removes 'suspicious' characters from the given file name.
-   * http://msdn.microsoft.com/en-us/library/aa365247%28VS.85%29.aspx
-   */
-
-
+    /**
+     * Removes 'suspicious' characters from the given file name.
+     * http://msdn.microsoft.com/en-us/library/aa365247%28VS.85%29.aspx
+     */
     private static String sanitize(String name) {
-    if (name.equals(".") || name.equals(" "))
-        return "_";
-    String rv = name;
-    if (rv.startsWith("."))
-        rv = '_' + rv.substring(1);
-    if (rv.endsWith(".") || rv.endsWith(" "))
-        rv = rv.substring(0, rv.length() - 1) + '_';
-    for (int i = 0; i < ILLEGAL.length; i++) {
-        if (rv.indexOf(ILLEGAL[i]) >= 0)
-            rv = rv.replace(ILLEGAL[i], '_');
-    }
-    return rv;
+        if (name.equals(".") || name.equals(" "))
+            return "_";
+        String rv = name;
+        if (rv.startsWith("."))
+            rv = '_' + rv.substring(1);
+        if (rv.endsWith(".") || rv.endsWith(" "))
+            rv = rv.substring(0, rv.length() - 1) + '_';
+        for (int i = 0; i < ILLEGAL.length; i++) {
+            if (rv.indexOf(ILLEGAL[i]) >= 0)
+                rv = rv.replace(ILLEGAL[i], '_');
+        }
+        return rv;
     }
 
     private static void usage() {
@@ -405,9 +425,14 @@ public class EepGet {
                            "       (use -c or -p :0 for no proxy)");
     }
     
+    /**
+     *  Callback interface
+     */
     public static interface StatusListener {
         /**
-         *  alreadyTransferred - total of all attempts, not including currentWrite
+         *  Total length should be == alreadyTransferred + currentWrite + bytesRemaining for all calls
+         *
+         *  @param alreadyTransferred total of all attempts, not including currentWrite
          *                       If nonzero on the first call, a partial file of that length was found,
          *                       _and_ the server supports resume.
          *                       If zero on a subsequent call after some bytes are transferred
@@ -417,17 +442,25 @@ public class EepGet {
          *                       the listener should keep its own counter,
          *                       or subtract the initial alreadyTransferred value.
          *                       And watch out for alreadyTransferred resetting if a resume failed...
-         *  currentWrite - since last call to the listener
-         *  bytesTransferred - includes headers, retries, redirects, discarded partial downloads, ...
-         *  bytesRemaining - on this attempt only, currentWrite already subtracted -
+         *  @param currentWrite since last call to the listener
+         *  @param bytesTransferred includes headers, retries, redirects, discarded partial downloads, ...
+         *  @param bytesRemaining on this attempt only, currentWrite already subtracted -
          *                   or -1 if chunked encoding or server does not return a length
-         *
-         *  Total length should be == alreadyTransferred + currentWrite + bytesRemaining for all calls
          *
          */
         public void bytesTransferred(long alreadyTransferred, int currentWrite, long bytesTransferred, long bytesRemaining, String url);
+        /**
+         *  @see #bytesTransferred
+         *  @param outputFile null if unknown (output stream constructor)
+         */
         public void transferComplete(long alreadyTransferred, long bytesTransferred, long bytesRemaining, String url, String outputFile, boolean notModified);
+        /**
+         *  @see #bytesTransferred
+         */
         public void attemptFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt, int numRetries, Exception cause);
+        /**
+         *  @see #bytesTransferred
+         */
         public void transferFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt);
 
         /**
@@ -439,6 +472,7 @@ public class EepGet {
 
         public void attempting(String url);
     }
+
     protected class CLIStatusListener implements StatusListener {
         private final int _markSize;
         private final int _lineSize;
@@ -449,7 +483,6 @@ public class EepGet {
         private long _lastComplete;
         private boolean _firstTime;
         private final DecimalFormat _pct = new DecimalFormat("00.0%");
-        private final DecimalFormat _kbps = new DecimalFormat("###,000.00");
         public CLIStatusListener() { 
             this(1024, 40);
         }
@@ -519,7 +552,7 @@ public class EepGet {
             else
                 transferred = alreadyTransferred - _previousWritten;
             System.out.println();
-            System.out.println("== " + new Date());
+            //System.out.println("== " + new Date());
             if (notModified) {
                 System.out.println("== Source not modified since last download");
             } else {
@@ -532,48 +565,52 @@ public class EepGet {
                             + " bytes transferred" +
                             (_discarded > 0 ? (" and " + _discarded + " bytes discarded") : ""));
                 }
-                if (transferred > 0)
-                    System.out.println("== Output saved to " + outputFile + " (" + alreadyTransferred + " bytes)");
+                if (transferred > 0 && outputFile != null) {
+                    long sz = (new File(outputFile)).length();
+                    if (sz <= 0)
+                        sz = alreadyTransferred;
+                    System.out.println("== Output saved to " + outputFile + " (" + sz + " bytes)");
+                }
             }
             long timeToSend = _context.clock().now() - _startedOn;
             System.out.println("== Transfer time: " + DataHelper.formatDuration(timeToSend));
             if (_etag != null)
                 System.out.println("== ETag: " + _etag);            
             if (transferred > 0) {
-                StringBuilder buf = new StringBuilder(50);
+                StringBuilder buf = new StringBuilder(64);
                 buf.append("== Transfer rate: ");
-                double kbps = (1000.0d*(transferred)/(timeToSend*1024.0d));
-                synchronized (_kbps) {
-                    buf.append(_kbps.format(kbps));
-                }
-                buf.append("KBps");
+                if (timeToSend <= 0)
+                    timeToSend = 1;
+                long kbps = (long) (1000.0d * transferred / timeToSend);
+                buf.append(DataHelper.formatSize2Decimal(kbps, false));
+                buf.append("Bps");
                 System.out.println(buf.toString());
             }
         }
         public void attemptFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt, int numRetries, Exception cause) {
             System.out.println();
-            System.out.println("** " + new Date());
+            //System.out.println("** " + new Date());
             System.out.println("** Attempt " + currentAttempt + " of " + url + " failed");
             System.out.println("** Transfered " + bytesTransferred
-                               + " with " + (bytesRemaining < 0 ? "unknown" : ""+bytesRemaining) + " remaining");
+                               + " with " + (bytesRemaining < 0 ? "unknown" : Long.toString(bytesRemaining)) + " remaining");
             System.out.println("** " + cause.getMessage());
             _previousWritten += _written;
             _written = 0;
         }
         public void transferFailed(String url, long bytesTransferred, long bytesRemaining, int currentAttempt) {
-            System.out.println("== " + new Date());
+            //System.out.println("== " + new Date());
             System.out.println("== Transfer of " + url + " failed after " + currentAttempt + " attempts");
             System.out.println("== Transfer size: " + bytesTransferred + " with "
-                               + (bytesRemaining < 0 ? "unknown" : ""+bytesRemaining) + " remaining");
+                               + (bytesRemaining < 0 ? "unknown" : Long.toString(bytesRemaining)) + " remaining");
             long timeToSend = _context.clock().now() - _startedOn;
             System.out.println("== Transfer time: " + DataHelper.formatDuration(timeToSend));
-            double kbps = (timeToSend > 0 ? (1000.0d*(bytesTransferred)/(timeToSend*1024.0d)) : 0);
-            StringBuilder buf = new StringBuilder(50);
+            if (timeToSend <= 0)
+                timeToSend = 1;
+            long kbps = (long) (1000.0d * bytesTransferred / timeToSend);
+            StringBuilder buf = new StringBuilder(64);
             buf.append("== Transfer rate: ");
-            synchronized (_kbps) {
-                buf.append(_kbps.format(kbps));
-            }
-            buf.append("KBps");
+            buf.append(DataHelper.formatSize2Decimal(kbps, false));
+            buf.append("Bps");
             System.out.println(buf.toString());
         }
         public void attempting(String url) {}
@@ -590,6 +627,8 @@ public class EepGet {
      * Blocking fetch, returning true if the URL was retrieved, false if all retries failed.
      *
      * Header timeout default 45 sec, total timeout default none, inactivity timeout default 60 sec.
+     *
+     * @return success
      */
     public boolean fetch() { return fetch(_fetchHeaderTimeout); }
 
@@ -599,6 +638,8 @@ public class EepGet {
      * wait indefinitely.
      *
      * Total timeout default none, inactivity timeout default 60 sec.
+     *
+     * @return success
      */
     public boolean fetch(long fetchHeaderTimeout) {
         return fetch(fetchHeaderTimeout, -1, -1);
@@ -610,10 +651,14 @@ public class EepGet {
      * @param fetchHeaderTimeout &lt;= 0 for none (proxy will timeout if none, none isn't recommended if no proxy)
      * @param totalTimeout &lt;= 0 for default none
      * @param inactivityTimeout &lt;= 0 for default 60 sec
+     * @return success
      */
     public boolean fetch(long fetchHeaderTimeout, long totalTimeout, long inactivityTimeout) {
+        // we need a SocketTimeout if we have a totalTimeout
+        if (totalTimeout > 0 && fetchHeaderTimeout <= 0)
+            fetchHeaderTimeout = totalTimeout;
         _fetchHeaderTimeout = (int) Math.min(fetchHeaderTimeout, Integer.MAX_VALUE);
-        _fetchEndTime = (totalTimeout > 0 ? System.currentTimeMillis() + totalTimeout : -1);
+        _fetchTotalTimeout = (int) Math.min(totalTimeout, Integer.MAX_VALUE);
         _fetchInactivityTimeout = (int) Math.min(inactivityTimeout, Integer.MAX_VALUE);
         _keepFetching = true;
 
@@ -622,16 +667,21 @@ public class EepGet {
         while (_keepFetching) {
             SocketTimeout timeout = null;
             if (_fetchHeaderTimeout > 0) {
+                // We create the SocketTimeout with an inactivity time of the header timeout.
+                // After fetchHeaders(), we must call either resetTimer() or cancel()
                 timeout = new SocketTimeout(_fetchHeaderTimeout);
-                final SocketTimeout stimeout = timeout; // ugly - why not use sotimeout?
+                final SocketTimeout stimeout = timeout;
+                final Thread thread = Thread.currentThread();
                 timeout.setTimeoutCommand(new Runnable() {
                     public void run() {
                         if (_log.shouldLog(Log.DEBUG))
                             _log.debug("timeout reached on " + _url + ": " + stimeout);
                         _aborted = true;
+                        thread.interrupt();
                     }
                 });
-                timeout.setTotalTimeoutPeriod(_fetchEndTime);
+                if (_fetchTotalTimeout > 0)
+                    timeout.setTotalTimeoutPeriod(_fetchTotalTimeout);
             }
             try {
                 for (int i = 0; i < _listeners.size(); i++) 
@@ -640,14 +690,10 @@ public class EepGet {
                 if (timeout != null)
                     timeout.resetTimer();
                 doFetch(timeout);
-                if (timeout != null)
-                    timeout.cancel();
                 if (!_transferFailed)
                     return true;
                 break;
             } catch (IOException ioe) {
-                if (timeout != null)
-                    timeout.cancel();
                 for (int i = 0; i < _listeners.size(); i++) 
                     _listeners.get(i).attemptFailed(_url, _bytesTransferred, _bytesRemaining, _currentAttempt, _numRetries, ioe);
                 if (_log.shouldLog(Log.WARN))
@@ -657,6 +703,8 @@ public class EepGet {
                     ioe instanceof ConnectException) // proxy or nonproxied host Connection Refused
                     _keepFetching = false;
             } finally {
+                if (timeout != null)
+                    timeout.cancel();
                 if (_out != null) {
                     try {
                         _out.close();
@@ -691,34 +739,38 @@ public class EepGet {
     }
 
     /**
-     *  single fetch
+     *  This reads the response to a single fetch.
+     *  Call after sendRequest()
      *  @param timeout may be null
      */
     protected void doFetch(SocketTimeout timeout) throws IOException {
-        _headersRead = false;
         _aborted = false;
-        try {
-            readHeaders();
-        } finally {
-            _headersRead = true;
-        }
+        readHeaders();
         if (_aborted)
             throw new IOException("Timed out reading the HTTP headers");
         
-        if (timeout != null) {
-            timeout.resetTimer();
-            if (_fetchInactivityTimeout > 0)
-                timeout.setInactivityTimeout(_fetchInactivityTimeout);
-            else
-                timeout.setInactivityTimeout(INACTIVITY_TIMEOUT);
-        }
         // _proxy is null when extended by I2PSocketEepGet
-        if (_proxy != null && !_shouldProxy) {
+        if (_proxy != null) {
+            if (timeout != null) {
+                if (_fetchTotalTimeout > 0) {
+                    timeout.resetTimer();
+                } else {
+                    // we don't need the timeout any more, we'll use soTimeout
+                    timeout.cancel();
+                    timeout = null;
+                }
+            }
             // we only set the soTimeout before the headers if not proxied
             if (_fetchInactivityTimeout > 0)
                 _proxy.setSoTimeout(_fetchInactivityTimeout);
             else
                 _proxy.setSoTimeout(INACTIVITY_TIMEOUT);
+        } else if (timeout != null) {
+            timeout.resetTimer();
+            if (_fetchInactivityTimeout > 0)
+                timeout.setInactivityTimeout(_fetchInactivityTimeout);
+            else
+                timeout.setInactivityTimeout(INACTIVITY_TIMEOUT);
         }
         
         if (_redirectLocation != null) {
@@ -726,6 +778,66 @@ public class EepGet {
             try {
                 if (_redirectLocation.startsWith("http://")) {
                     _actualURL = _redirectLocation;
+                } else if (_redirectLocation.startsWith("https://")) {
+                    // _proxy is the socket. It is null when extended by I2PSocketEepGet
+                    if (_proxy == null)
+                        throw new IOException("Redirect to https unsupported");
+                    if (_postData != null)
+                        throw new IOException("Redirect to https unsupported");
+                    try { 
+                        _proxy.close(); 
+                        _proxy = null;
+                    } catch (IOException ioe) {}
+                    if (timeout != null)
+                        timeout.cancel();
+                    EepGet get;
+                    if (_shouldProxy) {
+                        if (_authState != null)
+                            throw new IOException("Redirect to https with proxy auth unsupported");
+                        if (_outputStream != null)
+                            get = new SSLEepGet(_context, SSLEepGet.ProxyType.HTTP, _proxyHost, _proxyPort, _outputStream, _redirectLocation);
+                        else
+                            get = new SSLEepGet(_context, SSLEepGet.ProxyType.HTTP, _proxyHost, _proxyPort, _outputFile, _redirectLocation);
+                    } else {
+                        if (_outputStream != null)
+                            get = new SSLEepGet(_context, _outputStream, _redirectLocation);
+                        else
+                            get = new SSLEepGet(_context, _outputFile, _redirectLocation);
+                    }
+                    if (_shouldWriteErrorToOutput)
+                        get.setWriteErrorToOutput();
+                    if (_extraHeaders != null) {
+                        for (String s : _extraHeaders) {
+                            String[] kv = DataHelper.split(s, ":", 2);
+                            if (kv.length == 2)
+                                get.addHeader(kv[0].trim(), kv[1].trim());
+                        }
+                    }
+                    synchronized (_listeners) {
+                        for (StatusListener sl : _listeners) {
+                            get.addStatusListener(sl);
+                        }
+                    }
+                    _actualURL = _redirectLocation;
+                    // reset some important variables, we don't want to save the values from the redirect
+                    _bytesRemaining = -1;
+                    _redirectLocation = null;
+                    _etag = _etagOrig;
+                    _lastModified = _lastModifiedOrig;
+                    _contentType = null;
+                    _encodingChunked = false;
+                    // TODO auth?
+                    // minSize/maxSize/maxRetries discarded
+                    _transferFailed = !get.fetch(_fetchHeaderTimeout, -1, _fetchInactivityTimeout);
+                    _keepFetching = false;
+                    // fixup the getters
+                    _responseCode = get.getStatusCode();
+                    _responseText = get.getStatusText();
+                    _contentType = get.getContentType();
+                    _etag = get.getETag();
+                    _lastModified = get.getLastModified();
+                    _notModified = get.getNotModified();
+                    return;
                 } else { 
                     // the Location: field has been required to be an absolute URI at least since
                     // RFC 1945 (HTTP/1.0 1996), so it isn't clear what the point of this is.
@@ -782,7 +894,7 @@ public class EepGet {
         }
         
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Headers read completely, reading " + _bytesRemaining);
+            _log.debug("Headers read completely");
         
         boolean strictSize = (_bytesRemaining >= 0);
 
@@ -797,7 +909,7 @@ public class EepGet {
         if (_isGzippedResponse) {
             if (_log.shouldInfo())
                 _log.info("Gzipped response, starting decompressor");
-            PipedInputStream pi = BigPipedInputStream.getInstance();
+            PipedInputStream pi = new PipedInputStream(64*1024);
             PipedOutputStream po = new PipedOutputStream(pi);
             pusher = new I2PAppThread(new Gunzipper(pi, _out), "EepGet Decompressor");
             _out = po;
@@ -938,10 +1050,19 @@ public class EepGet {
             case 207:
             case 208:
             case 226:
-                if (_outputStream != null)
+                if (_outputStream != null) {
+                    if (_alreadyTransferred > 0) {
+                        // asked for partial but didn't get it,
+                        // can't rewind the stream
+                        rcOk = true;
+                        _keepFetching = false;
+                        _transferFailed = true;
+                        break;
+                    }
                     _out = _outputStream;
-		else
+                } else {
 		    _out = new FileOutputStream(_outputFile, false);
+                }
                 _alreadyTransferred = 0;
                 rcOk = true;
                 break;
@@ -956,6 +1077,7 @@ public class EepGet {
             case 302:
             case 303:
             case 307:
+            case 308:
                 _alreadyTransferred = 0;
                 rcOk = true;
                 redirect = true;
@@ -1079,11 +1201,14 @@ public class EepGet {
 
         buf.setLength(0);
         byte lookahead[] = new byte[3];
+        // "prime" the lookahead buffer with a '\n',
+        // so it works if there's no header lines at all, like a HTTPS proxy
+        increment(lookahead, '\n');
         while (true) {
             int cur = _proxyIn.read();
             switch (cur) {
                 case -1: 
-                    throw new IOException("Headers ended too soon");
+                    throw new IOException("EOF reading headers");
                 case ':':
                     if (key == null) {
                         key = buf.toString();
@@ -1105,7 +1230,7 @@ public class EepGet {
                     increment(lookahead, cur);
                     if (isEndOfHeaders(lookahead)) {
                         if (!rcOk)
-                            throw new IOException("Invalid HTTP response code: " + _responseCode + ' ' + _responseText);
+                            throw new IOException("Invalid HTTP response: " + _responseCode + ' ' + _responseText);
                         if (_encodingChunked) {
                             _bytesRemaining = readChunkLength();
                         }
@@ -1121,11 +1246,21 @@ public class EepGet {
                     increment(lookahead, cur);
             }
             
-            if (buf.length() > 1024)
+            if (buf.length() > 4096)
                 throw new IOException("Header line too long: " + buf.toString());
         }
     }
-    
+
+    /**
+     *  Should we read the body of the response?
+     *  @return true always, overridden in EepHead
+     *  @since 0.9.50
+     */
+    protected boolean shouldReadBody() { return true; }
+
+    /**
+     *  TODO this does not skip over chunk extensions (RFC 2616 sec. 3.6.1)
+     */
     protected long readChunkLength() throws IOException {
         StringBuilder buf = new StringBuilder(8);
         int nl = 0;
@@ -1148,8 +1283,8 @@ public class EepGet {
         String len = buf.toString().trim();
         try {
             long bytes = Long.parseLong(len, 16);
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Chunked length: " + bytes);
+            //if (_log.shouldLog(Log.DEBUG))
+            //    _log.debug("Chunked length: " + bytes);
             return bytes;
         } catch (NumberFormatException nfe) {
             throw new IOException("Invalid chunk length [" + len + "]");
@@ -1166,8 +1301,9 @@ public class EepGet {
      * @return HTTP response code (200, 206, other)
      */
     private int handleStatus(String line) {
+        line = line.trim();
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Status line: [" + line.trim() + "]");
+            _log.debug("Status line: [" + line + "]");
         String[] toks = DataHelper.split(line, " ", 3);
         if (toks.length < 2) {
             if (_log.shouldLog(Log.WARN))
@@ -1208,7 +1344,8 @@ public class EepGet {
         } else if (key.equals("last-modified")) {
             _lastModified = val;
         } else if (key.equals("transfer-encoding")) {
-            _encodingChunked = val.toLowerCase(Locale.US).contains("chunked");
+            // don't read chunk header in readHeaders() for EepHead
+            _encodingChunked = shouldReadBody() && val.toLowerCase(Locale.US).contains("chunked");
         } else if (key.equals("content-encoding")) {
             // This is kindof a hack, but if we are downloading a gzip file
             // we don't want to transparently gunzip it and save it as a .gz file.
@@ -1268,7 +1405,7 @@ public class EepGet {
                 if ("http".equals(url.getScheme())) {
                     String host = url.getHost();
                     if (host == null)
-                        throw new MalformedURLException("URL is not supported:" + _actualURL);
+                        throw new MalformedURLException("URL is not supported: " + _actualURL);
                     String hostlc = host.toLowerCase(Locale.US);
                     if (hostlc.endsWith(".i2p"))
                         throw new UnknownHostException("I2P addresses must be proxied");
@@ -1285,7 +1422,7 @@ public class EepGet {
                         _proxy = new Socket(host, port);
                     }
                 } else {
-                    throw new MalformedURLException("URL is not supported:" + _actualURL);
+                    throw new MalformedURLException("URL is not supported: " + _actualURL);
                 }
             } catch (URISyntaxException use) {
                 IOException ioe = new MalformedURLException("Request URL is invalid");
@@ -1317,13 +1454,13 @@ public class EepGet {
         try {
             url = new URI(_actualURL);
         } catch (URISyntaxException use) {
-            IOException ioe = new MalformedURLException("Bad URL");
+            IOException ioe = new MalformedURLException("Bad URL: " + _actualURL);
             ioe.initCause(use);
             throw ioe;
         }
         String host = url.getHost();
         if (host == null || host.length() <= 0)
-            throw new MalformedURLException("Bad URL, no host");
+            throw new MalformedURLException("Bad URL, no host: " + url);
         int port = url.getPort();
         String path = url.getRawPath();
         String query = url.getRawQuery();
@@ -1360,7 +1497,7 @@ public class EepGet {
             buf.append("-\r\n");
         }
         if (!_allowCaching) {
-            buf.append("Cache-control: no-cache\r\n" +
+            buf.append("Cache-Control: no-cache\r\n" +
                        "Pragma: no-cache\r\n");
         }
         boolean uaOverridden = false;
@@ -1412,7 +1549,7 @@ public class EepGet {
         if (post)
             buf.append(_postData);
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Request: [" + buf.toString() + "]");
+            _log.debug("Request:\n" + buf.toString().trim());
         return buf.toString();
     }
 
@@ -1501,6 +1638,8 @@ public class EepGet {
      *  As of 0.9.14, If name is If-None-Match or If-Modified-Since,
      *  this will replace the etag or last-modified value given in the constructor.
      *  Note that headers may be subsequently modified or removed in the I2PTunnel HTTP Client proxy.
+     *
+     *  In proxied SSLEepGet, these headers are sent to the remote server, NOT the proxy.
      *
      *  @since 0.8.8
      */
@@ -1642,20 +1781,38 @@ public class EepGet {
                     // use standard alphabet
                     authMode = AUTH_MODE.BASIC;
                     authChallenge = auth.substring(6);
+                    args = parseAuthArgs(authChallenge);
                 }
             } else if (authLC.startsWith("digest ")) {
-                // better than anything
-                authMode = AUTH_MODE.DIGEST;
-                authChallenge = auth.substring(7);
+                // RFC 7616 take the first one that we support
+                if (authMode != AUTH_MODE.DIGEST) {
+                    String ac = auth.substring(7);
+                    Map<String, String> aargs = parseAuthArgs(ac);
+                    String algo = aargs.get("algorithm");
+                    if (algo != null) {
+                        algo = algo.toLowerCase(Locale.US);
+                        if (!algo.equals("sha-256") && !algo.equals("md5")) {
+                            if (_log.shouldWarn())
+                                _log.warn("Unsupported auth algorithm " + algo);
+                            return;
+                        }
+                    }
+                    authMode = AUTH_MODE.DIGEST;
+                    authChallenge = ac;
+                    args = aargs;
+                } else {
+                    if (_log.shouldDebug())
+                        _log.debug("Ignoring auth algorithm " + auth);
+                }
             } else {
                 // better than NONE only
                 if (authMode == AUTH_MODE.NONE) {
                     authMode = AUTH_MODE.UNKNOWN;
                     authChallenge = null;
+                    args = null;
                 }
             }
             nonceCount = 0;
-            args = null;
         }
 
         public String getAuthHeader(String method, String uri) throws IOException {
@@ -1669,8 +1826,6 @@ public class EepGet {
                 case DIGEST:
                     if (authChallenge == null)
                         throw new IOException("Bad proxy auth response");
-                    if (args == null)
-                        args = parseAuthArgs(authChallenge);
                     Map<String, String> outArgs = generateAuthArgs(method, uri);
                     if (outArgs == null)
                         throw new IOException("Bad proxy auth response");
@@ -1699,7 +1854,14 @@ public class EepGet {
             String nonce = args.get("nonce");
             String qop = args.get("qop");
             String opaque = args.get("opaque");
-            //String algorithm = args.get("algorithm");
+            // RFC 7616
+            String algorithm = args.get("algorithm");
+            boolean isSHA256 = false;
+            if (algorithm == null)
+                algorithm = "MD5";
+            else
+                isSHA256 = algorithm.toLowerCase(Locale.US).equals("sha-256");
+            rv.put("algorithm", algorithm);
             //String stale = args.get("stale");
             if (realm == null || nonce == null) {
                 if (_log.shouldLog(Log.INFO))
@@ -1729,15 +1891,22 @@ public class EepGet {
             }
 
             // get H(A1)
-            String ha1 = PasswordManager.md5Hex(username + ':' + realm + ':' + password);
+            String a1 = username + ':' + realm + ':' + password;
+            String ha1 = isSHA256 ? PasswordManager.sha256Hex(a1) : PasswordManager.md5Hex(a1);
             // get H(A2)
             String a2 = method + ':' + uri;
-            String ha2 = PasswordManager.md5Hex(a2);
+            String ha2 = isSHA256 ? PasswordManager.sha256Hex(a2) : PasswordManager.md5Hex(a2);
             // response
             String kd = ha1 + ':' + nonce + kdMiddle + ':' + ha2;
-            rv.put("response", '"' + PasswordManager.md5Hex(kd) + '"');
+            rv.put("response", '"' + (isSHA256 ? PasswordManager.sha256Hex(kd) : PasswordManager.md5Hex(kd)) + '"');
             return rv;
         }
+
+        /** @since 0.9.33 */
+        public String getUsername() { return username; }
+
+        /** @since 0.9.33 */
+        public String getPassword() { return password; }
     }
 
     /**

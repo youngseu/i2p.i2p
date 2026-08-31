@@ -11,6 +11,7 @@ import net.i2p.data.ByteArray;
 import net.i2p.util.ByteCache;
 import net.i2p.util.Log;
 import net.i2p.util.SimpleTimer2;
+import net.i2p.util.SystemVersion;
 
 /**
  * A stream that we can shove data into that fires off those bytes
@@ -50,9 +51,9 @@ class MessageOutputStream extends OutputStream {
     
     /**
      *  Since this is less than i2ptunnel's i2p.streaming.connectDelay default of 1000,
-     *  we only wait 250 at the start. Guess that's ok, 1000 is too long anyway.
+     *  we only wait this long at the start. Guess that's ok, 1000 is too long anyway.
      */
-    private static final int DEFAULT_PASSIVE_FLUSH_DELAY = 175;
+    private static final int DEFAULT_PASSIVE_FLUSH_DELAY = SystemVersion.isSlow() ? 175 : 100;
 
 /****
     public MessageOutputStream(I2PAppContext ctx, DataReceiver receiver) {
@@ -62,16 +63,24 @@ class MessageOutputStream extends OutputStream {
 
     /** */
     public MessageOutputStream(I2PAppContext ctx, SimpleTimer2 timer,
-                               DataReceiver receiver, int bufSize) {
-        this(ctx, timer, receiver, bufSize, DEFAULT_PASSIVE_FLUSH_DELAY);
+                               DataReceiver receiver, int bufSize, int initBufSize) {
+        this(ctx, timer, receiver, bufSize, initBufSize, DEFAULT_PASSIVE_FLUSH_DELAY);
     }
 
     public MessageOutputStream(I2PAppContext ctx, SimpleTimer2 timer,
-                               DataReceiver receiver, int bufSize, int passiveFlushDelay) {
+                               DataReceiver receiver, int bufSize, int initBufSize, int passiveFlushDelay) {
         super();
+        // we only use two buffer sizes to prevent an attack
+        // where we end up with a thousand caches
+        if (bufSize < ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE) {
+            bufSize = ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE;
+        } else if (bufSize > ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE &&
+                   bufSize < ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE_RATCHET) {
+            bufSize = ConnectionOptions.DEFAULT_MAX_MESSAGE_SIZE_RATCHET;
+        }
         _dataCache = ByteCache.getInstance(128, bufSize);
         _originalBufferSize = bufSize;
-        _currentBufferSize = bufSize;
+        _currentBufferSize = initBufSize;
         _context = ctx;
         _log = ctx.logManager().getLog(MessageOutputStream.class);
         _buf = _dataCache.acquire().getData(); // new byte[bufSize];
@@ -79,7 +88,6 @@ class MessageOutputStream extends OutputStream {
         _dataLock = new Object();
         _writeTimeout = -1;
         _passiveFlushDelay = passiveFlushDelay;
-        _nextBufferSize = 0;
         //_sendPeriodBeginTime = ctx.clock().now();
         //_context.statManager().createRateStat("stream.sendBps", "How fast we pump data through the stream", "Stream", new long[] { 60*1000, 5*60*1000, 60*60*1000 });
         _flusher = new Flusher(timer);
@@ -114,15 +122,15 @@ class MessageOutputStream extends OutputStream {
     
     @Override
     public void write(byte b[], int off, int len) throws IOException {
-        if (_closed.get()) throw new IOException("Already closed");
+        if (_closed.get()) throw new IOException("Output stream closed");
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("write(b[], " + off + ", " + len + ") ");
         int cur = off;
         int remaining = len;
-        long begin = _context.clock().now();
+        long begin = _log.shouldDebug() ? _context.clock().now() : 0;
         while (remaining > 0) {
             WriteStatus ws = null;
-            if (_closed.get()) throw new IOException("closed underneath us");
+            if (_closed.get()) throw new IOException("Output stream closed");
             // we do any waiting outside the synchronized() block because we
             // want to allow other threads to flushAvailable() whenever they want.  
             // this is the only method that *adds* to the _buf, and all 
@@ -131,7 +139,7 @@ class MessageOutputStream extends OutputStream {
                 // To simplify the code, and avoid losing data from shrinking the max size,
                 // we only update max size when current buffer is empty
                 final int maxBuffer = (_valid == 0) ? locked_updateBufferSize() : _currentBufferSize;
-                if (_buf == null) throw new IOException("closed (buffer went away)");
+                if (_buf == null) throw new IOException("Output stream closed");
                 if (_valid + remaining < maxBuffer) {
                     // simply buffer the data, no flush
                     System.arraycopy(b, cur, _buf, _valid, remaining);
@@ -189,9 +197,11 @@ class MessageOutputStream extends OutputStream {
                     _log.debug("Queued " + len + " without sending to the receiver");
             }
         }
-        long elapsed = _context.clock().now() - begin;
-        if ( (elapsed > 10*1000) && (_log.shouldLog(Log.INFO)) )
-            _log.info("took " + elapsed + "ms to write to the stream?", new Exception("foo"));
+        if (_log.shouldDebug()) {
+            long elapsed = _context.clock().now() - begin;
+            if (elapsed > 10*1000)
+                _log.info("took " + elapsed + "ms to write to the stream?", new Exception("foo"));
+        }
         throwAnyError();
         //updateBps(len);
     }
@@ -244,9 +254,11 @@ class MessageOutputStream extends OutputStream {
      */
     private class Flusher extends SimpleTimer2.TimedEvent {
         private boolean _enqueued;
+
         public Flusher(SimpleTimer2 timer) { 
             super(timer);
         }
+
         public void enqueue() {
             // no need to be overly worried about duplicates - it would just 
             // push it further out
@@ -258,12 +270,13 @@ class MessageOutputStream extends OutputStream {
                 forceReschedule(_passiveFlushDelay);
                 if (_log.shouldLog(Log.DEBUG))
                     _log.debug("Enqueueing the flusher for " + _passiveFlushDelay + "ms out");
+                _enqueued = true;
             } else {
                 if (_log.shouldLog(Log.DEBUG))
                     _log.debug("NOT enqueing the flusher");
             }
-            _enqueued = true;
         }
+
         public void timeReached() {
             if (_closed.get())
                 return;
@@ -334,7 +347,7 @@ class MessageOutputStream extends OutputStream {
      *  @@since 0.8.1
      */
     private void flush(boolean wait_for_accept_only) throws IOException {
-        long begin = _context.clock().now();
+        long begin = _log.shouldDebug() ? _context.clock().now() : 0;
         WriteStatus ws = null;
         if (_log.shouldLog(Log.INFO) && _valid > 0)
             _log.info("flush() valid = " + _valid);
@@ -342,7 +355,7 @@ class MessageOutputStream extends OutputStream {
         synchronized (_dataLock) {
             if (_buf == null) {
                 _dataLock.notifyAll();
-                throw new IOException("closed (buffer went away)");
+                throw new IOException("Output stream closed");
             }
 
             // if valid == 0 return ??? - no, this could flush a CLOSE packet too.
@@ -388,9 +401,11 @@ class MessageOutputStream extends OutputStream {
         else if (ws.writeFailed())
             throw new IOException("Write failed");
         
-        long elapsed = _context.clock().now() - begin;
-        if ( (elapsed > 10*1000) && (_log.shouldLog(Log.DEBUG)) )
-            _log.debug("took " + elapsed + "ms to flush the stream?\n" + ws, new Exception("bar"));
+        if (_log.shouldDebug()) {
+            long elapsed = _context.clock().now() - begin;
+            if (elapsed > 10*1000)
+                _log.debug("took " + elapsed + "ms to flush the stream?\n" + ws, new Exception("bar"));
+        }
         throwAnyError();
     }
     
@@ -443,7 +458,7 @@ class MessageOutputStream extends OutputStream {
             return;
         }
         _flusher.cancel();
-        _streamError.compareAndSet(null,new IOException("Closed internally"));
+        _streamError.compareAndSet(null, new IOException("Output stream closed"));
         clearData(true);
     }
     

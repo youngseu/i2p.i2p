@@ -23,7 +23,8 @@
 
     <!-- only used if not set by a higher build.xml -->
     <property name="javac.compilerargs" value="" />
-    <property name="javac.version" value="1.7" />
+    <property name="javac.version" value="1.8" />
+    <property name="javac.release" value="8" />
 
     <target name="compile" depends="depend">
         <mkdir dir="./build" />
@@ -31,7 +32,9 @@
         <javac
             srcdir="./src"
             debug="true" deprecation="on" source="${javac.version}" target="${javac.version}"
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./build/obj"
             classpath="../../../core/java/build/i2p.jar:../../ministreaming/java/build/mstreaming.jar" >
             <compilerarg line="${javac.compilerargs}" />
@@ -59,9 +62,12 @@
         <javac
             srcdir="./test/junit"
             debug="true" deprecation="on" source="${javac.version}" target="${javac.version}"
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./build/obj" >
             <classpath>
+                <pathelement path="${javac.classpath}" />
                 <pathelement location="../../../core/java/build/i2p.jar" />
                 <pathelement location="../../ministreaming/java/build/mstreaming.jar" />
                 <pathelement location="${junit.home}/junit4.jar" />
@@ -185,13 +191,20 @@
     <!-- end unit tests -->
 
     <target name="listChangedFiles" depends="jarUpToDate" if="shouldListChanges" >
-        <exec executable="mtn" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="." />
         </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes}" outputproperty="workspace.changes.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
+        </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.sed}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
@@ -203,12 +216,12 @@
         <property name="workspace.changes.tr" value="" />
         <jar destfile="./build/streaming.jar" basedir="./build/obj" includes="**/*.class" >
             <manifest>
-                <attribute name="Specification-Title" value="I2P Streaming API" />
-                <attribute name="Specification-Version" value="${release.number}" />
-                <attribute name="Specification-Vendor" value="The I2P Project https://geti2p.net/" />
-                <attribute name="Implementation-Title" value="I2P Java Streaming API" />
+                <attribute name="Specification-Title" value="I2P Streaming Implementation" />
+                <attribute name="Specification-Version" value="${api.version}" />
+                <attribute name="Specification-Vendor" value="The I2P Project https://i2p.net/" />
+                <attribute name="Implementation-Title" value="I2P Java Streaming Implementation" />
                 <attribute name="Implementation-Version" value="${full.version}" />
-                <attribute name="Implementation-Vendor" value="The I2P Project https://geti2p.net/" />
+                <attribute name="Implementation-Vendor" value="The I2P Project https://i2p.net/" />
                 <attribute name="Built-By" value="${build.built-by}" />
                 <attribute name="Build-Date" value="${build.timestamp}" />
                 <attribute name="Base-Revision" value="${workspace.version}" />
@@ -228,7 +241,7 @@
                 <not>
                     <isset property="jar.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>
@@ -236,26 +249,72 @@
     <target name="jarTest" depends="jar, junit.compileTest">
         <jar destfile="./build/streaming.jar" basedir="./build/obj" includes="**/*Test*.class" update="true" />
     </target>
+
     <target name="javadoc">
         <mkdir dir="./build" />
         <mkdir dir="./build/javadoc" />
-        <javadoc
-            sourcepath="./src:../../../core/java/src:../../ministreaming/java/src" destdir="./build/javadoc"
+        <javadoc access="package"
+            source="${javac.version}"
+            destdir="./build/javadoc"
             packagenames="*"
             use="true"
             splitindex="true"
-            windowtitle="Streaming" />
+            failonerror="true"
+            additionalparam="-notimestamp"
+            doctitle="I2P Javadocs for Release ${release.number} Build ${i2p.build.number}${build.extra}"
+            windowtitle="I2P Anonymous Network - Java Documentation - Version ${release.number}">
+            <group title="Streaming Library Implementation" packages="*" />
+            <sourcepath>
+                <pathelement location="./src" />
+            </sourcepath>
+            <classpath>
+                <pathelement location="../../../core/java/build/i2p.jar" />
+                <pathelement location="../../ministreaming/java/build/mstreaming.jar" />
+                <!-- following are only for debian builds -->
+                <pathelement location="../../../core/java/build/libintl.jar" />
+                <pathelement location="../../../core/java/build/gnu-getopt.jar" />
+            </classpath>
+            <!-- These variables are stored in build.properties.
+                  End-users can override by creating the file override.properties -->
+            <link offline="true" href="${javasedocs.url}" packagelistLoc="../../../installer/resources/package-lists/java/" />
+            <link offline="true" href="${javaeedocs.url}" packagelistLoc="../../../installer/resources/package-lists/javaee/" />
+            <link offline="true" href="${jettydocs.url}" packagelistLoc="../../../installer/resources/package-lists/jetty/" />
+            <link offline="true" href="${wrapperdocs.url}" packagelistLoc="../../../installer/resources/package-lists/wrapper/" />
+        </javadoc>
     </target>
 
     <!-- for Maven Central -->
     <target name="javadocJar" depends="javadoc">
         <jar jarfile="./build/streaming-${release.number}-javadoc.jar">
             <fileset dir="./build/javadoc" />
+            <manifest>
+                <attribute name="Specification-Title" value="I2P Streaming Implementation" />
+                <attribute name="Specification-Version" value="${api.version}" />
+                <attribute name="Specification-Vendor" value="The I2P Project https://i2p.net/" />
+                <attribute name="Implementation-Title" value="I2P Java Streaming Implementation" />
+                <attribute name="Implementation-Version" value="${full.version}" />
+                <attribute name="Implementation-Vendor" value="The I2P Project https://i2p.net/" />
+                <attribute name="Built-By" value="${build.built-by}" />
+                <attribute name="Build-Date" value="${build.timestamp}" />
+                <attribute name="Base-Revision" value="${workspace.version}" />
+            </manifest>
         </jar>
     </target>
+
     <target name="sourcesJar">
         <jar jarfile="./build/streaming-${release.number}-sources.jar">
             <fileset dir="./src" />
+            <manifest>
+                <attribute name="Specification-Title" value="I2P Streaming Implementation" />
+                <attribute name="Specification-Version" value="${api.version}" />
+                <attribute name="Specification-Vendor" value="The I2P Project https://i2p.net/" />
+                <attribute name="Implementation-Title" value="I2P Java Streaming Implementation" />
+                <attribute name="Implementation-Version" value="${full.version}" />
+                <attribute name="Implementation-Vendor" value="The I2P Project https://i2p.net/" />
+                <attribute name="Built-By" value="${build.built-by}" />
+                <attribute name="Build-Date" value="${build.timestamp}" />
+                <attribute name="Base-Revision" value="${workspace.version}" />
+            </manifest>
         </jar>
     </target>
 

@@ -17,6 +17,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
+import net.i2p.CoreVersion;
+import net.i2p.crypto.EncType;
+import net.i2p.crypto.KeyPair;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Base64;
 import net.i2p.data.Certificate;
@@ -39,6 +42,7 @@ import net.i2p.router.util.EventLog;
 import net.i2p.util.Log;
 import net.i2p.util.SecureFileOutputStream;
 import net.i2p.util.SystemVersion;
+import net.i2p.util.VersionComparator;
 
 /**
  *  Warning - misnamed. This creates a new RouterIdentity, i.e.
@@ -54,9 +58,11 @@ public class CreateRouterInfoJob extends JobImpl {
     public static final String KEYS_FILENAME = "router.keys";
     public static final String KEYS2_FILENAME = "router.keys.dat";
     static final String PROP_ROUTER_SIGTYPE = "router.sigType";
-    /** TODO make everybody Ed */
-    private static final SigType DEFAULT_SIGTYPE = SystemVersion.isAndroid() ?
-                                                   SigType.DSA_SHA1 : SigType.EdDSA_SHA512_Ed25519;
+    /** @since 0.9.48 */
+    static final String PROP_ROUTER_ENCTYPE = "router.encType";
+    private static final SigType DEFAULT_SIGTYPE = SigType.EdDSA_SHA512_Ed25519;
+    private static final EncType DEFAULT_ENCTYPE = EncType.ECIES_X25519;
+    private static final int PADDING_ENTROPY = 32;
 
     CreateRouterInfoJob(RouterContext ctx, Job next) {
         super(ctx);
@@ -96,36 +102,46 @@ public class CreateRouterInfoJob extends JobImpl {
      *  Caller must hold Router.routerInfoFileLock.
      */
     RouterInfo createRouterInfo() {
-        SigType type = getSigTypeConfig(getContext());
+        RouterContext ctx = getContext();
+        SigType type = getSigTypeConfig(ctx);
         RouterInfo info = new RouterInfo();
         OutputStream fos1 = null;
         try {
-            info.setAddresses(getContext().commSystem().createAddresses());
+            info.setAddresses(ctx.commSystem().createAddresses());
             // not necessary, in constructor
             //info.setPeers(new HashSet());
-            info.setPublished(getCurrentPublishDate(getContext()));
-            Object keypair[] = getContext().keyGenerator().generatePKIKeypair();
-            PublicKey pubkey = (PublicKey)keypair[0];
-            PrivateKey privkey = (PrivateKey)keypair[1];
-            SimpleDataStructure signingKeypair[] = getContext().keyGenerator().generateSigningKeys(type);
+            info.setPublished(getCurrentPublishDate(ctx));
+            EncType etype = getEncTypeConfig(ctx);
+            KeyPair keypair = ctx.keyGenerator().generatePKIKeys(etype);
+            PublicKey pubkey = keypair.getPublic();
+            PrivateKey privkey = keypair.getPrivate();
+            SimpleDataStructure signingKeypair[] = ctx.keyGenerator().generateSigningKeys(type);
             SigningPublicKey signingPubKey = (SigningPublicKey)signingKeypair[0];
             SigningPrivateKey signingPrivKey = (SigningPrivateKey)signingKeypair[1];
             RouterIdentity ident = new RouterIdentity();
-            Certificate cert = createCertificate(getContext(), signingPubKey);
+            Certificate cert = createCertificate(ctx, signingPubKey, pubkey);
             ident.setCertificate(cert);
             ident.setPublicKey(pubkey);
             ident.setSigningPublicKey(signingPubKey);
             byte[] padding;
-            int padLen = SigningPublicKey.KEYSIZE_BYTES - signingPubKey.length();
+            int padLen = (SigningPublicKey.KEYSIZE_BYTES - signingPubKey.length()) +
+                         (PublicKey.KEYSIZE_BYTES - pubkey.length());
             if (padLen > 0) {
                 padding = new byte[padLen];
-                getContext().random().nextBytes(padding);
+                if (padLen <= PADDING_ENTROPY) {
+                    ctx.random().nextBytes(padding);
+                } else {
+                    ctx.random().nextBytes(padding, 0, PADDING_ENTROPY);
+                    for (int i = PADDING_ENTROPY; i < padLen; i += PADDING_ENTROPY) {
+                        System.arraycopy(padding, 0, padding, i, Math.min(PADDING_ENTROPY, padLen - i));
+                    }
+                }
                 ident.setPadding(padding);
             } else {
                 padding = null;
             }
             info.setIdentity(ident);
-            Properties stats = getContext().statPublisher().publishStatistics(ident.getHash());
+            Properties stats = ctx.statPublisher().publishStatistics(ident.getHash());
             info.setOptions(stats);
             
             info.sign(signingPrivKey);
@@ -134,15 +150,15 @@ public class CreateRouterInfoJob extends JobImpl {
                 throw new DataFormatException("RouterInfo we just built is invalid: " + info);
             
             // remove router.keys
-            (new File(getContext().getRouterDir(), KEYS_FILENAME)).delete();
+            (new File(ctx.getRouterDir(), KEYS_FILENAME)).delete();
 
             // write router.info
-            File ifile = new File(getContext().getRouterDir(), INFO_FILENAME);
+            File ifile = new File(ctx.getRouterDir(), INFO_FILENAME);
             fos1 = new BufferedOutputStream(new SecureFileOutputStream(ifile));
             info.writeBytes(fos1);
             
             // write router.keys.dat
-            File kfile = new File(getContext().getRouterDir(), KEYS2_FILENAME);
+            File kfile = new File(ctx.getRouterDir(), KEYS2_FILENAME);
             PrivateKeyFile pkf = new PrivateKeyFile(kfile, pubkey, signingPubKey, cert,
                                                     privkey, signingPrivKey, padding);
             pkf.write();
@@ -150,17 +166,17 @@ public class CreateRouterInfoJob extends JobImpl {
             // set or overwrite old random keys
             Map<String, String> map = new HashMap<String, String>(2);
             byte rk[] = new byte[32];
-            getContext().random().nextBytes(rk);
+            ctx.random().nextBytes(rk);
             map.put(Router.PROP_IB_RANDOM_KEY, Base64.encode(rk));
-            getContext().random().nextBytes(rk);
+            ctx.random().nextBytes(rk);
             map.put(Router.PROP_OB_RANDOM_KEY, Base64.encode(rk));
-            getContext().router().saveConfig(map, null);
+            ctx.router().saveConfig(map, null);
 
-            getContext().keyManager().setKeys(pubkey, privkey, signingPubKey, signingPrivKey);
+            ctx.keyManager().setKeys(pubkey, privkey, signingPubKey, signingPrivKey);
             
             if (_log.shouldLog(Log.INFO))
                 _log.info("Router info created and stored at " + ifile.getAbsolutePath() + " with private keys stored at " + kfile.getAbsolutePath() + " [" + info + "]");
-            getContext().router().eventLog().addEvent(EventLog.REKEYED, ident.calculateHash().toBase64());
+            ctx.router().eventLog().addEvent(EventLog.REKEYED, ident.calculateHash().toBase64());
         } catch (GeneralSecurityException gse) {
             _log.log(Log.CRIT, "Error building the new router information", gse);
         } catch (DataFormatException dfe) {
@@ -192,6 +208,24 @@ public class CreateRouterInfoJob extends JobImpl {
     }
     
     /**
+     *  The configured EncType to expect on read-in
+     *  @since 0.9.48
+     */
+    public static EncType getEncTypeConfig(RouterContext ctx) {
+        EncType cstype = DEFAULT_ENCTYPE;
+        String sstype = ctx.getProperty(PROP_ROUTER_ENCTYPE);
+        if (sstype != null) {
+            EncType ntype = EncType.parseEncType(sstype);
+            if (ntype != null)
+                cstype = ntype;
+        }
+        // fallback?
+        if (cstype != EncType.ELGAMAL_2048 && !cstype.isAvailable())
+            cstype = EncType.ELGAMAL_2048;
+        return cstype;
+    }
+    
+    /**
      * We probably don't want to expose the exact time at which a router published its info.
      * perhaps round down to the nearest minute?  10 minutes?  30 minutes?  day?
      *
@@ -211,9 +245,9 @@ public class CreateRouterInfoJob extends JobImpl {
      *  @return the certificate for a new RouterInfo - probably a null cert.
      *  @since 0.9.16 moved from Router
      */
-    static Certificate createCertificate(RouterContext ctx, SigningPublicKey spk) {
-        if (spk.getType() != SigType.DSA_SHA1)
-            return new KeyCertificate(spk);
+    private static Certificate createCertificate(RouterContext ctx, SigningPublicKey spk, PublicKey pk) {
+        if (spk.getType() != SigType.DSA_SHA1 || pk.getType() != EncType.ELGAMAL_2048)
+            return new KeyCertificate(spk, pk);
         if (ctx.getBooleanProperty(Router.PROP_HIDDEN))
             return new Certificate(Certificate.CERTIFICATE_TYPE_HIDDEN, null);
         return Certificate.NULL_CERT;

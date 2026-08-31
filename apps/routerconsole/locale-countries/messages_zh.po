@@ -5,18 +5,19 @@
 # 
 # Translators:
 # ducki2p <ducki2p@gmail.com>, 2011
+# Scott Rhodes <starring169@gmail.com>, 2020-2021,2025
 # walking <waling@mail.i2p>, 2013
 # walking <walking@i2pmail.org>, 2011
 # xtoaster <zhazhenzhong@gmail.com>, 2012
-# YF <yfdyh000@gmail.com>, 2015
+# YFdyh000 <yfdyh000@gmail.com>, 2015
 msgid ""
 msgstr ""
 "Project-Id-Version: I2P\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2015-07-17 01:33+0000\n"
-"PO-Revision-Date: 2017-06-30 21:33+0000\n"
-"Last-Translator: YF <yfdyh000@gmail.com>\n"
-"Language-Team: Chinese (China) (http://www.transifex.com/otf/I2P/language/zh_CN/)\n"
+"POT-Creation-Date: 2020-08-12 13:39+0000\n"
+"PO-Revision-Date: 2013-10-14 15:34+0000\n"
+"Last-Translator: Scott Rhodes <starring169@gmail.com>, 2020-2021,2025\n"
+"Language-Team: Chinese (China) (http://app.transifex.com/otf/I2P/language/zh_CN/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -51,7 +52,7 @@ msgid "Armenia"
 msgstr "亚美尼亚"
 
 msgid "Netherlands Antilles"
-msgstr "荷兰属地"
+msgstr "荷属安地列斯"
 
 msgid "Angola"
 msgstr "安哥拉"
@@ -105,7 +106,7 @@ msgid "Bahrain"
 msgstr "巴林"
 
 msgid "Burundi"
-msgstr "不丹"
+msgstr "布隆迪"
 
 msgid "Benin"
 msgstr "贝宁"
@@ -135,10 +136,10 @@ msgid "Bhutan"
 msgstr "不丹"
 
 msgid "Bouvet Island"
-msgstr "布韦群岛"
+msgstr "布韦岛"
 
 msgid "Botswana"
-msgstr "伯兹瓦纳"
+msgstr "博茨瓦纳"
 
 msgid "Belarus"
 msgstr "白俄罗斯"
@@ -153,10 +154,10 @@ msgid "Cocos (Keeling) Islands"
 msgstr "科科斯（基林）群岛"
 
 msgid "Congo"
-msgstr "刚果"
+msgstr "刚果民主共和国"
 
 msgid "Central African Republic"
-msgstr "中非"
+msgstr "中非共和国"
 
 msgid "Switzerland"
 msgstr "瑞士"
@@ -213,7 +214,7 @@ msgid "Denmark"
 msgstr "丹麦"
 
 msgid "Dominica"
-msgstr "多米尼"
+msgstr "多米尼克"
 
 msgid "Dominican Republic"
 msgstr "多米尼加共和国"
@@ -276,7 +277,7 @@ msgid "Georgia"
 msgstr "格鲁吉亚"
 
 msgid "French Guiana"
-msgstr "圭亚那"
+msgstr "法属圭亚那"
 
 msgid "Guernsey"
 msgstr "根西岛"
@@ -288,7 +289,7 @@ msgid "Gibraltar"
 msgstr "直布罗陀"
 
 msgid "Greenland"
-msgstr "格陵兰群岛"
+msgstr "格陵兰"
 
 msgid "Gambia"
 msgstr "冈比亚"
@@ -351,7 +352,7 @@ msgid "India"
 msgstr "印度"
 
 msgid "British Indian Ocean Territory"
-msgstr "英属印度洋地区"
+msgstr "英属印度洋领地"
 
 msgid "Iraq"
 msgstr "伊拉克"
@@ -384,7 +385,7 @@ msgid "Kyrgyzstan"
 msgstr "吉尔吉斯斯坦"
 
 msgid "Cambodia"
-msgstr "柬埔塞"
+msgstr "柬埔寨"
 
 msgid "Kiribati"
 msgstr "基里巴斯"
@@ -465,7 +466,7 @@ msgid "Marshall Islands"
 msgstr "马绍尔群岛"
 
 msgid "Macedonia"
-msgstr "马其顿"
+msgstr "北马其顿"
 
 msgid "Mali"
 msgstr "马里"
@@ -558,7 +559,7 @@ msgid "Peru"
 msgstr "秘鲁"
 
 msgid "French Polynesia"
-msgstr "玻利尼西亚"
+msgstr "法属玻利尼西亚"
 
 msgid "Papua New Guinea"
 msgstr "巴布亚新几内亚"
@@ -606,7 +607,7 @@ msgid "Serbia"
 msgstr "塞尔维亚"
 
 msgid "Russian Federation"
-msgstr "俄联邦"
+msgstr "俄罗斯联邦"
 
 msgid "Rwanda"
 msgstr "卢旺达"
@@ -763,6 +764,9 @@ msgstr "瓦利斯群岛和富图纳群岛"
 
 msgid "Samoa"
 msgstr "东萨摩亚"
+
+msgid "Kosovo"
+msgstr "科索沃"
 
 msgid "Yemen"
 msgstr "也门"

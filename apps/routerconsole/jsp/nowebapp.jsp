@@ -1,15 +1,14 @@
 <%@page contentType="text/html"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!DOCTYPE html>
 <%
     response.setStatus(404);
 %>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("WebApp Not Found")%>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
+</head><body>
 <%@include file="summary.jsi" %>
 <h1><%=intl._t("Web Application Not Running")%></h1>
 <div class="sorry" id="warning">

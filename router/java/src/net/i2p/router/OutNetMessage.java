@@ -8,15 +8,12 @@ package net.i2p.router;
  *
  */
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import net.i2p.data.router.RouterInfo;
 import net.i2p.data.i2np.I2NPMessage;
@@ -29,14 +26,13 @@ import net.i2p.util.Log;
  *
  */
 public class OutNetMessage implements CDPQEntry {
-    private final Log _log;
     private final RouterContext _context;
     private final RouterInfo _target;
     private final I2NPMessage _message;
     private final int _messageTypeId;
     /** cached message ID, for use after we discard the message */
     private final long _messageId;
-    private final long _messageSize;
+    private final int _messageSize;
     private final int _priority;
     private final long _expiration;
     private Job _onSend;
@@ -44,12 +40,13 @@ public class OutNetMessage implements CDPQEntry {
     private ReplyJob _onReply;
     private Job _onFailedReply;
     private MessageSelector _replySelector;
-    private Set<String> _failedTransports;
+    private List<String> _failedTransports;
     private long _sendBegin;
     //private Exception _createdBy;
     private final long _created;
     private long _enqueueTime;
     private long _seqNum;
+    private final boolean _shouldTimestamp;
     /** for debugging, contains a mapping of even name to Long (e.g. "begin sending", "handleOutbound", etc) */
     private HashMap<String, Long> _timestamps;
     /**
@@ -96,7 +93,6 @@ public class OutNetMessage implements CDPQEntry {
      */
     public OutNetMessage(RouterContext context, I2NPMessage msg, long expiration, int priority, RouterInfo target) {
         _context = context;
-        _log = context.logManager().getLog(OutNetMessage.class);
         _message = msg;
         if (msg != null) {
             _messageTypeId = msg.getType();
@@ -113,7 +109,9 @@ public class OutNetMessage implements CDPQEntry {
 
         //_createdBy = new Exception("Created by");
         _created = context.clock().now();
-        if (_log.shouldLog(Log.INFO))
+        Log log = context.logManager().getLog(OutNetMessage.class);
+        _shouldTimestamp = log.shouldLog(Log.INFO);
+        if (_shouldTimestamp)
             timestamp("Created");
         //_context.messageStateMonitor().outboundMessageAdded();
         //_context.statManager().createRateStat("outNetMessage.timeToDiscard", 
@@ -126,12 +124,11 @@ public class OutNetMessage implements CDPQEntry {
      * Only useful if log level is INFO or DEBUG
      *
      * @param eventName what occurred 
-     * @return how long this message has been 'in flight'
      */
-    public long timestamp(String eventName) {
-        long now = _context.clock().now();
-        if (_log.shouldLog(Log.INFO)) {
+    public void timestamp(String eventName) {
+        if (_shouldTimestamp) {
             // only timestamp if we are debugging
+            long now = _context.clock().now();
             synchronized (this) {
                 locked_initTimestamps();
                 // ???
@@ -142,13 +139,12 @@ public class OutNetMessage implements CDPQEntry {
                 _timestampOrder.add(eventName);
             }
         }
-        return now - _created;
     }
 
     /** @deprecated unused */
     @Deprecated
     public Map<String, Long> getTimestamps() {
-        if (_log.shouldLog(Log.INFO)) {
+        if (_shouldTimestamp) {
             synchronized (this) {
                 locked_initTimestamps();
                 return new HashMap<String, Long>(_timestamps);
@@ -160,7 +156,7 @@ public class OutNetMessage implements CDPQEntry {
     /** @deprecated unused */
     @Deprecated
     public Long getTimestamp(String eventName) {
-        if (_log.shouldLog(Log.INFO)) {
+        if (_shouldTimestamp) {
             synchronized (this) {
                 locked_initTimestamps();
                 return _timestamps.get(eventName);
@@ -200,14 +196,17 @@ public class OutNetMessage implements CDPQEntry {
      *  @return the simple class name
      */
     public String getMessageType() {
-        I2NPMessage msg = _message;
-        return msg != null ? msg.getClass().getSimpleName() : "null";
+        return _message != null ? _message.getClass().getSimpleName() : "null";
     }
 
     public int getMessageTypeId() { return _messageTypeId; }
     public long getMessageId() { return _messageId; }
     
-    public long getMessageSize() {
+    /**
+     * How large the message is, including the full 16 byte header.
+     * Transports with different header sizes should adjust.
+     */
+    public int getMessageSize() {
         return _messageSize;
     }
     
@@ -279,14 +278,33 @@ public class OutNetMessage implements CDPQEntry {
     public MessageSelector getReplySelector() { return _replySelector; }
     public void setReplySelector(MessageSelector selector) { _replySelector = selector; }
     
-    public synchronized void transportFailed(String transportStyle) { 
-        if (_failedTransports == null)
-            _failedTransports = new HashSet<String>(2);
+    /**
+     * As of 0.9.55, returns the previous number of failed transports.
+     */
+    public synchronized int transportFailed(String transportStyle) { 
+        int rv;
+        if (_failedTransports == null) {
+            _failedTransports = new ArrayList<String>(2);
+            rv = 0;
+        } else {
+            rv = _failedTransports.size();
+        }
         _failedTransports.add(transportStyle); 
+        return rv;
     }
 
-    public synchronized Set<String> getFailedTransports() { 
-        return (_failedTransports == null ? Collections.<String> emptySet() : _failedTransports); 
+    /**
+     * @since 0.9.55
+     */
+    public synchronized int getFailedTransportCount() { 
+        return (_failedTransports == null ? 0 : _failedTransports.size()); 
+    }
+
+    /**
+     * As of 0.9.55, changed from a Set to a List
+     */
+    public synchronized List<String> getFailedTransports() { 
+        return (_failedTransports == null ? Collections.<String>emptyList() : _failedTransports); 
     }
     
     /** when did the sending process begin */
@@ -371,12 +389,12 @@ public class OutNetMessage implements CDPQEntry {
             buf.append(getMessageType());
             buf.append(" ID ").append(_messageId);
         }
-        buf.append(" expiring on ").append(new Date(_expiration));
+        buf.append(" expiring ").append(new Date(_expiration));
         buf.append(" priority ").append(_priority);
         if (_failedTransports != null)
-            buf.append(" failed delivery on transports ").append(_failedTransports);
+            buf.append(" failed transports: ").append(_failedTransports);
         if (_target == null)
-            buf.append(" targetting no one in particular...");
+            buf.append(" (null target)");
         else
             buf.append(" targetting ").append(_target.getIdentity().getHash().toBase64());
         if (_onReply != null)
@@ -387,7 +405,7 @@ public class OutNetMessage implements CDPQEntry {
             buf.append(" with onFailedReply job: ").append(_onFailedReply);
         if (_onFailedSend != null)
             buf.append(" with onFailedSend job: ").append(_onFailedSend);
-        if (_timestamps != null && _timestampOrder != null && _log.shouldLog(Log.INFO)) {
+        if (_timestamps != null && _timestampOrder != null) {
             buf.append(" {timestamps: \n");
             renderTimestamps(buf);
             buf.append("}");
@@ -415,18 +433,10 @@ public class OutNetMessage implements CDPQEntry {
                     else
                         buf.append(0);
                     buf.append("ms: \t").append(name);
-                    buf.append('=').append(formatDate(when.longValue()));
+                    buf.append('=').append(new Date(when.longValue()));
                     buf.append("]\n");
                     lastWhen = when.longValue();
                 }
             }
-    }
-    
-    private final static SimpleDateFormat _fmt = new SimpleDateFormat("HH:mm:ss.SSS");
-    private final static String formatDate(long when) {
-        Date d = new Date(when);
-        synchronized (_fmt) {
-            return _fmt.format(d);
-        }
     }
 }

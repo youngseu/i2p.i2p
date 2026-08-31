@@ -55,6 +55,8 @@ public class HTTPMUSocket
 	private InetSocketAddress ssdpMultiGroup = null;
 	private MulticastSocket ssdpMultiSock = null;
 	private NetworkInterface ssdpMultiIf = null;
+	/** I2P */
+	private InetAddress _bindAddress;
 	
 	////////////////////////////////////////////////
 	//	Constructor
@@ -80,6 +82,7 @@ public class HTTPMUSocket
 
 	public String getLocalAddress()
 	{
+	   /**** I2P fix
 		if (ssdpMultiGroup == null || ssdpMultiIf == null)
 			return "";
 		InetAddress mcastAddr = ssdpMultiGroup.getAddress();
@@ -92,6 +95,10 @@ public class HTTPMUSocket
 				return addr.getHostAddress();
 		}
 		return "";
+	    ****/
+		if (_bindAddress == null)
+			return "";
+		return _bindAddress.getHostAddress();
 	}
 
 	/**
@@ -151,6 +158,8 @@ public class HTTPMUSocket
 			ssdpMultiGroup = new InetSocketAddress(InetAddress.getByName(addr), port);
 			ssdpMultiIf = NetworkInterface.getByInetAddress(bindAddr);
 			ssdpMultiSock.joinGroup(ssdpMultiGroup, ssdpMultiIf);
+			// I2P
+			_bindAddress = bindAddr;
 		}
 		catch (Exception e) {
 			Debug.warning(e);
@@ -177,10 +186,12 @@ public class HTTPMUSocket
 			
 		try {
 			ssdpMultiSock.leaveGroup(ssdpMultiGroup, ssdpMultiIf);
-            ssdpMultiSock.close();
+			ssdpMultiSock.close();
 			ssdpMultiSock = null;
-		}
-		catch (Exception e) {
+		} catch (Throwable e) {
+                        // I2P was Exception
+			// Oracle 19 Windows 10
+			// java.lang.AssertionError: java.net.BindException: Cannot assign requested address: no further information
 			//Debug.warning(e);
 			return false;
 		}
@@ -194,8 +205,8 @@ public class HTTPMUSocket
 
 	public boolean send(String msg, String bindAddr, int bindPort)
 	{
+		MulticastSocket msock = null;
 		try {
-			MulticastSocket msock;
 			if ((bindAddr) != null && (0 < bindPort)) {
 				msock = new MulticastSocket(null);
 				msock.bind(new InetSocketAddress(bindAddr, bindPort));
@@ -206,11 +217,12 @@ public class HTTPMUSocket
 			// Thnaks for Theo Beisch (11/09/04)
 			msock.setTimeToLive(UPnP.getTimeToLive());
 			msock.send(dgmPacket);
-			msock.close();
 		}
 		catch (Exception e) {
 			Debug.warning(e);
 			return false;
+		} finally {
+			if (msock != null) msock.close();
 		}
 		return true;
 	}
@@ -255,5 +267,10 @@ public class HTTPMUSocket
  		
 		return recvPacket;
 	}
+
+	/** I2P */
+	@Override
+	public String toString() { return getLocalAddress(); }
+
 }
 

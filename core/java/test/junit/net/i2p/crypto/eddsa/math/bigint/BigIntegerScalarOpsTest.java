@@ -1,10 +1,19 @@
 /**
- * 
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
  */
 package net.i2p.crypto.eddsa.math.bigint;
 
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.*;
+import static org.hamcrest.MatcherAssert.assertThat;
+
 
 import java.math.BigInteger;
 
@@ -22,7 +31,7 @@ import org.junit.Test;
  */
 public class BigIntegerScalarOpsTest {
 
-    static final EdDSANamedCurveSpec ed25519 = EdDSANamedCurveTable.getByName("ed25519-sha-512");
+    static final EdDSANamedCurveSpec ed25519 = EdDSANamedCurveTable.getByName(EdDSANamedCurveTable.ED_25519);
     static final Field ed25519Field = ed25519.getCurve().getField();
 
     /**

@@ -29,14 +29,18 @@ import java.util.Locale;
 import java.util.Properties;
 
 import net.i2p.I2PAppContext;
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Base32;
 import net.i2p.data.Base64;
 import net.i2p.data.Certificate;
+import net.i2p.data.DataHelper;
+import net.i2p.data.Destination;
 
 public class AddressBean
 {
-	private final String name, destination;
+	private final String name;
+	private final byte[] dest;
 	private Properties props;
 	/** available as of Java 6 */
 	static final boolean haveIDN;
@@ -54,13 +58,31 @@ public class AddressBean
 
 	public AddressBean(String name, String destination)
 	{
+		this(name, Base64.decode(destination));
+	}
+
+	/**
+	 * @since 0.9.66
+	 */
+	public AddressBean(String name, Destination destination)
+	{
+		this(name, destination.toByteArray());
+	}
+
+	/**
+	 * @since 0.9.66
+	 */
+	public AddressBean(String name, byte[] destination)
+	{
 		this.name = name;
-		this.destination = destination;
+		dest = destination;
+		if (dest == null || dest.length < 387)
+			throw new IllegalArgumentException();
 	}
 
 	public String getDestination() 
 	{
-		return destination;
+		return Base64.encode(dest);
 	}
 
 	/**
@@ -88,7 +110,7 @@ public class AddressBean
 	 */
 	public static String toUnicode(String host) {
 		if (haveIDN)
-			return IDN.toUnicode(host);
+			return IDN.toUnicode(host, IDN.ALLOW_UNASSIGNED);
 		return host;
 	}
 
@@ -98,7 +120,7 @@ public class AddressBean
 	 */
 	public boolean isIDN()
 	{
-		return haveIDN && !IDN.toUnicode(name).equals(name);
+		return haveIDN && !IDN.toUnicode(name, IDN.ALLOW_UNASSIGNED).equals(name);
 	}
 
 	private static final char DOT = '.';
@@ -107,7 +129,7 @@ public class AddressBean
 	private static final char DOT4 = 0xFF61;
 
 	/**
-	 * Ref: java.net.IDN and RFC 3940
+	 * Ref: java.net.IDN and RFC 3490
 	 * @param host will be converted to lower case
 	 * @return name converted to lower case and punycoded if necessary
 	 * @throws IllegalArgumentException on various errors or if IDN is needed but not available
@@ -118,7 +140,7 @@ public class AddressBean
 
 		boolean needsIDN = false;
 		// Here we do easy checks and throw translated exceptions.
-		// We do checks on the whole host name, not on each "label", so
+		// We do checks on the whole hostname, not on each "label", so
 		// we allow '.', and some untranslated errors will be thrown by IDN.toASCII()
 		for (int i = 0; i < host.length(); i++) {
 			char c = host.charAt(i);
@@ -163,9 +185,6 @@ public class AddressBean
 	/** @since 0.8.7 */
 	public String getB32() 
 	{
-		byte[] dest = Base64.decode(destination);
-		if (dest == null)
-			return "";
 		byte[] hash = I2PAppContext.getGlobalContext().sha().calculateHash(dest).getData();
 		return Base32.encode(hash) + ".b32.i2p";
 	}
@@ -173,9 +192,6 @@ public class AddressBean
 	/** @since 0.9 */
 	public String getB64() 
 	{
-		byte[] dest = Base64.decode(destination);
-		if (dest == null)
-			return "";
 		return I2PAppContext.getGlobalContext().sha().calculateHash(dest).toBase64();
 	}
 
@@ -204,12 +220,12 @@ public class AddressBean
 
 	/** @since 0.9.26 */
 	public boolean isValidated() {
-		return Boolean.valueOf(getProp("v"));
+		return Boolean.parseBoolean(getProp("v"));
 	}
 
 	/** @since 0.8.7 */
 	public String getNotes() {
-		return getProp("notes");
+		return DataHelper.escapeHTML(getProp("notes"));
 	}
 
 	/**
@@ -217,16 +233,10 @@ public class AddressBean
 	 * @since 0.8.7
 	 */
 	public String getCert() {
-		// (4 / 3) * (pubkey length + signing key length)
-		String cert = destination.substring(512);
-                if (cert.equals("AAAA"))
-			return _t("None");
-		byte[] enc = Base64.decode(cert);
-		if (enc == null)
-			// shouldn't happen
-			return "invalid";
-		int type = enc[0] & 0xff;
+		int type = dest[384] & 0xff;
 		switch (type) {
+			case Certificate.CERTIFICATE_TYPE_NULL:
+				return _t("None");
 			case Certificate.CERTIFICATE_TYPE_HASHCASH:
 				return _t("Hashcash");
 			case Certificate.CERTIFICATE_TYPE_HIDDEN:
@@ -245,18 +255,10 @@ public class AddressBean
 	 * @since 0.9.12
 	 */
 	public String getSigType() {
-		// (4 / 3) * (pubkey length + signing key length)
-		String cert = destination.substring(512);
-		if (cert.equals("AAAA"))
-			return _t("DSA 1024 bit");
-		byte[] enc = Base64.decode(cert);
-		if (enc == null)
-			// shouldn't happen
-			return "invalid";
-		int type = enc[0] & 0xff;
+		int type = dest[384] & 0xff;
 		if (type != Certificate.CERTIFICATE_TYPE_KEY)
 			return _t("DSA 1024 bit");
-		int st = ((enc[3] & 0xff) << 8) | (enc[4] & 0xff);
+		int st = ((dest[387] & 0xff) << 8) | (dest[388] & 0xff);
 		if (st == 0)
 			return _t("DSA 1024 bit");
 		SigType stype = SigType.getByCode(st);
@@ -265,10 +267,30 @@ public class AddressBean
                 return stype.toString();
 	}
 
-	/** @since 0.8.7 */
-	private String getProp(String p) {
+	/**
+	 * Do this the easy way
+	 * @since 0.9.66
+	 */
+	public String getEncType() {
+		int type = dest[384] & 0xff;
+		if (type != Certificate.CERTIFICATE_TYPE_KEY)
+			return _t("ElGamal 2048 bit");
+		int st = ((dest[389] & 0xff) << 8) | (dest[390] & 0xff);
+		if (st == 0)
+			return _t("ElGamal 2048 bit");
+		EncType etype = EncType.getByCode(st);
+		if (etype == null)
+			return _t("Type {0}", st);
+		return etype.toString();
+	}
+
+	/**
+	 * @return non-null, "" if not found
+	 * @since 0.8.7, package private since 0.9.66
+	 */
+	String getProp(String p) {
 		if (props == null)
-                    return "";
+			return "";
 		String rv = props.getProperty(p);
 		return rv != null ? rv : "";
 	}
@@ -278,7 +300,7 @@ public class AddressBean
 		String d = getProp(key);
 		if (d.length() > 0) {
 			try {
-				d = FormatDate.format(Long.parseLong(d));
+				d = DataHelper.formatTime(Long.parseLong(d));
 			} catch (NumberFormatException nfe) {}
 		}
 		return d;

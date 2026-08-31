@@ -79,13 +79,20 @@ class SearchUpdateReplyFoundJob extends JobImpl implements ReplyJob {
             _outTunnel.incrementVerifiedBytesTransferred(msgSize);
         }
         
-        if (message instanceof DatabaseStoreMessage) {
+        int type = message.getType();
+        if (type == DatabaseStoreMessage.MESSAGE_TYPE) {
             long timeToReply = _state.dataFound(_peer);
             DatabaseStoreMessage msg = (DatabaseStoreMessage)message;
             DatabaseEntry entry = msg.getEntry();
+            getContext().profileManager().dbLookupSuccessful(_peer, timeToReply);
             try {
-                _facade.store(msg.getKey(), entry);
-                getContext().profileManager().dbLookupSuccessful(_peer, timeToReply);
+                if (entry.isLeaseSet()) {
+                    LeaseSet ls = (LeaseSet) entry;
+                    _facade.store(ls.getHash(), ls);
+                } else {
+                    RouterInfo ri = (RouterInfo) entry;
+                    _facade.store(ri.getHash(), ri);
+                }
             } catch (UnsupportedCryptoException iae) {
                 // don't blame the peer
                 getContext().profileManager().dbLookupSuccessful(_peer, timeToReply);
@@ -97,7 +104,7 @@ class SearchUpdateReplyFoundJob extends JobImpl implements ReplyJob {
                 // blame the peer
                 getContext().profileManager().dbLookupReply(_peer, 0, 0, 1, 0, timeToReply);
             }
-        } else if (message instanceof DatabaseSearchReplyMessage) {
+        } else if (type == DatabaseSearchReplyMessage.MESSAGE_TYPE) {
             _job.replyFound((DatabaseSearchReplyMessage)message, _peer);
         } else {
             if (_log.shouldLog(Log.ERROR))

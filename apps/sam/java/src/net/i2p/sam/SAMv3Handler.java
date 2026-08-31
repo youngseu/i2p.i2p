@@ -29,6 +29,7 @@ import net.i2p.I2PException;
 import net.i2p.client.I2PClient;
 import net.i2p.client.I2PSession;
 import net.i2p.client.I2PSessionException;
+import net.i2p.client.streaming.RouterRestartException;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Base64;
 import net.i2p.data.DataFormatException;
@@ -53,6 +54,7 @@ class SAMv3Handler extends SAMv1Handler
 	private volatile boolean stolenSocket;
 	private volatile boolean streamForwardingSocket;
 	private final boolean sendPorts;
+	private final Object socketRLock = new Object();
 	private long _lastPing;
 	private static final int FIRST_READ_TIMEOUT = 60*1000;
 	private static final int READ_TIMEOUT = 3*60*1000;
@@ -136,7 +138,7 @@ class SAMv3Handler extends SAMv1Handler
 	}
 
 	/**
-	 *  For subsessions created by MasterSession
+	 *  For subsessions created by PrimarySession
 	 *  @since 0.9.25
 	 */
 	void setSession(SAMv3RawSession sess) {
@@ -144,7 +146,7 @@ class SAMv3Handler extends SAMv1Handler
 	}
 
 	/**
-	 *  For subsessions created by MasterSession
+	 *  For subsessions created by PrimarySession
 	 *  @since 0.9.25
 	 */
 	void setSession(SAMv3DatagramSession sess) {
@@ -152,7 +154,7 @@ class SAMv3Handler extends SAMv1Handler
 	}	
 
 	/**
-	 *  For subsessions created by MasterSession
+	 *  For subsessions created by PrimarySession
 	 *  @since 0.9.25
 	 */
 	void setSession(SAMv3StreamSession sess) {
@@ -234,8 +236,10 @@ class SAMv3Handler extends SAMv1Handler
 					buf.setLength(0);					
 					// first time, set a timeout
 					try {
-						ReadLine.readLine(socket, buf, gotFirstLine ? 0 : FIRST_READ_TIMEOUT);
-						socket.setSoTimeout(0);
+						synchronized(socketRLock) {
+							ReadLine.readLine(socket, buf, gotFirstLine ? 0 : FIRST_READ_TIMEOUT);
+							socket.setSoTimeout(0);
+						}
 					} catch (SocketTimeoutException ste) {
 						writeString(SESSION_ERROR, "command timeout, bye");
 						break;
@@ -266,6 +270,9 @@ class SAMv3Handler extends SAMv1Handler
 				} else if (domain.equals("PONG")) {
 					execPongMessage(opcode);
 					continue;
+				} else if (domain.equals("HELP")) {
+					writeString("HELP STATUS RESULT=OK MESSAGE=https://i2p.net/en/docs/api/samv3\n");
+					continue;
 				} else if (domain.equals("QUIT") || domain.equals("STOP") ||
 				           domain.equals("EXIT")) {
 					writeString(domain + " STATUS RESULT=OK MESSAGE=bye\n");
@@ -274,7 +281,7 @@ class SAMv3Handler extends SAMv1Handler
 
 				if (opcode == null) {
 					// This is not a correct message, for sure
-					if (writeString(domain + " STATUS RESULT=I2P_ERROR", "command not specified"))
+					if (writeString(domain + " STATUS RESULT=I2P_ERROR", "unknown command or missing subcommand, enter HELP for help"))
 						continue;
 					else
 						break;
@@ -299,10 +306,7 @@ class SAMv3Handler extends SAMv1Handler
 				} else if (domain.equals("AUTH")) {
 					canContinue = execAuthMessage(opcode, props);
 				} else {
-					if (_log.shouldLog(Log.DEBUG))
-						_log.debug("Unrecognized message domain: \""
-							+ domain + "\"");
-					break;
+					canContinue = writeString(domain + " STATUS RESULT=I2P_ERROR", "unsupported command, enter HELP for help");
 				}
 
 				if (!canContinue) {
@@ -386,7 +390,6 @@ class SAMv3Handler extends SAMv1Handler
 				try {
 					Thread.sleep(1000);
 				} catch ( InterruptedException e) {}
-			rec.getThreadGroup().destroy();
 			sSessionsHash.del(session.getNick());
 		}
 	}
@@ -406,7 +409,8 @@ class SAMv3Handler extends SAMv1Handler
 		if (style == null && !opcode.equals("REMOVE"))
 			return writeString(SESSION_ERROR, "No SESSION STYLE specified");
 
-		try{
+		SocketCloseDetector detector = null;
+		try {
 			if (opcode.equals("CREATE")) {
 				if ((this.getRawSession()!= null) || (this.getDatagramSession() != null)
 						|| (this.getStreamSession() != null)) {
@@ -463,7 +467,7 @@ class SAMv3Handler extends SAMv1Handler
 				allProps.putAll(i2cpProps);
 				allProps.putAll(props);
 
-				if (style.equals("MASTER")) {
+				if (style.equals("PRIMARY") || style.equals("MASTER")) {
 					// We must put these here, as SessionRecord.getProps() makes a copy,
 					// and the socket manager is instantiated in the
 					// SAMStreamSession constructor.
@@ -483,27 +487,45 @@ class SAMv3Handler extends SAMv1Handler
 
 				
 				// Create the session
+				// We block in the session constructors while tunnels are built.
+				// If the client times out and closes the socket, we won't know it
+				// without a separate socket monitor.
+				detector = new SocketCloseDetector();
 
 				if (style.equals("RAW")) {
+					detector.start();
 					SAMv3DatagramServer dgs = bridge.getV3DatagramServer(props);
 					SAMv3RawSession v3 = new SAMv3RawSession(nick, dgs);
                                         rawSession = v3;
 					this.session = v3;
 					v3.start();
-				} else if (style.equals("DATAGRAM")) {
+				} else if (style.equals("DATAGRAM") ||
+					   style.equals("DATAGRAM2") ||
+					   style.equals("DATAGRAM3")) {
+					detector.start();
 					SAMv3DatagramServer dgs = bridge.getV3DatagramServer(props);
-					SAMv3DatagramSession v3 = new SAMv3DatagramSession(nick, dgs);
+					int v;
+					if (style.equals("DATAGRAM")) {
+						v = 1;
+					} else if (style.equals("DATAGRAM2")) {
+						v = 2;
+					} else {
+						v = 3;
+					}
+					SAMv3DatagramSession v3 = new SAMv3DatagramSession(nick, dgs, v);
 					datagramSession = v3;
 					this.session = v3;
 					v3.start();
 				} else if (style.equals("STREAM")) {
+					detector.start();
 					SAMv3StreamSession v3 = newSAMStreamSession(nick);
 					streamSession = v3;
 					this.session = v3;
 					v3.start();
-				} else if (style.equals("MASTER")) {
+				} else if (style.equals("PRIMARY") || style.equals("MASTER")) {
+					detector.start();
 					SAMv3DatagramServer dgs = bridge.getV3DatagramServer(props);
-					MasterSession v3 = new MasterSession(nick, dgs, this, allProps);
+					PrimarySession v3 = new PrimarySession(nick, dgs, this, allProps);
 					streamSession = v3;
 					datagramSession = v3;
                                         rawSession = v3;
@@ -511,18 +533,27 @@ class SAMv3Handler extends SAMv1Handler
 					v3.start();
 				} else {
 					if (_log.shouldLog(Log.DEBUG))
-						_log.debug("Unrecognized SESSION STYLE: \"" + style +"\"");
+						_log.debug("Unsupported SESSION STYLE: \"" + style +"\"");
 					return writeString(SESSION_ERROR, "Unrecognized SESSION STYLE");
 				}
-				ok = true ;
-				return writeString("SESSION STATUS RESULT=OK DESTINATION="
-						+ dest + "\n");
+				// kill the detector
+				detector.done = true;
+				synchronized(socketRLock) {
+					detector.interrupt();
+				}
+				String ignoredCommand = detector.ignoredCommand;
+				detector = null;
+				ok = true;
+				boolean rv = writeString("SESSION STATUS RESULT=OK DESTINATION=" + dest + '\n');
+				if (rv && ignoredCommand != null)
+					rv = writeString(ignoredCommand + " STATUS RESULT=I2P_ERROR", "invalid state");
+				return rv;
 			} else if (opcode.equals("ADD") || opcode.equals("REMOVE")) {
                                 // prevent trouble in finally block
 				ok = true;
 				if (streamSession == null || datagramSession == null || rawSession == null)
-					return writeString(SESSION_ERROR, "Not a MASTER session");
-				MasterSession msess = (MasterSession) session;
+					return writeString(SESSION_ERROR, "Not a PRIMARY session");
+				PrimarySession msess = (PrimarySession) session;
 				String msg;
 				if (opcode.equals("ADD")) {
 					msg = msess.add(nick, style, props);
@@ -552,10 +583,102 @@ class SAMv3Handler extends SAMv1Handler
 			_log.error("Failed to start SAM session", e);
 			return writeString(SESSION_ERROR, e.getMessage());
 		} finally {
+			if (detector != null) {
+				// kill the detector
+				detector.done = true;
+				synchronized(socketRLock) {
+					detector.interrupt();
+				}
+				String ignoredCommand = detector.ignoredCommand;
+				if (ignoredCommand != null)
+					writeString(ignoredCommand + " STATUS RESULT=I2P_ERROR", "invalid state");
+			}
 			// unregister the session if it has not been created
 			if ( !ok && nick!=null ) {
 				sSessionsHash.del(nick) ;
 				session = null ;
+			}
+		}
+	}
+
+	/**
+	 *  Check for socket close while tunnels are being built,
+	 *  by doing what is hopefully a dummy read for the next command.
+	 *  Interrupt the handler if it happens.
+	 *  After tunnel build success or failure, the handler will interrupt us.
+	 *
+	 *  If the command is QUIT or equivalent, do that.
+	 *  If it's anything else, set ignoredCommand, and execSessionMessage() will deal with it.
+	 *
+	 *  @since 0.9.58
+	 */
+	private class SocketCloseDetector extends I2PAppThread {
+		private final Thread _handler = Thread.currentThread();
+		public volatile String ignoredCommand;
+		public volatile boolean done;
+
+		public SocketCloseDetector() {
+			super("SAM control socket close detector");
+		}
+
+		@Override
+		public void run() {
+			StringBuilder buf = new StringBuilder();
+			try {
+				Socket s = socket.socket();
+				InputStream in = s.getInputStream();
+				do {
+					try {
+						//_log.debug("sleeping...");
+						Thread.sleep(1000);
+					} catch (InterruptedException ie) {
+						break;
+					}
+					// Only read under lock
+					// And execSessionMessage() must lock before interrupting us
+					// Because interrupting a SocketChannel read will close the socket
+					synchronized(socketRLock) {
+						s.setSoTimeout(20);
+						try {
+							// we could use ReadLine here, but let's keep it simple
+							while (true) {
+								int c = in.read();
+								if (c < 0)
+									throw new IOException("Socket closed");
+								if (c == '\n') {
+									String line = buf.toString();
+									buf.setLength(0);					
+									try {
+										Properties props = SAMUtils.parseParams(line);
+										String domain = props.getProperty(SAMUtils.COMMAND);
+										if (domain == null)
+											continue;  // empty line
+										if (domain.equals("QUIT") || domain.equals("STOP") || domain.equals("EXIT")) {
+											_log.error("SAM socket closed while waiting for tunnels to build");
+											writeString(SESSION_ERROR, "Tunnel build interrupted");
+											writeString(domain + " STATUS RESULT=OK", "bye");
+											try { closeClientSocket(); } catch (IOException ioe) {}
+											_handler.interrupt();
+											return;
+										}
+										ignoredCommand = domain;
+									} catch (SAMException e) {
+										ignoredCommand = "SESSION";
+									}
+									if (_log.shouldWarn())
+										_log.warn("Ignoring SAM command during tunnel build: " + line);
+								}
+								buf.append((char) c);
+							}
+						} catch (SocketTimeoutException ste) {}
+						s.setSoTimeout(0);
+					}
+				} while (!done);
+				if (_log.shouldWarn())
+					_log.warn("Detector exit after tunnel build");
+			} catch (IOException ioe) {
+				_log.error("SAM socket closed while waiting for tunnels to build", ioe);
+				_handler.interrupt();
 			}
 		}
 	}
@@ -605,7 +728,8 @@ class SAMv3Handler extends SAMv1Handler
 			return false ;
 		}
 		
-		streamSession = rec.getHandler().streamSession ;
+		SAMv3Handler ctl = rec.getHandler();
+		streamSession = ctl.streamSession;
 		if (streamSession==null) {
 			if (_log.shouldLog(Log.DEBUG))
 				_log.debug("specified ID is not a stream session");
@@ -614,6 +738,16 @@ class SAMv3Handler extends SAMv1Handler
 			} catch (IOException e) {}
 			return false ;
 		}
+		if (streamSession.isDestroyed()) {
+			if (_log.shouldDebug())
+				_log.debug("Session manager is destroyed");
+			try {
+				notifyStreamResult(true, "I2P_ERROR",  "Session is closed");
+			} catch (IOException e) {}
+			ctl.writeString(SESSION_ERROR, "Session is closed");
+			ctl.stopHandling();
+			return false;
+		}
 
 		if ( opcode.equals ( "CONNECT" ) )
 		{
@@ -621,7 +755,17 @@ class SAMv3Handler extends SAMv1Handler
 		} 
 		else if ( opcode.equals ( "ACCEPT" ) )
 		{
-			return execStreamAccept ( props );
+			try {
+				return execStreamAccept(props);
+			} catch (I2PSessionException ise) {
+				ctl.writeString(SESSION_ERROR, ise.getMessage());
+				ctl.stopHandling();
+				return false;
+			} catch (RouterRestartException rre) {
+				ctl.writeString(SESSION_ERROR, "Router restart");
+				ctl.stopHandling();
+				return false;
+			}
 		}
 		else if ( opcode.equals ( "FORWARD") )
 		{
@@ -709,13 +853,18 @@ class SAMv3Handler extends SAMv1Handler
 		return false ;		
 	}
 
-	private boolean execStreamAccept( Properties props )
+	/**
+	 * @return success
+	 * @throws I2PSessionException if socket manager is destroyed while waiting
+	 */
+	private boolean execStreamAccept(Properties props) throws I2PSessionException, RouterRestartException
 	{
 		// Messages are NOT sent if SILENT=true,
 		// The specs said that they were.
 	    	boolean verbose = !Boolean.parseBoolean(props.getProperty("SILENT"));
 		try {
 			try {
+				// execStreamSession() above checks if session is destroyed first
 				notifyStreamResult(verbose, "OK", null);
 				((SAMv3StreamSession)streamSession).accept(this, verbose);
 				return true ;
@@ -723,6 +872,21 @@ class SAMv3Handler extends SAMv1Handler
 				if (_log.shouldLog(Log.DEBUG))
 					_log.debug("STREAM ACCEPT failed", e);
 				notifyStreamResult( verbose, "TIMEOUT", e.getMessage() );
+			} catch (I2PSessionException e) {
+				// As of 0.9.61, this is thrown for a destroyed session.
+				// Kill the SAM session.
+				if (_log.shouldDebug())
+					_log.debug("STREAM ACCEPT failed", e);
+				notifyStreamResult (verbose, "I2P_ERROR", e.getMessage());
+				// throw so caller can close control socket
+				throw e;
+			} catch (RouterRestartException e) {
+				// Kill the SAM session.
+				if (_log.shouldDebug())
+					_log.debug("STREAM ACCEPT failed", e);
+				notifyStreamResult (verbose, "I2P_ERROR", "Router restart");
+				// throw so caller can close control socket
+				throw e;
 			} catch (I2PException e) {
 				if (_log.shouldLog(Log.DEBUG))
 					_log.debug("STREAM ACCEPT failed", e);

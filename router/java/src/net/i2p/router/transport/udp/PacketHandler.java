@@ -10,6 +10,7 @@ import net.i2p.router.RouterContext;
 import net.i2p.router.util.CoDelBlockingQueue;
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
+import net.i2p.data.SessionKey;
 import net.i2p.util.I2PThread;
 import net.i2p.util.LHMCache;
 import net.i2p.util.Log;
@@ -31,36 +32,28 @@ class PacketHandler {
     private final Log _log;
     private final UDPTransport _transport;
     private final EstablishmentManager _establisher;
-    private final InboundMessageFragments _inbound;
     private final PeerTestManager _testManager;
-    private final IntroductionManager _introManager;
     private volatile boolean _keepReading;
     private final Handler[] _handlers;
-    private final Map<RemoteHostId, Object> _failCache;
     private final BlockingQueue<UDPPacket> _inboundQueue;
-    private static final Object DUMMY = new Object();
+    private final int _networkID;
     
     private static final int TYPE_POISON = -99999;
     private static final int MIN_QUEUE_SIZE = 16;
     private static final int MAX_QUEUE_SIZE = 192;
     private static final int MIN_NUM_HANDLERS = 1;  // unless < 32MB
     private static final int MAX_NUM_HANDLERS = 1;
-    /** let packets be up to 30s slow */
-    private static final long GRACE_PERIOD = Router.CLOCK_FUDGE_FACTOR + 30*1000;
-    private static final long MAX_SKEW = 90*24*60*60*1000L;
+    private static final int MIN_VERSION = 2;
+    private static final int MAX_VERSION = 4;
     
-    private enum AuthType { NONE, INTRO, BOBINTRO, SESSION }
-
     PacketHandler(RouterContext ctx, UDPTransport transport, EstablishmentManager establisher,
                   InboundMessageFragments inbound, PeerTestManager testManager, IntroductionManager introManager) {
         _context = ctx;
         _log = ctx.logManager().getLog(PacketHandler.class);
         _transport = transport;
         _establisher = establisher;
-        _inbound = inbound;
         _testManager = testManager;
-        _introManager = introManager;
-        _failCache = new LHMCache<RemoteHostId, Object>(24);
+        _networkID = ctx.router().getNetworkID();
 
         long maxMemory = SystemVersion.getMaxMemory();
         int qsize = (int) Math.max(MIN_QUEUE_SIZE, Math.min(MAX_QUEUE_SIZE, maxMemory / (2*1024*1024)));
@@ -77,34 +70,7 @@ class PacketHandler {
             _handlers[i] = new Handler();
         }
 
-        _context.statManager().createRateStat("udp.handleTime", "How long it takes to handle a received packet after its been pulled off the queue", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.queueTime", "How long after a packet is received can we begin handling it", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.receivePacketSkew", "How long ago after the packet was sent did we receive it", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidUnkown", "How old the packet we dropped due to invalidity (unkown type) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidReestablish", "How old the packet we dropped due to invalidity (doesn't use existing key, not an establishment) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidEstablish", "How old the packet we dropped due to invalidity (establishment, bad key) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidEstablish.inbound", "How old the packet we dropped due to invalidity (even though we have an active inbound establishment with the peer) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidEstablish.outbound", "How old the packet we dropped due to invalidity (even though we have an active outbound establishment with the peer) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidEstablish.new", "How old the packet we dropped due to invalidity (even though we do not have any active establishment with the peer) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidInboundEstablish", "How old the packet we dropped due to invalidity (inbound establishment, bad key) was", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.droppedInvalidSkew", "How skewed the packet we dropped due to invalidity (valid except bad skew) was", "udp", UDPTransport.RATES);
         _context.statManager().createRateStat("udp.destroyedInvalidSkew", "Destroyed session due to bad skew", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.packetDequeueTime", "How long it takes the UDPReader to pull a packet off the inbound packet queue (when its slow)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.packetVerifyTime", "How long it takes the PacketHandler to verify a data packet after dequeueing (period is dequeue time)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.packetVerifyTimeSlow", "How long it takes the PacketHandler to verify a data packet after dequeueing when its slow (period is dequeue time)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.packetValidateMultipleCount", "How many times we validate a packet, if done more than once (period = afterValidate-enqueue)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.packetNoValidationLifetime", "How long packets that are never validated are around for", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.sessionRequest", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.sessionConfirmed", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.sessionCreated", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.receivePacketSize.dataKnown", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.receivePacketSize.dataKnownAck", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.receivePacketSize.dataUnknown", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        _context.statManager().createRateStat("udp.receivePacketSize.dataUnknownAck", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.test", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.relayRequest", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.relayIntro", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
-        //_context.statManager().createRateStat("udp.receivePacketSize.relayResponse", "Packet size of the given inbound packet type (period is the packet's lifetime)", "udp", UDPTransport.RATES);
     }
     
     public synchronized void startup() { 
@@ -125,7 +91,7 @@ class PacketHandler {
         rv.append("Handlers: ").append(_handlers.length);
         for (int i = 0; i < _handlers.length; i++) {
             Handler handler = _handlers[i];
-            rv.append(" handler ").append(i).append(" state: ").append(handler._state);
+            rv.append(" handler ").append(i);
         }
         return rv.toString();
     }
@@ -181,672 +147,371 @@ class PacketHandler {
         return rv;
     }
 
-    /** the packet is from a peer we are establishing an outbound con to, but failed validation, so fallback */
-    private static final short OUTBOUND_FALLBACK = 1;
-    /** the packet is from a peer we are establishing an inbound con to, but failed validation, so fallback */
-    private static final short INBOUND_FALLBACK = 2;
-    /** the packet is not from anyone we know */
-    private static final short NEW_PEER = 3;
-    
     private class Handler implements Runnable { 
-        private final UDPPacketReader _reader;
-        // TODO comment out all uses of _state
-        public /* volatile */ int _state;
 
-        public Handler() {
-            _reader = new UDPPacketReader(_context);
-        }
-        
         public void run() {
-            _state = 1;
             while (_keepReading) {
-                _state = 2;
                 UDPPacket packet = receiveNext();
-                _state = 3;
                 if (packet == null) break; // keepReading is probably false, or bind failed...
 
                 packet.received();
-                if (_log.shouldLog(Log.DEBUG))
-                    _log.debug("Received: " + packet);
-                _state = 4;
-                long queueTime = packet.getLifetime();
-                long handleStart = _context.clock().now();
-                try {
-                    _state = 5;
-                    handlePacket(_reader, packet);
-                    _state = 6;
-                } catch (RuntimeException e) {
-                    _state = 7;
-                    if (_log.shouldLog(Log.ERROR))
-                        _log.error("Crazy error handling a packet: " + packet, e);
-                }
-                long handleTime = _context.clock().now() - handleStart;
-                //packet.afterHandling();
-                _context.statManager().addRateData("udp.handleTime", handleTime, packet.getLifetime());
-                _context.statManager().addRateData("udp.queueTime", queueTime, packet.getLifetime());
-                _state = 8;
-
                 //if (_log.shouldLog(Log.DEBUG))
-                //    _log.debug("Done receiving: " + packet);
-                
-           /********
-                if (handleTime > 1000) {
-                    if (_log.shouldLog(Log.WARN))
-                        _log.warn("Took " + handleTime + " to process the packet " 
-                                  + packet + ": " + _reader);
+                //    _log.debug("Received: " + packet);
+                try {
+                    handlePacket(packet);
+                } catch (RuntimeException e) {
+                    if (_log.shouldLog(Log.ERROR))
+                        _log.error("Internal error handling " + packet, e);
                 }
-                
-                long enqueueTime = packet.getEnqueueTime();
-                long recvTime = packet.getReceivedTime();
-                long beforeValidateTime = packet.getBeforeValidate();
-                long afterValidateTime = packet.getAfterValidate();
-                int validateCount = packet.getValidateCount();
-                
-                long timeToDequeue = recvTime - enqueueTime;
-                long timeToValidate = 0;
-                long authTime = 0;
-                if (afterValidateTime > 0) {
-                    timeToValidate = afterValidateTime - enqueueTime;
-                    authTime = afterValidateTime - beforeValidateTime;
-                }
-                if (timeToDequeue > 50)
-                    _context.statManager().addRateData("udp.packetDequeueTime", timeToDequeue, timeToDequeue);
-                if (authTime > 50)
-                    _context.statManager().addRateData("udp.packetAuthRecvTime", authTime, beforeValidateTime-recvTime);
-                if (afterValidateTime > 0) {
-                    _context.statManager().addRateData("udp.packetVerifyTime", timeToValidate, authTime);
-                    if (timeToValidate > 50)
-                        _context.statManager().addRateData("udp.packetVerifyTimeSlow", timeToValidate, authTime);
-                }
-                if (validateCount > 1)
-                    _context.statManager().addRateData("udp.packetValidateMultipleCount", validateCount, timeToValidate);
-                else if (validateCount <= 0)
-                    _context.statManager().addRateData("udp.packetNoValidationLifetime", packet.getLifetime(), 0);
-            ********/
                 
                 // back to the cache with thee!
                 packet.release();
-                _state = 9;
             }
         }
-    //}
 
         /**
-         * Initial handling, called for every packet
-         * Find the state and call the correct receivePacket() variant
+         * Initial handling, called for every packet.
+         * Find the state and call the correct receivePacket() variant.
+         *
+         * Classify the packet by source IP/port, into 4 groups:
+         *<ol>
+         *<li>Established session
+         *<li>Pending inbound establishment
+         *<li>Pending outbound establishment
+         *<li>No established or pending session found
+         *</ol>
          */
-        private void handlePacket(UDPPacketReader reader, UDPPacket packet) {
-
-            _state = 10;
-            
+        private void handlePacket(UDPPacket packet) {
             RemoteHostId rem = packet.getRemoteHost();
             PeerState state = _transport.getPeerState(rem);
             if (state == null) {
                 //if (_log.shouldLog(Log.DEBUG))
                 //    _log.debug("Packet received is not for a connected peer");
-                _state = 11;
                 InboundEstablishState est = _establisher.getInboundState(rem);
                 if (est != null) {
+                    // Group 2: Inbound Establishment
                     if (_log.shouldLog(Log.DEBUG))
                         _log.debug("Packet received IS for an inbound establishment");
-                    _state = 12;
-                    receivePacket(reader, packet, est);
+                    receiveSSU2Packet(rem, packet, (InboundEstablishState2) est);
                 } else {
                     //if (_log.shouldLog(Log.DEBUG))
                     //    _log.debug("Packet received is not for an inbound establishment");
-                    _state = 13;
                     OutboundEstablishState oest = _establisher.getOutboundState(rem);
                     if (oest != null) {
+                        // Group 3: Outbound Establishment
                         if (_log.shouldLog(Log.DEBUG))
                             _log.debug("Packet received IS for an outbound establishment");
-                        _state = 14;
-                        receivePacket(reader, packet, oest);
+                        receiveSSU2Packet(packet, (OutboundEstablishState2) oest);
                     } else {
+                        // Group 4: New conn or needs fallback
                         if (_log.shouldLog(Log.DEBUG))
                             _log.debug("Packet received is not for an inbound or outbound establishment");
                         // ok, not already known establishment, try as a new one
                         // Last chance for success, using our intro key
-                        _state = 15;
-                        receivePacket(reader, packet, NEW_PEER);
+                        receiveSSU2Packet(rem, packet, (InboundEstablishState2) null);
                     }
                 }
             } else {
-                if (_log.shouldLog(Log.DEBUG))
-                    _log.debug("Packet received IS for an existing peer");
-                _state = 16;
-                receivePacket(reader, packet, state);
-            }
-        }
-
-        /**
-         * Established conn
-         * Decrypt and validate the packet then call handlePacket()
-         */
-        private void receivePacket(UDPPacketReader reader, UDPPacket packet, PeerState state) {
-            _state = 17;
-            AuthType auth = AuthType.NONE;
-            boolean isValid = packet.validate(state.getCurrentMACKey());
-            if (!isValid) {
-                _state = 18;
-                if (state.getNextMACKey() != null)
-                    isValid = packet.validate(state.getNextMACKey());
-                if (!isValid) {
-                    _state = 19;
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("Failed validation with existing con, trying as new con: " + packet);
-
-                    isValid = packet.validate(_transport.getIntroKey());
-                    if (isValid) {
-                        _state = 20;
-                        // this is a stray packet from an inbound establishment
-                        // process, so try our intro key
-                        // (after an outbound establishment process, there wouldn't
-                        //  be any stray packets)
-                        // These are generally PeerTest packets
-                        if (_log.shouldLog(Log.DEBUG))
-                            _log.debug("Validation with existing con failed, but validation as reestablish/stray passed");
-                        packet.decrypt(_transport.getIntroKey());
-                        auth = AuthType.INTRO;
-                    } else {
-                        _state = 21;
-                        InboundEstablishState est = _establisher.getInboundState(packet.getRemoteHost());
-                        if (est != null) {
-                            if (_log.shouldLog(Log.DEBUG))
-                                _log.debug("Packet from an existing peer IS for an inbound establishment");
-                            _state = 22;
-                            receivePacket(reader, packet, est, false);
-                        } else {
-                            if (_log.shouldLog(Log.WARN))
-                                _log.warn("Validation with existing con failed, and validation as reestablish failed too.  DROP " + packet);
-                            _context.statManager().addRateData("udp.droppedInvalidReestablish", packet.getLifetime());
-                        }
-                        return;
-                    }
-                } else {
-                    _state = 23;
-                    packet.decrypt(state.getNextCipherKey());
-                    auth = AuthType.SESSION;
-                }
-            } else {
-                _state = 24;
-                packet.decrypt(state.getCurrentCipherKey());
-                auth = AuthType.SESSION;
-            }
-
-            _state = 25;
-            handlePacket(reader, packet, state, null, null, auth);
-            _state = 26;
-        }
-
-        /**
-         * New conn or failed validation - we have no Session Key.
-         * Here we attempt to validate the packet with our intro key,
-         * then decrypt the packet with our intro key,
-         * then call handlePacket().
-         *
-         * @param peerType OUTBOUND_FALLBACK, INBOUND_FALLBACK, or NEW_PEER
-         */
-        private void receivePacket(UDPPacketReader reader, UDPPacket packet, short peerType) {
-            _state = 27;
-            boolean isValid = packet.validate(_transport.getIntroKey());
-            if (!isValid) {
-                // Note that the vast majority of these are NOT corrupted packets, but
-                // packets for which we don't have the PeerState (i.e. SessionKey)
-                // Case 1: 48 byte destroy packet, we already closed
-                // Case 2: 369 byte session created packet, re-tx of one that failed validation
-                //         (peer probably doesn't know his correct external port, esp. on <= 0.9.1
-
-                // Case 3:
-                // For peers that change ports, look for an existing session with the same IP
-                // If we find it, and the packet validates with its mac key, tell the transport
-                // to change the port, and handle the packet.
-                // All this since 0.9.3.
-                RemoteHostId remoteHost = packet.getRemoteHost();
-                boolean alreadyFailed;
-                synchronized(_failCache) {
-                    alreadyFailed = _failCache.get(remoteHost) != null;
-                }                
-                if (!alreadyFailed) {
-                    // this is slow, that's why we cache it above.
-                    List<PeerState> peers = _transport.getPeerStatesByIP(remoteHost);
-                    if (!peers.isEmpty()) {
-                        StringBuilder buf = new StringBuilder(256);
-                        buf.append("Established peers with this IP: ");
-                        boolean foundSamePort = false;
-                        PeerState state = null;
-                        int newPort = remoteHost.getPort();
-                        for (PeerState ps : peers) {
-                            boolean valid = false;
-                            long now = _context.clock().now();
-                            if (_log.shouldLog(Log.WARN))
-                                buf.append(ps.getRemoteHostId().toString())
-                                   .append(" last sent: ").append(now - ps.getLastSendTime())
-                                   .append(" last rcvd: ").append(now - ps.getLastReceiveTime());
-                            if (ps.getRemotePort() == newPort) {
-                                foundSamePort = true;
-                            } else if (packet.validate(ps.getCurrentMACKey())) {
-                                packet.decrypt(ps.getCurrentCipherKey());
-                                reader.initialize(packet);
-                                if (_log.shouldLog(Log.WARN))
-                                    buf.append(" VALID type ").append(reader.readPayloadType()).append("; ");
-                                valid = true;
-                                if (state == null)
-                                    state = ps;
-                            } else {
-                                if (_log.shouldLog(Log.WARN))
-                                    buf.append(" INVALID; ");
-                            }
-                        }
-                        if (state != null && !foundSamePort) {
-                            _transport.changePeerPort(state, newPort);
-                            if (_log.shouldLog(Log.WARN)) {
-                                buf.append(" CHANGED PORT TO ").append(newPort).append(" AND HANDLED");
-                                _log.warn(buf.toString());
-                            }
-                            handlePacket(reader, packet, state, null, null, AuthType.SESSION);
-                            return;
-                        }
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn(buf.toString());
-                    }
-                    synchronized(_failCache) {
-                        _failCache.put(remoteHost, DUMMY);
-                    }                
-                }
-                if (_log.shouldLog(Log.WARN))
-                    _log.warn("Cannot validate rcvd pkt (path) wasCached? " + alreadyFailed + ": " + packet);
-
-                _context.statManager().addRateData("udp.droppedInvalidEstablish", packet.getLifetime());
-                switch (peerType) {
-                    case INBOUND_FALLBACK:
-                        _context.statManager().addRateData("udp.droppedInvalidEstablish.inbound", packet.getLifetime(), packet.getTimeSinceReceived());
-                        break;
-                    case OUTBOUND_FALLBACK:
-                        _context.statManager().addRateData("udp.droppedInvalidEstablish.outbound", packet.getLifetime(), packet.getTimeSinceReceived());
-                        break;
-                    case NEW_PEER:
-                        _context.statManager().addRateData("udp.droppedInvalidEstablish.new", packet.getLifetime(), packet.getTimeSinceReceived());
-                        break;
-                }
-                _state = 28;
-                return;
-            } else {
-                if (_log.shouldLog(Log.DEBUG))
-                    _log.debug("Valid introduction packet received: " + packet);
-            }
-
-            // Packets that get here are probably one of:
-            //  304 byte Session Request
-            //  96 byte Relay Request
-            //  60 byte Relay Response
-            //  80 byte Peer Test
-            _state = 29;
-            packet.decrypt(_transport.getIntroKey());
-            handlePacket(reader, packet, null, null, null, AuthType.INTRO);
-            _state = 30;
-        }
-
-        /**
-         * @param state non-null
-         */
-        private void receivePacket(UDPPacketReader reader, UDPPacket packet, InboundEstablishState state) {
-            receivePacket(reader, packet, state, true);
-        }
-
-        /**
-         * Inbound establishing conn
-         * Decrypt and validate the packet then call handlePacket()
-         *
-         * @param state non-null
-         * @param allowFallback if it isn't valid for this establishment state, try as a non-establishment packet
-         */
-        private void receivePacket(UDPPacketReader reader, UDPPacket packet, InboundEstablishState state, boolean allowFallback) {
-            _state = 31;
-            if (_log.shouldLog(Log.DEBUG)) {
-                StringBuilder buf = new StringBuilder(128);
-                buf.append("Attempting to receive a packet on a known inbound state: ");
-                buf.append(state);
-                buf.append(" MAC key: ").append(state.getMACKey());
-                buf.append(" intro key: ").append(_transport.getIntroKey());
-                _log.debug(buf.toString());
-            }
-            boolean isValid = false;
-            if (state.getMACKey() != null) {
-                isValid = packet.validate(state.getMACKey());
-                if (isValid) {
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("Valid introduction packet received for inbound con: " + packet);
-
-                    _state = 32;
-                    packet.decrypt(state.getCipherKey());
-                    handlePacket(reader, packet, null, null, null, AuthType.SESSION);
-                    return;
-                } else {
-                    if (_log.shouldLog(Log.WARN))
-                        _log.warn("Invalid introduction packet received for inbound con, falling back: " + packet);
-                    _state = 33;
-                }
-            }
-            if (allowFallback) { 
-                // ok, we couldn't handle it with the established stuff, so fall back
-                // on earlier state packets
-                _state = 34;
-                receivePacket(reader, packet, INBOUND_FALLBACK);
-            } else {
-                _context.statManager().addRateData("udp.droppedInvalidInboundEstablish", packet.getLifetime());
-            }
-        }
-
-        /**
-         * Outbound establishing conn
-         * Decrypt and validate the packet then call handlePacket()
-         *
-         * @param state non-null
-         */
-        private void receivePacket(UDPPacketReader reader, UDPPacket packet, OutboundEstablishState state) {
-            _state = 35;
-            if (_log.shouldLog(Log.DEBUG)) {
-                StringBuilder buf = new StringBuilder(128);
-                buf.append("Attempting to receive a packet on a known outbound state: ");
-                buf.append(state);
-                buf.append(" MAC key: ").append(state.getMACKey());
-                buf.append(" intro key: ").append(state.getIntroKey());
-                _log.debug(buf.toString());
-            }
-
-            boolean isValid = false;
-            if (state.getMACKey() != null) {
-                _state = 36;
-                isValid = packet.validate(state.getMACKey());
-                if (isValid) {
-                    // this should be the Session Confirmed packet
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("Valid introduction packet received for outbound established con: " + packet);
-                    _state = 37;
-                    packet.decrypt(state.getCipherKey());
-                    handlePacket(reader, packet, null, state, null, AuthType.SESSION);
-                    _state = 38;
-                    return;
-                }
-            }
-
-            // keys not yet exchanged, lets try it with the peer's intro key
-            isValid = packet.validate(state.getIntroKey());
-            if (isValid) {
-                if (_log.shouldLog(Log.INFO))
-                    _log.info("Valid packet received for " + state + " with Bob's intro key: " + packet);
-                _state = 39;
-                packet.decrypt(state.getIntroKey());
-                // the only packet we should be getting with Bob's intro key is Session Created
-                handlePacket(reader, packet, null, state, null, AuthType.BOBINTRO);
-                _state = 40;
-                return;
-            } else {
-                if (_log.shouldLog(Log.WARN))
-                    _log.warn("Invalid introduction packet received for outbound established con with old intro key, falling back: " + packet);
-            }
-
-            // ok, we couldn't handle it with the established stuff, so fall back
-            // on earlier state packets
-            _state = 41;
-            receivePacket(reader, packet, OUTBOUND_FALLBACK);
-            _state = 42;
-        }
-
-        /**
-         * The last step. The packet was decrypted with some key. Now get the message type
-         * and send it to one of four places: The EstablishmentManager, IntroductionManager,
-         * PeerTestManager, or InboundMessageFragments.
-         *
-         * @param state non-null if fully established
-         * @param outState non-null if outbound establishing in process
-         * @param inState unused always null, TODO use for 48-byte destroys during inbound establishment
-         * @param auth what type of authentication succeeded
-         */
-        private void handlePacket(UDPPacketReader reader, UDPPacket packet, PeerState state,
-                                  OutboundEstablishState outState, InboundEstablishState inState,
-                                  AuthType auth) {
-            _state = 43;
-            reader.initialize(packet);
-            _state = 44;
-            long recvOn = packet.getBegin();
-            long sendOn = reader.readTimestamp() * 1000;
-            // Positive when we are ahead of them
-            long skew = recvOn - sendOn;
-            int type = reader.readPayloadType();
-            // if it's a bad type, the whole packet is probably corrupt
-            boolean typeOK = type <= UDPPacket.MAX_PAYLOAD_TYPE;
-            boolean skewOK = skew < MAX_SKEW && skew > (0 - MAX_SKEW) && typeOK;
-
-            // update skew whether or not we will be dropping the packet for excessive skew
-            if (state != null) {
-                if (_log.shouldLog(Log.DEBUG))
-                    _log.debug("Received packet from " + state.getRemoteHostId().toString() + " with skew " + skew);
-                if (auth == AuthType.SESSION && typeOK && (skewOK || state.getMessagesReceived() <= 0))
-                    state.adjustClockSkew(skew);
-            }
-            _context.statManager().addRateData("udp.receivePacketSkew", skew);
-
-            if (skewOK && !_context.clock().getUpdatedSuccessfully()) {
-                // adjust the clock one time in desperation
-                // this doesn't seem to work for big skews, we never get anything back,
-                // so we have to wait for NTCP to do it
-                _context.clock().setOffset(0 - skew, true);
-                if (skew != 0) {
-                    _log.logAlways(Log.WARN, "NTP failure, UDP adjusting clock by " + DataHelper.formatDuration(Math.abs(skew)));
-                    skew = 0;
-                }
-            }
-
-            if (skew > GRACE_PERIOD) {
-                _context.statManager().addRateData("udp.droppedInvalidSkew", skew);
-                if (state != null && skew > 4 * GRACE_PERIOD && state.getPacketsReceived() <= 0) {
-                    _transport.sendDestroy(state);
-                    _transport.dropPeer(state, true, "Clock skew");
-                    if (state.getRemotePort() == 65520) {
-                        // distinct port of buggy router
-                        _context.banlist().banlistRouterForever(state.getRemotePeer(),
-                                                                _x("Excessive clock skew: {0}"),
-                                                                DataHelper.formatDuration(skew));
-                    } else {
-                        _context.banlist().banlistRouter(DataHelper.formatDuration(skew),
-                                                         state.getRemotePeer(),
-                                                         _x("Excessive clock skew: {0}"));
-                    }
-                    _context.statManager().addRateData("udp.destroyedInvalidSkew", skew);
-                    if (_log.shouldWarn())
-                        _log.warn("Dropped conn, packet too far in the past: " + new Date(sendOn) + ": " + packet +
-                                  " PeerState: " + state);
-                } else {
-                    if (_log.shouldWarn())
-                        _log.warn("Packet too far in the past: " + new Date(sendOn) + ": " + packet +
-                                  " PeerState: " + state);
-                }
-                return;
-            } else if (skew < 0 - GRACE_PERIOD) {
-                _context.statManager().addRateData("udp.droppedInvalidSkew", 0-skew);
-                if (state != null && skew < 0 - (4 * GRACE_PERIOD) && state.getPacketsReceived() <= 0) {
-                    _transport.sendDestroy(state);
-                    _transport.dropPeer(state, true, "Clock skew");
-                    if (state.getRemotePort() == 65520) {
-                        // distinct port of buggy router
-                        _context.banlist().banlistRouterForever(state.getRemotePeer(),
-                                                                _x("Excessive clock skew: {0}"),
-                                                                DataHelper.formatDuration(0 - skew));
-                    } else {
-                        _context.banlist().banlistRouter(DataHelper.formatDuration(0 - skew),
-                                                         state.getRemotePeer(),
-                                                         _x("Excessive clock skew: {0}"));
-                    }
-                    _context.statManager().addRateData("udp.destroyedInvalidSkew", 0-skew);
-                    if (_log.shouldWarn())
-                        _log.warn("Dropped conn, packet too far in the future: " + new Date(sendOn) + ": " + packet +
-                                  " PeerState: " + state);
-                } else {
-                    if (_log.shouldWarn())
-                        _log.warn("Packet too far in the future: " + new Date(sendOn) + ": " + packet +
-                                  " PeerState: " + state);
-                }
-                return;
-            }
-
-            //InetAddress fromHost = packet.getPacket().getAddress();
-            //int fromPort = packet.getPacket().getPort();
-            //RemoteHostId from = new RemoteHostId(fromHost.getAddress(), fromPort);
-            _state = 45;
-            RemoteHostId from = packet.getRemoteHost();
-            _state = 46;
-            
-            switch (type) {
-                case UDPPacket.PAYLOAD_TYPE_SESSION_REQUEST:
-                    _state = 47;
-                    if (auth == AuthType.BOBINTRO) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    _establisher.receiveSessionRequest(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.sessionRequest", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_SESSION_CONFIRMED:
-                    _state = 48;
-                    if (auth != AuthType.SESSION) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    _establisher.receiveSessionConfirmed(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.sessionConfirmed", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_SESSION_CREATED:
-                    _state = 49;
-                    // this is the only type that allows BOBINTRO
-                    if (auth != AuthType.BOBINTRO && auth != AuthType.SESSION) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    _establisher.receiveSessionCreated(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.sessionCreated", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_DATA:
-                    _state = 50;
-                    if (auth != AuthType.SESSION) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    if (outState != null)
-                        state = _establisher.receiveData(outState);
-                    if (_log.shouldLog(Log.DEBUG))
-                        _log.debug("Received new DATA packet from " + state + ": " + packet);
-                    UDPPacketReader.DataReader dr = reader.getDataReader();
-                    if (state != null) {
-                        if (_log.shouldLog(Log.DEBUG)) {
-                            StringBuilder msg = new StringBuilder(512);
-                            msg.append("Receive ").append(System.identityHashCode(packet));
-                            msg.append(" from ").append(state.getRemotePeer().toBase64()).append(" ").append(state.getRemoteHostId());
-                            try {
-                                int count = dr.readFragmentCount();
-                                for (int i = 0; i < count; i++) {
-                                    msg.append(" msg ").append(dr.readMessageId(i));
-                                    msg.append(":").append(dr.readMessageFragmentNum(i));
-                                    if (dr.readMessageIsLast(i))
-                                        msg.append("*");
-                                }
-                            } catch (DataFormatException dfe) {}
-                            msg.append(": ").append(dr.toString());
-                            _log.debug(msg.toString());
-                        }
-                        //packet.beforeReceiveFragments();
-                        _inbound.receiveData(state, dr);
-                        _context.statManager().addRateData("udp.receivePacketSize.dataKnown", packet.getPacket().getLength(), packet.getLifetime());
-                    } else {
-                        // doesn't happen
-                        _context.statManager().addRateData("udp.receivePacketSize.dataUnknown", packet.getPacket().getLength(), packet.getLifetime());
-                    }
-                    try {
-                        if (dr.readFragmentCount() <= 0)
-                            _context.statManager().addRateData("udp.receivePacketSize.dataUnknownAck", packet.getPacket().getLength(), packet.getLifetime());
-                    } catch (DataFormatException dfe) {}
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_TEST:
-                    _state = 51;
-                    if (auth == AuthType.BOBINTRO) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    if (_log.shouldLog(Log.DEBUG))
-                        _log.debug("Received test packet: " + reader + " from " + from);
-                    _testManager.receiveTest(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.test", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_RELAY_REQUEST:
-                    if (auth == AuthType.BOBINTRO) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("Received relay request packet: " + reader + " from " + from);
-                    _introManager.receiveRelayRequest(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.relayRequest", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_RELAY_INTRO:
-                    if (auth != AuthType.SESSION) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("Received relay intro packet: " + reader + " from " + from);
-                    _introManager.receiveRelayIntro(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.relayIntro", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_RELAY_RESPONSE:
-                    if (auth == AuthType.BOBINTRO) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                        break;
-                    }
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("Received relay response packet: " + reader + " from " + from);
-                    _establisher.receiveRelayResponse(from, reader);
-                    //_context.statManager().addRateData("udp.receivePacketSize.relayResponse", packet.getPacket().getLength(), packet.getLifetime());
-                    break;
-                case UDPPacket.PAYLOAD_TYPE_SESSION_DESTROY:
-                    _state = 53;
-                    if (auth == AuthType.BOBINTRO) {
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                    } else if (auth != AuthType.SESSION)
-                        _establisher.receiveSessionDestroy(from);  // drops
-                    else if (outState != null)
-                        _establisher.receiveSessionDestroy(from, outState);
-                    else if (state != null)
-                        _establisher.receiveSessionDestroy(from, state);
-                    else
-                        _establisher.receiveSessionDestroy(from);  // drops
-                    break;
-                default:
-                    _state = 52;
-                    if (_log.shouldLog(Log.WARN))
-                        _log.warn("Dropping type " + type + " auth " + auth + ": " + packet);
-                    _context.statManager().addRateData("udp.droppedInvalidUnknown", packet.getLifetime());
-                    return;
+                // Group 1: Established
+                //if (_log.shouldLog(Log.DEBUG))
+                //    _log.debug("Packet received IS for an existing peer");
+                ((PeerState2) state).receivePacket(rem, packet);
             }
         }
     }
 
     /**
-     *  Mark a string for extraction by xgettext and translation.
-     *  Use this only in static initializers.
-     *  It does not translate!
-     *  @return s
-     *  @since 0.9.20
+     *  Decrypt the header and hand off to the state for processing.
+     *  Packet is trial-decrypted, so fallback
+     *  processing is possible if this returns false.
+     *
+     *  Possible messages here are Session Request, Token Request, Session Confirmed, or Peer Test.
+     *  Data messages out-of-order from Session Confirmed, or following a
+     *  Session Confirmed that was lost, or in-order but before the Session Confirmed was processed,
+     *  will handed to the state to be queued for deferred handling.
+     *
+     *  Min packet data size: 56 (token request) if state is null; 40 (data) if state is non-null
+     *
+     *  @param state must be version 2, but will be null for session request unless retransmitted
+     *  @return true if the header was validated as a SSU2 packet, cannot fallback to SSU 1
+     *  @since 0.9.54
      */
-    private static final String _x(String s) {
-        return s;
+    private boolean receiveSSU2Packet(RemoteHostId from, UDPPacket packet, InboundEstablishState2 state) {
+        // decrypt header
+        byte[] k1 = _transport.getSSU2StaticIntroKey();
+        byte[] k2;
+        SSU2Header.Header header;
+        int type;
+        if (state == null) {
+            // Session Request, Token Request, Peer Test 5-7, or Hole Punch
+            k2 = k1;
+            header = SSU2Header.trialDecryptHandshakeHeader(packet, k1, k2);
+            if (header == null ||
+                header.getType() != SSU2Util.SESSION_REQUEST_FLAG_BYTE ||
+                header.getVersion() < MIN_VERSION ||
+                header.getVersion() > MAX_VERSION ||
+                header.getNetID() != _networkID) {
+                if (header != null && _log.shouldInfo())
+                    _log.info("Does not decrypt as Session Request, attempt to decrypt as TokenRequest/PeerTest/HolePunch: " + header + " from " + from);
+                // The first 32 bytes were fine, but it corrupted the next 32 bytes
+                // TODO make this more efficient, just take the first 32 bytes
+                header = SSU2Header.trialDecryptLongHeader(packet, k1, k2);
+                if (header == null ||
+                    header.getVersion() < MIN_VERSION ||
+                    header.getVersion() > MAX_VERSION ||
+                    header.getNetID() != _networkID) {
+                    // typical case, SSU 1 that didn't validate, will be logged at WARN level above
+                    // in group 4 receive packet
+                    //if (_log.shouldDebug())
+                    //    _log.debug("Does not decrypt as Session Request, Token Request, or Peer Test: " + header);
+                    if (header != null) {
+                        // conn ID decryption is the same for short and long header, with k1
+                        // presumably a data packet, either ip/port changed, or a race during establishment?
+                        // lookup peer state by conn ID, pass over for decryption with the proper k2
+                        long id = header.getDestConnID();
+                        PeerState2 ps2 = _transport.getPeerState(id);
+                        if (ps2 != null) {
+                            if (_log.shouldWarn())
+                                _log.warn("Migrated " + packet.getPacket().getLength() + " byte packet from " + from +
+                                          " for " + ps2);
+                            ps2.receivePacket(from, packet);
+                            return true;
+                        }
+                        PeerStateDestroyed dead = _transport.getRecentlyClosed(id);
+                        if (dead != null) {
+                            // Probably termination ack.
+                            // Prevent attempted SSU1 fallback processing and adding to fail cache
+                            if (_log.shouldDebug())
+                                _log.debug("Handling " + packet.getPacket().getLength() + " byte packet from " + from +
+                                           " for recently closed ID " + id);
+                            dead.receivePacket(from, packet);
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                type = header.getType();
+                if (type == SSU2Util.SESSION_CONFIRMED_FLAG_BYTE) {
+                    // one in a million decrypt of SSU 1 packet with type/version/netid all correct?
+                    // can't have session confirmed with null state, avoid NPE below
+                    return false;
+                }
+                if (type == SSU2Util.SESSION_REQUEST_FLAG_BYTE &&
+                    packet.getPacket().getLength() == SSU2Util.MIN_HANDSHAKE_DATA_LEN - 1) {
+                    // i2pd short 87 byte session request thru 0.9.56, drop packet
+                    if (_log.shouldWarn())
+                        _log.warn("Short Session Request len 87 from " + from);
+                    return true;
+                }
+            } else {
+                type = SSU2Util.SESSION_REQUEST_FLAG_BYTE;
+            }
+        } else {
+            // Session Request (after Retry) or Session Confirmed
+            // or retransmitted Session Request or Token Rquest
+            k2 = state.getRcvHeaderEncryptKey2();
+            if (k2 == null) {
+                // Session Request after Retry
+                k2 = k1;
+                header = SSU2Header.trialDecryptHandshakeHeader(packet, k1, k2);
+                if (header == null ||
+                    header.getType() != SSU2Util.SESSION_REQUEST_FLAG_BYTE ||
+                    header.getVersion() < MIN_VERSION ||
+                    header.getVersion() > MAX_VERSION ||
+                    header.getNetID() != _networkID) {
+                    // possibly token-request-after-retry? let's see...
+                    header = SSU2Header.trialDecryptLongHeader(packet, k1, k2);
+                    if (header != null && header.getType() == SSU2Util.SESSION_REQUEST_FLAG_BYTE &&
+                        header.getVersion() >= MIN_VERSION && header.getVersion() <= MAX_VERSION && header.getNetID() == _networkID &&
+                        packet.getPacket().getLength() == 87) {
+                        // i2pd short 87 byte session request thru 0.9.56, drop packet
+                        if (_log.shouldWarn())
+                            _log.warn("Short Session Request after Retry len 87 on " + state);
+                        return true;
+                    }
+                    if (header == null ||
+                        header.getType() != SSU2Util.TOKEN_REQUEST_FLAG_BYTE ||
+                        header.getVersion() < MIN_VERSION ||
+                        header.getVersion() > MAX_VERSION ||
+                        header.getNetID() != _networkID) {
+                        if (_log.shouldWarn())
+                            _log.warn("Failed decrypt Session/Token Request after Retry: " + header +
+                                      " len " + packet.getPacket().getLength() + " on " + state);
+                        return false;
+                    }
+                    //yes, retransmitted token request
+                }
+                if (header.getSrcConnID() != state.getSendConnID()) {
+                    if (_log.shouldWarn())
+                        _log.warn("Bad Source Conn id " + header +
+                                  " len " + packet.getPacket().getLength() + " on " + state);
+                    // TODO could be a retransmitted Session Request,
+                    // tell establisher?
+                    return false;
+                }
+                if (header.getDestConnID() != state.getRcvConnID()) {
+                    // i2pd bug changing after retry, thru 0.9.56, drop packet
+                    if (_log.shouldWarn())
+                        _log.warn("Bad Dest Conn id " + header +
+                                  " len " + packet.getPacket().getLength() + " on " + state);
+                    return true;
+                }
+                type = header.getType();
+            } else {
+                // Session Confirmed or retransmitted Session Request or Token Request
+                header = SSU2Header.trialDecryptShortHeader(packet, k1, k2);
+                if (header == null) {
+                    // Java I2P thru 0.9.56 retransmits session confirmed with 1-2 byte packets
+                    if (_log.shouldWarn())
+                        _log.warn("Session Confirmed too short len: " +
+                                  + packet.getPacket().getLength() + " on " + state);
+                    return false;
+                }
+                if (header.getDestConnID() != state.getRcvConnID()) {
+                    if (_log.shouldWarn())
+                        _log.warn("Bad Dest Conn id " + header + " on " + state);
+                    return false;
+                }
+                if (header.getPacketNumber() != 0 ||
+                    header.getType() != SSU2Util.SESSION_CONFIRMED_FLAG_BYTE) {
+                    if (_log.shouldWarn())
+                        _log.warn("Queue possible data packet len: " +
+                                  packet.getPacket().getLength() + " on " + state);
+                    // TODO either attempt to decrypt as a retransmitted
+                    // Session Request or Token Request,
+                    // or just tell establisher so it can retransmit Session Created or Retry
+
+                    // Possible ordering issues and races:
+                    // Case 1: Data packets before (possibly lost or out-of-order) Session Confirmed
+                    // Case 2: Data packets after Session Confirmed but it wasn't processed yet
+                    // Queue the packet with the state for processing
+                    state.queuePossibleDataPacket(packet);
+                    return true;
+                }
+                type = SSU2Util.SESSION_CONFIRMED_FLAG_BYTE;
+            }
+        }
+
+        // all good
+        SSU2Header.acceptTrialDecrypt(packet, header);
+        switch (type) {
+          case SSU2Util.SESSION_REQUEST_FLAG_BYTE:
+            if (_log.shouldDebug())
+                _log.debug("Got a Session Request on " + state);
+            _establisher.receiveSessionOrTokenRequest(from, state, packet);
+            break;
+
+          case SSU2Util.TOKEN_REQUEST_FLAG_BYTE:
+            if (_log.shouldDebug())
+                _log.debug("Got a Token Request on " + state);
+            _establisher.receiveSessionOrTokenRequest(from, state, packet);
+            break;
+
+          case SSU2Util.SESSION_CONFIRMED_FLAG_BYTE:
+            if (_log.shouldDebug())
+                _log.debug("Got a Session Confirmed on " + state);
+            _establisher.receiveSessionConfirmed(state, packet);
+            break;
+
+          case SSU2Util.PEER_TEST_FLAG_BYTE:
+            if (_log.shouldDebug())
+                _log.debug("Got a Peer Test");
+            _testManager.receiveTest(from, packet);
+            break;
+
+          case SSU2Util.HOLE_PUNCH_FLAG_BYTE:
+            if (_log.shouldDebug())
+                _log.debug("Got a Hole Punch");
+            _establisher.receiveHolePunch(from, packet);
+            break;
+
+          default:
+            if (_log.shouldWarn())
+                _log.warn("Got unknown SSU2 message " + header + " from " + from);
+            break;
+        }
+        return true;
+    }
+
+    /**
+     *  Decrypt the header and hand off to the state for processing.
+     *  Packet is trial-decrypted, so fallback
+     *  processing is possible if this returns false.
+     *  But that's probably not necessary.
+     *
+     *  Possible messages here are Session Created or Retry
+     *
+     *  Min packet data size: 56 (retry)
+     *
+     *  @param state must be version 2, non-null
+     *  @return true if the header was validated as a SSU2 packet, cannot fallback to SSU 1
+     *  @since 0.9.54
+     */
+    private boolean receiveSSU2Packet(UDPPacket packet, OutboundEstablishState2 state) {
+        // decrypt header
+        byte[] k1 = state.getRcvHeaderEncryptKey1();
+        byte[] k2 = state.getRcvHeaderEncryptKey2();
+        SSU2Header.Header header;
+        if (k2 != null) {
+            header = SSU2Header.trialDecryptHandshakeHeader(packet, k1, k2);
+            if (header != null) {
+                // dest conn ID decrypts the same for both Session Created
+                // and Retry, so we can bail out now if it doesn't match
+                if (header.getDestConnID() != state.getRcvConnID()) {
+                    if (_log.shouldWarn())
+                        _log.warn("Bad Dest Conn id " + header);
+                    return false;
+                }
+            }
+        } else {
+            // we have only sent a Token Request
+            header = null;
+        }
+        int type;
+        if (header == null ||
+            header.getType() != SSU2Util.SESSION_CREATED_FLAG_BYTE ||
+            header.getVersion() < MIN_VERSION ||
+            header.getVersion() > MAX_VERSION ||
+            header.getNetID() != _networkID) {
+            if (_log.shouldInfo())
+                _log.info("Does not decrypt as Session Created, attempt to decrypt as Retry: " + header);
+            k2 = state.getRcvRetryHeaderEncryptKey2();
+            header = SSU2Header.trialDecryptLongHeader(packet, k1, k2);
+            if (header == null ||
+                header.getType() != SSU2Util.RETRY_FLAG_BYTE ||
+                header.getVersion() < MIN_VERSION ||
+                header.getVersion() > MAX_VERSION ||
+                header.getNetID() != _networkID) {
+                if (_log.shouldInfo())
+                    _log.info("Does not decrypt as Session Created or Retry: " + header + " on " + state);
+                return false;
+            }
+            type = SSU2Util.RETRY_FLAG_BYTE;
+        } else {
+            type = SSU2Util.SESSION_CREATED_FLAG_BYTE;
+        }
+        if (header.getDestConnID() != state.getRcvConnID()) {
+            if (_log.shouldWarn())
+                _log.warn("Bad Dest Conn id " + header);
+            return false;
+        }
+        if (header.getSrcConnID() != state.getSendConnID()) {
+            if (_log.shouldWarn())
+                _log.warn("Bad Source Conn id " + header);
+            return false;
+        }
+
+        // all good
+        SSU2Header.acceptTrialDecrypt(packet, header);
+        if (type == SSU2Util.SESSION_CREATED_FLAG_BYTE) {
+            if (_log.shouldDebug())
+                _log.debug("Got a Session Created on " + state);
+            _establisher.receiveSessionCreated(state, packet);
+        } else {
+            if (_log.shouldDebug())
+                _log.debug("Got a Retry on " + state);
+            _establisher.receiveRetry(state, packet);
+        }
+        return true;
     }
 }

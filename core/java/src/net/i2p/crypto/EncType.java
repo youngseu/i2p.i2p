@@ -2,16 +2,13 @@ package net.i2p.crypto;
 
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.InvalidParameterSpecException;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 
+import static net.i2p.crypto.x25519.spec.X25519Spec.X25519_SPEC;
 import net.i2p.data.Hash;
 import net.i2p.data.SimpleDataStructure;
 
 /**
- * PRELIMINARY - unused - subject to change
- *
  * Defines the properties for various encryption types
  * that I2P supports or may someday support.
  *
@@ -29,23 +26,109 @@ public enum EncType {
      */
     ELGAMAL_2048(0, 256, 256, EncAlgo.ELGAMAL, "ElGamal/None/NoPadding", CryptoConstants.I2P_ELGAMAL_2048_SPEC, "0"),
 
-    /**  Pubkey 64 bytes; privkey 32 bytes; */
-    EC_P256(1, 64, 32, EncAlgo.EC, "EC/None/NoPadding", ECConstants.P256_SPEC, "0.9.20"),
+    /**
+     *  Used by i2pd. Not yet supported by Java I2P.
+     *  Pubkey 64 bytes; privkey 32 bytes.
+     *  See proposal 145.
+     */
+    EC_P256(1, 64, 32, EncAlgo.EC, "EC/None/NoPadding", ECConstants.P256_SPEC, "0.9.38"),
 
-    /**  Pubkey 96 bytes; privkey 48 bytes; */
-    EC_P384(2, 96, 48, EncAlgo.EC, "EC/None/NoPadding", ECConstants.P384_SPEC, "0.9.20"),
+    /**
+     *  Reserved, not used by anybody.
+     *  Pubkey 96 bytes; privkey 48 bytes.
+     *  See proposal 145.
+     */
+    EC_P384(2, 96, 48, EncAlgo.EC, "EC/None/NoPadding", ECConstants.P384_SPEC, "0.9.38"),
 
-    /**  Pubkey 132 bytes; privkey 66 bytes; */
-    EC_P521(3, 132, 66, EncAlgo.EC, "EC/None/NoPadding", ECConstants.P521_SPEC, "0.9.20");
+    /**
+     *  Reserved, not used by anybody.
+     *  Pubkey 132 bytes; privkey 66 bytes.
+     *  See proposal 145.
+     */
+    EC_P521(3, 132, 66, EncAlgo.EC, "EC/None/NoPadding", ECConstants.P521_SPEC, "0.9.38"),
 
+    /**
+     *  Proposal 144.
+     *  Pubkey 32 bytes; privkey 32 bytes
+     *  @since 0.9.38
+     */
+    ECIES_X25519(4, 32, 32, EncAlgo.ECIES, "EC/None/NoPadding", X25519_SPEC, "0.9.38"),
 
+    /**
+     *  Proposal 169.
+     *  Pubkey 32 bytes; privkey 32 bytes
+     *  @since 0.9.67
+     */
+    MLKEM512_X25519(5, 32, 32, EncAlgo.ECIES_MLKEM, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  Proposal 169.
+     *  Pubkey 32 bytes; privkey 32 bytes
+     *  @since 0.9.67
+     */
+    MLKEM768_X25519(6, 32, 32, EncAlgo.ECIES_MLKEM, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  Proposal 169.
+     *  Pubkey 32 bytes; privkey 32 bytes
+     *  @since 0.9.67
+     */
+    MLKEM1024_X25519(7, 32, 32, EncAlgo.ECIES_MLKEM, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  For internal use only (Alice side)
+     *  Proposal 169.
+     *  Pubkey 800 bytes; privkey 1632 bytes
+     *  @since 0.9.67
+     */
+    MLKEM512_X25519_INT(100005, 800, 1632, EncAlgo.ECIES_MLKEM_INT, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  For internal use only (Alice side)
+     *  Proposal 169.
+     *  Pubkey 1184 bytes; privkey 2400 bytes
+     *  @since 0.9.67
+     */
+    MLKEM768_X25519_INT(100006, 1184, 2400, EncAlgo.ECIES_MLKEM_INT, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  For internal use only (Alice side)
+     *  Proposal 169.
+     *  Pubkey 1568 bytes; privkey 3168 bytes
+     *  @since 0.9.67
+     */
+    MLKEM1024_X25519_INT(100007, 1568, 3168, EncAlgo.ECIES_MLKEM_INT, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  For internal use only (Bob side ciphertext)
+     *  Proposal 169.
+     *  Pubkey 768 bytes; privkey 0
+     *  @since 0.9.67
+     */
+    MLKEM512_X25519_CT(100008, 768, 0, EncAlgo.ECIES_MLKEM_INT, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  For internal use only (Bob side ciphertext)
+     *  Proposal 169.
+     *  Pubkey 1088 bytes; privkey 0
+     *  @since 0.9.67
+     */
+    MLKEM768_X25519_CT(100009, 1088, 0, EncAlgo.ECIES_MLKEM_INT, "EC/None/NoPadding", X25519_SPEC, "0.9.67"),
+
+    /**
+     *  For internal use only (Bob side ciphertext)
+     *  Proposal 169.
+     *  Pubkey 1568 bytes; privkey 0
+     *  @since 0.9.67
+     */
+    MLKEM1024_X25519_CT(100010, 1568, 0, EncAlgo.ECIES_MLKEM_INT, "EC/None/NoPadding", X25519_SPEC, "0.9.67");
 
 
     private final int code, pubkeyLen, privkeyLen;
     private final EncAlgo base;
     private final String algoName, since;
     private final AlgorithmParameterSpec params;
-    private final boolean isAvail;
+    private final boolean isAvail, isPQ;
 
     /**
      *
@@ -54,6 +137,8 @@ public enum EncType {
      */
     EncType(int cod, int pubLen, int privLen, EncAlgo baseAlgo,
             String transformation, AlgorithmParameterSpec pSpec, String supportedSince) {
+        if (pubLen > 256 && baseAlgo != EncAlgo.ECIES_MLKEM_INT)
+            throw new IllegalArgumentException("fixup PublicKey for longer keys");
         code = cod;
         pubkeyLen = pubLen;
         privkeyLen = privLen;
@@ -62,6 +147,7 @@ public enum EncType {
         params = pSpec;
         since = supportedSince;
         isAvail = x_isAvailable();
+        isPQ = base == EncAlgo.ECIES_MLKEM;
     }
 
     /** the unique identifier for this type */
@@ -104,8 +190,16 @@ public enum EncType {
     }
 
     private boolean x_isAvailable() {
-        if (ELGAMAL_2048 == this)
-            return true;
+        switch (base) {
+            case ELGAMAL:
+                return true;
+
+            // EC types are placeholders for now
+            case EC:
+            // internal types
+            case ECIES_MLKEM_INT:
+                return false;
+        }
         try {
             getParams();
         } catch (InvalidParameterSpecException e) {
@@ -135,18 +229,33 @@ public enum EncType {
         return type.isAvailable();
     }
 
-    private static final Map<Integer, EncType> BY_CODE = new HashMap<Integer, EncType>();
+    /**
+     *  @since 0.9.67
+     *  @return true if this is a PQ type
+     */
+    public boolean isPQ() {
+        return isPQ;
+    }
+
+    private static final EncType[] BY_CODE;
 
     static {
-        for (EncType type : EncType.values()) {
-            if (BY_CODE.put(Integer.valueOf(type.getCode()), type) != null)
+        EncType[] values = values();
+        int max = values[values.length - 1].getCode();
+        BY_CODE = new EncType[max + 1];
+        for (EncType type : values) {
+            int i = type.getCode();
+            if (BY_CODE[i] != null)
                 throw new IllegalStateException("Duplicate EncType code");
+            BY_CODE[i] = type;
         }
     }
 
     /** @return null if not supported */
     public static EncType getByCode(int code) {
-        return BY_CODE.get(Integer.valueOf(code));
+        if (code < 0 || code >= BY_CODE.length)
+            return null;
+        return BY_CODE[code];
     }
 
     /**

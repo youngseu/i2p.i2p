@@ -13,7 +13,7 @@
 # user's OS
 
 if [ ! "X$1" = "X" ]; then
-    cd $1
+    cd "$1"
 fi
 
 chmod 755 ./i2prouter
@@ -40,8 +40,12 @@ case $HOST_OS in
     debian | fedora | gentoo | linux | mandrake | redhat | suse )
         # Tanuki-built arm wrapper works on armv5 and armv7 but not on Raspberry Pi armv6.
         # Wrapper we built for Raspberry Pi does not work on Trimslice armv7.
-        if [ `echo $OS_ARCH |grep armv7` ]; then
-            wrapperpath="./lib/wrapper/linux-armv5"
+        if [ `echo $OS_ARCH |grep armv8` ]; then
+            wrapperpath="./lib/wrapper/linux64-armv8"
+        elif [ `echo $OS_ARCH |grep aarch64` ]; then
+            wrapperpath="./lib/wrapper/linux64-armv8"
+        elif [ `echo $OS_ARCH |grep armv7` ]; then
+            wrapperpath="./lib/wrapper/linux-armv7"
         elif [ `echo $OS_ARCH |grep armv6` ]; then
             wrapperpath="./lib/wrapper/linux-armv6"
         elif [ `echo $OS_ARCH |grep arm` ]; then
@@ -104,16 +108,13 @@ fi
 
 chmod 755 ./eepget
 rm -rf ./icons ./lib/wrapper
-rm -f ./lib/*.dll /*.bat ./*.cmd ./*.exe ./utility.jar
+rm -f ./lib/*.dll ./*.bat ./*.cmd ./*.exe ./utility.jar
 
 if [ ! `echo $HOST_OS  |grep osx` ]; then
     rm -rf ./Start\ I2P\ Router.app
     rm -f *i2p_service_osx.command
     rm -f net.i2p.router.plist.template
     #rm -f I2P\ Router\ Console.webloc
-else
-    # The example apparmor profile is useless on OSX
-    rm -f ./scripts/home.i2p.i2prouter
 fi
 
 rm -f ./osid

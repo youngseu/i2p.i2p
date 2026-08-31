@@ -10,6 +10,7 @@
 #
 # zzz - public domain
 #
+cd `dirname $0`
 CLASS=net.i2p.router.web.messages
 TMPFILE=build/javafiles.txt
 export TZ=UTC
@@ -33,13 +34,14 @@ fi
 # set LG2 to the language you need in environment variables to enable this
 
 
-# list specific files in core/ and router/ here, so we don't scan the whole tree
+# list specific files in router/ here, so we don't scan the whole tree
+# core/ now has its own bundle
+# router/ now has its own bundle for some files
 ROUTERFILES="\
-   ../../../core/java/src/net/i2p/data/DataHelper.java \
    ../../../router/java/src/net/i2p/router/Blocklist.java \
-   ../../../router/java/src/net/i2p/router/CommSystemFacade.java \
-   ../../../router/java/src/net/i2p/router/RouterThrottleImpl.java \
+   ../../../router/java/src/net/i2p/router/Router.java \
    ../../../router/java/src/net/i2p/router/networkdb/reseed/Reseeder.java \
+   ../../../router/java/src/net/i2p/router/sybil/Analysis.java \
    ../../../router/java/src/net/i2p/router/tasks/CoalesceStatsEvent.java \
    ../../../router/java/src/net/i2p/router/transport/CommSystemFacadeImpl.java \
    ../../../router/java/src/net/i2p/router/transport/GetBidsJob.java \
@@ -49,12 +51,12 @@ ROUTERFILES="\
    ../../../router/java/src/net/i2p/router/transport/ntcp/EstablishState.java \
    ../../../router/java/src/net/i2p/router/transport/ntcp/NTCPTransport.java \
    ../../../router/java/src/net/i2p/router/transport/udp/UDPTransport.java \
-   ../../../router/java/src/net/i2p/router/tunnel/pool/BuildHandler.java \
-   ../../../core/java/src/net/i2p/util/LogWriter.java \
+   ../../addressbook/java/src/net/i2p/addressbook/Daemon.java \
 "
 
 # add ../java/ so the refs will work in the po file
-JPATHS="../java/src ../jsp/WEB-INF ../java/strings $ROUTERFILES"
+# do not scan 3rd-party code in java/src/com or java/src/edu
+JPATHS="../java/src/net ../jsp/WEB-INF ../java/strings $ROUTERFILES"
 for i in ../locale/messages_*.po
 do
 	# get language
@@ -115,9 +117,11 @@ do
 			RC=1
 			break
 		fi
-		rm -f ${i}t
-		# so we don't do this again
-		touch $i
+		# the string with '75%' causes it to add a java-printf-format directive,
+		# and then the testscript fails if the translated
+		# string doesn't have a '%' in it; strip out the directive
+		grep -v java-printf-format $i > ${i}t
+		mv ${i}t ${i}
 	fi
 
     if [ "$LG" != "en" ]
@@ -125,12 +129,12 @@ do
         # only generate for non-source language
         echo "Generating ${CLASS}_$LG ResourceBundle..."
 
-        msgfmt -V | grep -q '0\.19'
+        msgfmt -V | grep -q -E ' 0\.((19)|[2-9])| [1-9]\.'
         if [ $? -ne 0 ]
         then
             # slow way
             # convert to class files in build/obj
-            msgfmt --java --statistics -r $CLASS -l $LG -d build/obj $i
+            msgfmt --java2 --statistics -r $CLASS -l $LG -d build/obj $i
             if [ $? -ne 0 ]
             then
                 echo "ERROR - msgfmt failed on ${i}, not updating translations"
@@ -148,7 +152,7 @@ do
             TDY=$TD2/net/i2p/router/web
             rm -rf $TD
             mkdir -p $TD $TDY
-            msgfmt --java --statistics --source -r $CLASS -l $LG -d $TD $i
+            msgfmt --java2 --statistics --source -r $CLASS -l $LG -d $TD $i
             if [ $? -ne 0 ]
             then
                 echo "ERROR - msgfmt failed on ${i}, not updating translations"
@@ -157,7 +161,12 @@ do
                 RC=1
                 break
             fi
-            mv $TDX/messages_$LG.java $TDY
+            # fixup Enumeration code for generics
+            sed -e 's/Enumeration/Enumeration<String>/g' \
+                -e 's/Object nextElement/String nextElement/g' \
+                -e 's/return key/return (String) key/g' \
+                $TDX/messages_$LG.java > $TDY/messages_$LG.java
+            rm -f $TDX/messages_$LG.java
             rm -rf $TD
         fi
     fi

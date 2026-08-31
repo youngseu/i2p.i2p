@@ -44,6 +44,7 @@ import java.security.interfaces.RSAKey;
 import net.i2p.I2PAppContext;
 import net.i2p.crypto.eddsa.EdDSAEngine;
 import net.i2p.crypto.eddsa.EdDSAKey;
+import net.i2p.crypto.eddsa.RedDSAEngine;
 import net.i2p.data.Hash;
 import net.i2p.data.Signature;
 import net.i2p.data.SigningPrivateKey;
@@ -405,7 +406,7 @@ public final class DSAEngine {
         boolean ok;
         do {
             k = new NativeBigInteger(160, _context.random());
-            ok = k.compareTo(CryptoConstants.dsaq) != 1;
+            ok = k.compareTo(CryptoConstants.dsaq) < 0;
             ok = ok && !k.equals(BigInteger.ZERO);
             //System.out.println("K picked (ok? " + ok + "): " + k.bitLength() + ": " + k.toString());
         } while (!ok);
@@ -477,6 +478,7 @@ public final class DSAEngine {
      *  @return hash SHA-1 hash, NOT a SHA-256 hash
      *  @deprecated unused
      */
+    @Deprecated
     public SHA1Hash calculateHash(InputStream in) {
         MessageDigest digest = SHA1.getInstance();
         byte buf[] = new byte[64];
@@ -520,7 +522,8 @@ public final class DSAEngine {
         boolean rv;
         if (type.getBaseAlgorithm() == SigAlgo.EdDSA) {
             // take advantage of one-shot mode
-            EdDSAEngine jsig = new EdDSAEngine(type.getDigestInstance());
+            MessageDigest md = type.getDigestInstance();
+            EdDSAEngine jsig = (type == SigType.RedDSA_SHA512_Ed25519) ? new RedDSAEngine(md) : new EdDSAEngine(md);
             jsig.initVerify(pubKey);
             rv = jsig.verifyOneShot(data, offset, len, sigbytes);
         } else {
@@ -573,7 +576,7 @@ public final class DSAEngine {
         if (type.getBaseAlgorithm() == SigAlgo.EdDSA) {
             // take advantage of one-shot mode
             // Ignore algo, EdDSAKey includes a hash specification.
-            EdDSAEngine jsig = new EdDSAEngine();
+            EdDSAEngine jsig = (type == SigType.RedDSA_SHA512_Ed25519) ? new RedDSAEngine() : new EdDSAEngine();
             jsig.initVerify(pubKey);
             rv = jsig.verifyOneShot(hash.getData(), sigbytes);
         } else {
@@ -621,7 +624,8 @@ public final class DSAEngine {
         byte[] sigbytes;
         if (type.getBaseAlgorithm() == SigAlgo.EdDSA) {
             // take advantage of one-shot mode
-            EdDSAEngine jsig = new EdDSAEngine(type.getDigestInstance());
+            MessageDigest md = type.getDigestInstance();
+            EdDSAEngine jsig = (type == SigType.RedDSA_SHA512_Ed25519) ? new RedDSAEngine(md) : new EdDSAEngine(md);
             jsig.initSign(privKey);
             sigbytes = jsig.signOneShot(data, offset, len);
         } else {
@@ -629,6 +633,17 @@ public final class DSAEngine {
             jsig.initSign(privKey, _context.random());
             jsig.update(data, offset, len);
             sigbytes = jsig.sign();
+            if (type.getBaseAlgorithm() == SigAlgo.RSA) {
+                // verify to prevent corrupted sig key factoring
+                // (RSA fault attack) https://eprint.iacr.org/2023/1711.pdf
+                SigningPrivateKey priv = SigUtil.fromJavaKey(privKey, type);
+                SigningPublicKey pub = priv.toPublic();
+                PublicKey pubKey = SigUtil.toJavaKey(pub);
+                jsig.initVerify(pubKey);
+                jsig.update(data, offset, len);
+                if (!jsig.verify(sigbytes))
+                    throw new GeneralSecurityException("Verify of RSA Signature failed");
+            }
         }
         return SigUtil.fromJavaSig(sigbytes, type);
     }
@@ -669,7 +684,7 @@ public final class DSAEngine {
         if (type.getBaseAlgorithm() == SigAlgo.EdDSA) {
             // take advantage of one-shot mode
             // Ignore algo, EdDSAKey includes a hash specification.
-            EdDSAEngine jsig = new EdDSAEngine();
+            EdDSAEngine jsig = (type == SigType.RedDSA_SHA512_Ed25519) ? new RedDSAEngine() : new EdDSAEngine();
             jsig.initSign(privKey);
             sigbytes = jsig.signOneShot(hash.getData());
         } else {
@@ -677,6 +692,17 @@ public final class DSAEngine {
             jsig.initSign(privKey, _context.random());
             jsig.update(hash.getData());
             sigbytes = jsig.sign();
+            if (type.getBaseAlgorithm() == SigAlgo.RSA) {
+                // verify to prevent corrupted sig key factoring
+                // (RSA fault attack) https://eprint.iacr.org/2023/1711.pdf
+                SigningPrivateKey priv = SigUtil.fromJavaKey(privKey, type);
+                SigningPublicKey pub = priv.toPublic();
+                PublicKey pubKey = SigUtil.toJavaKey(pub);
+                jsig.initVerify(pubKey);
+                jsig.update(hash.getData());
+                if (!jsig.verify(sigbytes))
+                    throw new GeneralSecurityException("Verify of RSA Signature failed");
+            }
         }
         return SigUtil.fromJavaSig(sigbytes, type);
     }

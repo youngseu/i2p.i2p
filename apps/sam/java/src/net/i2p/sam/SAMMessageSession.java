@@ -20,6 +20,7 @@ import net.i2p.client.I2PClientFactory;
 import net.i2p.client.I2PSession;
 import net.i2p.client.I2PSessionException;
 import net.i2p.client.I2PSessionMuxedListener;
+import net.i2p.client.LookupResult;
 import net.i2p.client.SendMessageOptions;
 import net.i2p.data.Base64;
 import net.i2p.data.DataFormatException;
@@ -45,7 +46,8 @@ abstract class SAMMessageSession implements SAMMessageSess {
     /**
      * Initialize a new SAM message-based session.
      *
-     * @param dest Base64-encoded destination and private keys (same format as PrivateKeyFile)
+     * @param dest Base64-encoded destination and private keys,
+     *             and optional offline signature section (same format as PrivateKeyFile)
      * @param props Properties to setup the I2P session
      * @throws IOException
      * @throws DataFormatException
@@ -58,7 +60,8 @@ abstract class SAMMessageSession implements SAMMessageSess {
     /**
      * Initialize a new SAM message-based session.
      *
-     * @param destStream Input stream containing the destination and private keys (same format as PrivateKeyFile)
+     * @param destStream Input stream containing the binary destination and private keys,
+     *                   and optional offline signature section (same format as PrivateKeyFile)
      * @param props Properties to setup the I2P session
      * @throws IOException
      * @throws DataFormatException
@@ -209,6 +212,41 @@ abstract class SAMMessageSession implements SAMMessageSess {
     }
 
     /**
+     * Lookup a destination through the I2CP session.
+     * Blocking.
+     *
+     * @param lsopts out parameter, or null
+     * @return the Destination or null
+     * @since 0.9.69
+     */
+    public Destination lookupDest(String name, Properties lsopts) throws I2PSessionException {
+        return lookupDest(session, name, lsopts);
+    }
+
+    /**
+     * Lookup a destination through the I2CP session.
+     * Blocking.
+     *
+     * @param lsopts out parameter, or null
+     * @return the Destination or null
+     * @since 0.9.69
+     */
+    static Destination lookupDest(I2PSession session, String name, Properties lsopts) throws I2PSessionException {
+        // session will convert b32 to hash, no need to do it here
+        if (lsopts != null) {
+           LookupResult res = session.lookupDest2(name, 10*1000, true);
+           if (res.getResultCode() == LookupResult.RESULT_SUCCESS) {
+               Properties opts = res.getOptions();
+               if (opts != null && !opts.isEmpty())
+                   lsopts.putAll(opts);
+               return res.getDestination();
+           }
+           return null;
+        }
+        return session.lookupDest(name, 10*1000);
+    }
+
+    /**
      * Close a SAM message-based session.
      */
     public void close() {
@@ -259,10 +297,14 @@ abstract class SAMMessageSession implements SAMMessageSess {
                 _log.debug("Instantiating new SAM message-based session handler");
 
             I2PClient client = I2PClientFactory.createClient();
-            if (!props.containsKey("inbound.nickname") && !props.containsKey("outbound.nickname")) {
-                props.setProperty("inbound.nickname", "SAM UDP Client");
-                props.setProperty("outbound.nickname", "SAM UDP Client");
+            String name = props.getProperty("inbound.nickname");
+            if (name == null || name.trim().isEmpty()) {
+                name = "SAM UDP Client";
+                props.setProperty("inbound.nickname", name);
             }
+            String name2 = props.getProperty("outbound.nickname");
+            if (name2 == null || name2.trim().isEmpty())
+                props.setProperty("outbound.nickname", name);
             _session = client.createSession(destStream, props);
 
             if (_log.shouldLog(Log.DEBUG))

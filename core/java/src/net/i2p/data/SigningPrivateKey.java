@@ -10,9 +10,12 @@ package net.i2p.data;
  */
 
 import java.util.Arrays;
+import javax.security.auth.Destroyable;
 
+import net.i2p.crypto.Blinding;
 import net.i2p.crypto.KeyGenerator;
 import net.i2p.crypto.SigType;
+import net.i2p.util.SimpleByteCache;
 
 /**
  * Defines the SigningPrivateKey as defined by the I2P data structure spec.
@@ -25,7 +28,7 @@ import net.i2p.crypto.SigType;
  *
  * @author jrandom
  */
-public class SigningPrivateKey extends SimpleDataStructure {
+public class SigningPrivateKey extends SimpleDataStructure implements Destroyable {
     private static final SigType DEF_TYPE = SigType.DSA_SHA1;
     public final static int KEYSIZE_BYTES = DEF_TYPE.getPrivkeyLen();
 
@@ -89,19 +92,68 @@ public class SigningPrivateKey extends SimpleDataStructure {
     }
 
     /**
+     *  Only for SigType EdDSA_SHA512_Ed25519
+     *
+     *  @param alpha the secret data
+     *  @throws UnsupportedOperationException unless supported
+     *  @since 0.9.38
+     */
+    public SigningPrivateKey blind(SigningPrivateKey alpha) {
+        return Blinding.blind(this, alpha);
+    }
+
+    /**
+     *  Constant time
+     *  @return true if all zeros
+     *  @since 0.9.39 moved from PrivateKeyFile
+     */
+    public boolean isOffline() {
+        if (_data == null)
+            return true;
+        byte b = 0;
+        for (int i = 0; i < _data.length; i++) {
+            b |= _data[i];
+        }
+        return b == 0;
+    }
+
+    /**
+     *  javax.security.auth.Destroyable interface
+     *
+     *  @since 0.9.40
+     */
+    public void destroy() {
+        byte[] data = _data;
+        if (data != null) {
+            _data = null;
+            Arrays.fill(data, (byte) 0);
+            SimpleByteCache.release(data);
+        }
+    }
+
+    /**
+     *  javax.security.auth.Destroyable interface
+     *
+     *  @since 0.9.40
+     */
+    public boolean isDestroyed() {
+        return _data == null;
+    }
+
+    /**
      *  @since 0.9.8
      */
     @Override
     public String toString() {
         StringBuilder buf = new StringBuilder(64);
-        buf.append('[').append(getClass().getSimpleName()).append(' ').append(_type).append(": ");
+        buf.append("[SigningPrivateKey ").append(_type).append(' ');
         int length = length();
         if (_data == null) {
             buf.append("null");
         } else if (length <= 32) {
             buf.append(toBase64());
         } else {
-            buf.append("size: ").append(Integer.toString(length));
+            buf.append("size: ").append(length);
         }
         buf.append(']');
         return buf.toString();

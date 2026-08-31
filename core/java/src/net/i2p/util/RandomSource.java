@@ -27,7 +27,6 @@ import net.i2p.crypto.EntropyHarvester;
 public class RandomSource extends SecureRandom implements EntropyHarvester {
 
     private static final long serialVersionUID = 1L;
-    private final EntropyHarvester _entropyHarvester;
     protected transient final I2PAppContext _context;
 
     /**
@@ -39,9 +38,6 @@ public class RandomSource extends SecureRandom implements EntropyHarvester {
     public RandomSource(I2PAppContext context) {
         super();
         _context = context;
-        // when we replace to have hooks for fortuna (etc), replace with
-        // a factory (or just a factory method)
-        _entropyHarvester = this;
     }
 
     /**
@@ -70,6 +66,16 @@ public class RandomSource extends SecureRandom implements EntropyHarvester {
         if (val < 0) val = 0 - val;
         if (val >= n) val = val % n;
         return val;
+    }
+
+    /**
+     *  This code unused, see FortunaRandomSource override
+     *
+     *  @return all possible int values, positive and negative
+     *  @since 0.9.54
+     */
+    public int signedNextInt() {
+        return nextInt();
     }
 
     /**
@@ -103,34 +109,7 @@ public class RandomSource extends SecureRandom implements EntropyHarvester {
         }
     }
 
-    /**
-     * override as synchronized, for those JVMs that don't always pull via
-     * nextBytes (cough ibm)
-
-    @Override
-    public boolean nextBoolean() { return super.nextBoolean(); }
-
-    @Override
-    public void nextBytes(byte buf[]) { super.nextBytes(buf); }
-
-    @Override
-    public double nextDouble() { return super.nextDouble(); }
-
-    @Override
-    public float nextFloat() { return super.nextFloat(); }
-
-    @Override
-    public double nextGaussian() { return super.nextGaussian(); }
-
-    @Override
-    public int nextInt() { return super.nextInt(); }
-
-    @Override
-    public long nextLong() { return super.nextLong(); }
-*****/
-   
-    /** */
-    public EntropyHarvester harvester() { return _entropyHarvester; }
+    public EntropyHarvester harvester() { return this; }
  
     public void feedEntropy(String source, long data, int bitoffset, int bits) {
         if (bitoffset == 0)

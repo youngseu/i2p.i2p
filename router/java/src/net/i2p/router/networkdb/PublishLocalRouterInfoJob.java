@@ -46,16 +46,18 @@ public class PublishLocalRouterInfoJob extends JobImpl {
      *  floodfills since we store directly.
      *  Too long and the floodfill will drop us - timeout is 60 minutes.
      */
-    private static final long PUBLISH_DELAY = 52*60*1000;
+    private static final long PUBLISH_DELAY = 43*60*1000;
 
     /** this needs to be long enough to give us time to start up,
-        but less than 20m (when we start accepting tunnels and could be a IBGW)
-        Actually no, we need this soon if we are a new router or
-        other routers have forgotten about us, else
-        we can't build IB exploratory tunnels.
+     *  but less than 20m (when we start accepting tunnels and could be a IBGW)
+     *  Actually no, we need this soon if we are a new router or
+     *  other routers have forgotten about us, else
+     *  we can't build IB exploratory tunnels.
+     *
+     *  First publish after netdb ready is now done via state machine
+     *  in Router.setNetDbReady(), so we probably don't need this anymore
      */
     private static final long FIRST_TIME_DELAY = 90*1000;
-    private volatile boolean _notFirstTime;
     private final AtomicInteger _runCount = new AtomicInteger();
     
     public PublishLocalRouterInfoJob(RouterContext ctx) {
@@ -66,6 +68,13 @@ public class PublishLocalRouterInfoJob extends JobImpl {
     public String getName() { return "Publish Local Router Info"; }
 
     public void runJob() {
+        if (!getContext().commSystem().isRunning()) {
+            // Avoid deadlock in the transports through here via FNDF.publish() at startup
+            if (_log.shouldWarn())
+                _log.warn("PLRIJ before comm system started");
+            requeue(100);
+            return;
+        }
         long last = getContext().netDb().getLastRouterInfoPublishTime();
         long now = getContext().clock().now();
         if (last + MIN_PUBLISH_DELAY > now) {
@@ -82,7 +91,9 @@ public class PublishLocalRouterInfoJob extends JobImpl {
             List<RouterAddress> newAddrs = getContext().commSystem().createAddresses();
             int count = _runCount.incrementAndGet();
             RouterInfo ri = new RouterInfo(oldRI);
-            if (_notFirstTime && (count % 4) != 0 && oldAddrs.size() == newAddrs.size()) {
+            if ((count % 4) != 0 &&
+                oldAddrs.size() == newAddrs.size() &&
+                getContext().random().nextInt(32) != 0) {
                 // 3 times out of 4, we don't republish if everything is the same...
                 // If something changed, including the cost, then publish,
                 // otherwise don't.
@@ -139,16 +150,15 @@ public class PublishLocalRouterInfoJob extends JobImpl {
         } catch (DataFormatException dfe) {
             _log.error("Error signing the updated local router info!", dfe);
         }
-        if (_notFirstTime) {
-            requeue(getDelay());
-        } else {
-            requeue(FIRST_TIME_DELAY);
-            _notFirstTime = true;
-        }
+        _runCount.set(0);
+        requeue(getDelay());
     }
 
-    private long getDelay() {
-        long rv = (PUBLISH_DELAY * 3 / 4) + getContext().random().nextLong(PUBLISH_DELAY / 4);
+    /**
+     *  @since public since 0.9.65 for use by Router
+     */
+    public long getDelay() {
+        long rv = (PUBLISH_DELAY * 2 / 3) + getContext().random().nextLong(PUBLISH_DELAY / 3);
         // run 4x as often as usual publish time (see above)
         rv /= 4;
         return rv;

@@ -1,6 +1,7 @@
 package net.i2p.sam;
 
 import java.io.Closeable;
+import java.util.Properties;
 
 import net.i2p.client.I2PSessionException;
 import net.i2p.data.DataFormatException;
@@ -60,4 +61,14 @@ interface SAMMessageSess extends Closeable {
     public int getListenProtocol();
 
     public int getListenPort();
+
+    /**
+     * Lookup a destination through the I2CP session.
+     * Blocking.
+     *
+     * @param lsopts out parameter, or null
+     * @return the Destination or null
+     * @since 0.9.69
+     */
+    public Destination lookupDest(String name, Properties lsopts) throws I2PSessionException ;
 }

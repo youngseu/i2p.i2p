@@ -1,12 +1,9 @@
 package net.i2p.router.tunnel.pool;
 
-import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import net.i2p.crypto.SessionKeyManager;
-import net.i2p.data.Certificate;
-import net.i2p.data.SessionKey;
 import net.i2p.data.SessionTag;
-import net.i2p.data.i2np.DeliveryInstructions;
 import net.i2p.data.i2np.DeliveryStatusMessage;
 import net.i2p.data.i2np.GarlicMessage;
 import net.i2p.data.i2np.I2NPMessage;
@@ -16,9 +13,11 @@ import net.i2p.router.OutNetMessage;
 import net.i2p.router.ReplyJob;
 import net.i2p.router.RouterContext;
 import net.i2p.router.TunnelInfo;
-import net.i2p.router.message.GarlicMessageBuilder;
-import net.i2p.router.message.PayloadGarlicConfig;
-import net.i2p.router.util.RemovableSingletonSet;
+import net.i2p.router.crypto.ratchet.MuxedPQSKM;
+import net.i2p.router.crypto.ratchet.MuxedSKM;
+import net.i2p.router.crypto.ratchet.RatchetSessionTag;
+import net.i2p.router.crypto.ratchet.RatchetSKM;
+import net.i2p.router.networkdb.kademlia.MessageWrapper;
 import net.i2p.stat.Rate;
 import net.i2p.stat.RateStat;
 import net.i2p.util.Log;
@@ -26,6 +25,9 @@ import net.i2p.util.Log;
 /**
  *  Repeatedly test a single tunnel for its entire lifetime,
  *  or until the pool is shut down or removed from the client manager.
+ *
+ *  Tunnel testing is enabled by default.
+ *  see TunnelPoolManager.buildComplete()
  */
 class TestJob extends JobImpl {
     private final Log _log;
@@ -37,6 +39,9 @@ class TestJob extends JobImpl {
     private PooledTunnelCreatorConfig _otherTunnel;
     /** save this so we can tell the SKM to kill it if the test fails */
     private SessionTag _encryptTag;
+    private RatchetSessionTag _ratchetEncryptTag;
+    private static final AtomicInteger __id = new AtomicInteger();
+    private int _id;
     
     /** base to randomize the test delay on */
     private static final int TEST_DELAY = 40*1000;
@@ -60,31 +65,43 @@ class TestJob extends JobImpl {
     public void runJob() {
         if (_pool == null || !_pool.isAlive())
             return;
-        long lag = getContext().jobQueue().getMaxLag();
+        final RouterContext ctx = getContext();
+        long lag = ctx.jobQueue().getMaxLag();
         if (lag > 3000) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Deferring test of " + _cfg + " due to job lag = " + lag);
-            getContext().statManager().addRateData("tunnel.testAborted", _cfg.getLength(), 0);
+            ctx.statManager().addRateData("tunnel.testAborted", _cfg.getLength());
             scheduleRetest();
             return;
         }
-        if (getContext().router().gracefulShutdownInProgress())
+        if (ctx.router().gracefulShutdownInProgress())
             return;   // don't reschedule
         _found = false;
-        // note: testing with exploratory tunnels always, even if the tested tunnel
-        // is a client tunnel (per _cfg.getDestination())
-        // should we test with the tunnel that we exposed the creation with?
-        // (accessible as _cfg.getPairedTunnel())
-        _replyTunnel = null;
-        _outTunnel = null;
+        // NOTE:
+        // We now only support client-to-client and expl-to-expl testing.
+        // To support "mixed" testing, fix sendTest() to use the SKM
+        // of the inbound tunnel.
+        boolean isExpl = _pool.getSettings().isExploratory();
         if (_cfg.isInbound()) {
+            if (ctx.clock().now() - _cfg.getLastTransferred() < TEST_DELAY) {
+                // Inbound tunnels that have recently received data are obviously working.
+                // Also, high bandwidth tunnels may experience dropping, causing false test failures.
+                if (_log.shouldLog(Log.WARN))
+                    _log.warn("Skipping test on " + _cfg + " that recently received data");
+                scheduleRetest();
+                return;
+            }
             _replyTunnel = _cfg;
-            // TODO if testing is re-enabled, pick closest to far end
-            _outTunnel = getContext().tunnelManager().selectOutboundTunnel();
+            if (isExpl)
+                _outTunnel = ctx.tunnelManager().selectOutboundTunnel();
+            else
+                _outTunnel = ctx.tunnelManager().selectOutboundTunnel(_pool.getSettings().getDestination());
             _otherTunnel = (PooledTunnelCreatorConfig) _outTunnel;
         } else {
-            // TODO if testing is re-enabled, pick closest to far end
-            _replyTunnel = getContext().tunnelManager().selectInboundTunnel();
+            if (isExpl)
+                _replyTunnel = ctx.tunnelManager().selectInboundTunnel();
+            else
+                _replyTunnel = ctx.tunnelManager().selectInboundTunnel(_pool.getSettings().getDestination());
             _outTunnel = _cfg;
             _otherTunnel = (PooledTunnelCreatorConfig) _replyTunnel;
         }
@@ -92,64 +109,71 @@ class TestJob extends JobImpl {
         if ( (_replyTunnel == null) || (_outTunnel == null) ) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Insufficient tunnels to test " + _cfg + " with: " + _replyTunnel + " / " + _outTunnel);
-            getContext().statManager().addRateData("tunnel.testAborted", _cfg.getLength(), 0);
+            ctx.statManager().addRateData("tunnel.testAborted", _cfg.getLength());
             scheduleRetest();
         } else {
             int testPeriod = getTestPeriod();
-            long testExpiration = getContext().clock().now() + testPeriod;
-            DeliveryStatusMessage m = new DeliveryStatusMessage(getContext());
-            m.setArrival(getContext().clock().now());
+            long now = ctx.clock().now();
+            long testExpiration = now + testPeriod;
+            DeliveryStatusMessage m = new DeliveryStatusMessage(ctx);
+            m.setArrival(now);
             m.setMessageExpiration(testExpiration);
-            m.setMessageId(getContext().random().nextLong(I2NPMessage.MAX_ID_VALUE));
-            ReplySelector sel = new ReplySelector(getContext(), m.getMessageId(), testExpiration);
-            OnTestReply onReply = new OnTestReply(getContext());
-            OnTestTimeout onTimeout = new OnTestTimeout(getContext());
-            OutNetMessage msg = getContext().messageRegistry().registerPending(sel, onReply, onTimeout);
+            m.setMessageId(ctx.random().nextLong(I2NPMessage.MAX_ID_VALUE));
+            ReplySelector sel = new ReplySelector(m.getMessageId(), testExpiration);
+            OnTestReply onReply = new OnTestReply();
+            OnTestTimeout onTimeout = new OnTestTimeout(now);
+            OutNetMessage msg = ctx.messageRegistry().registerPending(sel, onReply, onTimeout);
             onReply.setSentMessage(msg);
-            sendTest(m);
+            sendTest(m, testPeriod);
         }
     }
     
-    private void sendTest(I2NPMessage m) {
+    private void sendTest(I2NPMessage m, int testPeriod) {
         // garlic route that DeliveryStatusMessage to ourselves so the endpoints and gateways
         // can't tell its a test.  to simplify this, we encrypt it with a random key and tag,
         // remembering that key+tag so that we can decrypt it later.  this means we can do the
         // garlic encryption without any ElGamal (yay)
-        PayloadGarlicConfig payload = new PayloadGarlicConfig();
-        payload.setCertificate(Certificate.NULL_CERT);
-        payload.setId(getContext().random().nextLong(I2NPMessage.MAX_ID_VALUE));
-        payload.setPayload(m);
-        payload.setRecipient(getContext().router().getRouterInfo());
-        payload.setDeliveryInstructions(DeliveryInstructions.LOCAL);
-        payload.setExpiration(m.getMessageExpiration());
-
-        SessionKey encryptKey = getContext().keyGenerator().generateSessionKey();
-        SessionTag encryptTag = new SessionTag(true);
-        _encryptTag = encryptTag;
-        SessionKey sentKey = new SessionKey();
-        Set<SessionTag> sentTags = null;
-        GarlicMessage msg = GarlicMessageBuilder.buildMessage(getContext(), payload, sentKey, sentTags, 
-                                                              getContext().keyManager().getPublicKey(), 
-                                                              encryptKey, encryptTag);
-
-        if (msg == null) {
-            // overloaded / unknown peers / etc
-            scheduleRetest();
-            return;
-        }
-        Set<SessionTag> encryptTags = new RemovableSingletonSet<SessionTag>(encryptTag);
-        // Register the single tag with the appropriate SKM
-        if (_cfg.isInbound() && !_pool.getSettings().isExploratory()) {
-            SessionKeyManager skm = getContext().clientManager().getClientSessionKeyManager(_pool.getSettings().getDestination());
-            if (skm != null)
-                skm.tagsReceived(encryptKey, encryptTags);
+        final RouterContext ctx = getContext();
+        _id = __id.getAndIncrement();
+        if (ctx.random().nextInt(4) != 0) {
+            MessageWrapper.OneTimeSession sess;
+            // NOTE:
+            // We now only support client-to-client and expl-to-expl testing.
+            // To support "mixed" testing, fix this to use the SKM
+            // of the inbound tunnel, not the tested tunnel.
+            if (!_pool.getSettings().isExploratory()) {
+                // to client. false means don't force AES
+                sess = MessageWrapper.generateSession(ctx, _pool.getSettings().getDestination(), testPeriod, false);
+            } else {
+                // to router. AES or ChaCha.
+                sess = MessageWrapper.generateSession(ctx, testPeriod);
+            }
+            if (sess == null) {
+                scheduleRetest();
+                return;
+            }
+            if (sess.tag != null) {
+                // AES
+                _encryptTag = sess.tag;
+                m = MessageWrapper.wrap(ctx, m, sess.key, sess.tag);
+            } else {
+                // ratchet
+                _ratchetEncryptTag = sess.rtag;
+                m = MessageWrapper.wrap(ctx, m, sess.key, sess.rtag);
+            }
+            if (m == null) {
+                // overloaded / unknown peers / etc
+                scheduleRetest();
+                return;
+            }
         } else {
-            getContext().sessionKeyManager().tagsReceived(encryptKey, encryptTags);
+            // Periodically send unencrypted DSM to provide cover for netdb replies
+            if (_log.shouldDebug())
+                _log.debug("Sending tunnel test unencrypted, test #" + _id);
         }
-
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Sending garlic test of " + _outTunnel + " / " + _replyTunnel);
-        getContext().tunnelDispatcher().dispatchOutbound(msg, _outTunnel.getSendTunnelId(0),
+            _log.debug("Sending garlic test #" + _id + " msg ID: " + m.getUniqueId() + " of " + _outTunnel + " / " + _replyTunnel);
+        ctx.tunnelDispatcher().dispatchOutbound(m, _outTunnel.getSendTunnelId(0),
                                                          _replyTunnel.getReceiveTunnelId(0),
                                                          _replyTunnel.getPeer(0));
     }
@@ -157,8 +181,8 @@ class TestJob extends JobImpl {
     public void testSuccessful(int ms) {
         if (_pool == null || !_pool.isAlive())
             return;
-        getContext().statManager().addRateData("tunnel.testSuccessLength", _cfg.getLength(), 0);
-        getContext().statManager().addRateData("tunnel.testSuccessTime", ms, 0);
+        getContext().statManager().addRateData("tunnel.testSuccessLength", _cfg.getLength());
+        getContext().statManager().addRateData("tunnel.testSuccessTime", ms);
     
         _outTunnel.incrementVerifiedBytesTransferred(1024);
         // reply tunnel is marked in the inboundEndpointProcessor
@@ -173,7 +197,7 @@ class TestJob extends JobImpl {
             _otherTunnel.testJobSuccessful(ms);
 
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Tunnel test successful in " + ms + "ms: " + _cfg);
+            _log.debug("Tunnel test #" + _id + " successful in " + ms + "ms: " + _cfg);
         scheduleRetest();
     }
     
@@ -192,11 +216,11 @@ class TestJob extends JobImpl {
             noteSuccess(timeToFail, _replyTunnel);
         }
         if (_pool.getSettings().isExploratory())
-            getContext().statManager().addRateData("tunnel.testExploratoryFailedTime", timeToFail, timeToFail);
+            getContext().statManager().addRateData("tunnel.testExploratoryFailedTime", timeToFail);
         else
-            getContext().statManager().addRateData("tunnel.testFailedTime", timeToFail, timeToFail);
+            getContext().statManager().addRateData("tunnel.testFailedTime", timeToFail);
         if (_log.shouldLog(Log.WARN))
-            _log.warn("Tunnel test failed in " + timeToFail + "ms: " + _cfg);
+            _log.warn("Tunnel test #" + _id + " failed in " + timeToFail + "ms: " + _cfg);
         boolean keepGoing = _cfg.tunnelFailed();
         // blame the expl. tunnel too
         if (_otherTunnel.getLength() > 1)
@@ -205,9 +229,9 @@ class TestJob extends JobImpl {
             scheduleRetest(true);
         } else {
             if (_pool.getSettings().isExploratory())
-                getContext().statManager().addRateData("tunnel.testExploratoryFailedCompletelyTime", timeToFail, timeToFail);
+                getContext().statManager().addRateData("tunnel.testExploratoryFailedCompletelyTime", timeToFail);
             else
-                getContext().statManager().addRateData("tunnel.testFailedCompletelyTime", timeToFail, timeToFail);
+                getContext().statManager().addRateData("tunnel.testFailedCompletelyTime", timeToFail);
         }
     }
     
@@ -237,6 +261,7 @@ class TestJob extends JobImpl {
     }
 
     private void scheduleRetest() { scheduleRetest(false); }
+
     private void scheduleRetest(boolean asap) {
         if (_pool == null || !_pool.isAlive())
             return;
@@ -251,23 +276,21 @@ class TestJob extends JobImpl {
     }
     
     private class ReplySelector implements MessageSelector {
-        private final RouterContext _context;
         private final long _id;
         private final long _expiration;
 
-        public ReplySelector(RouterContext ctx, long id, long expiration) {
-            _context = ctx;
+        public ReplySelector(long id, long expiration) {
             _id = id;
             _expiration = expiration;
             _found = false;
         }
         
-        public boolean continueMatching() { return !_found && _context.clock().now() < _expiration; }
+        public boolean continueMatching() { return !_found && getContext().clock().now() < _expiration; }
 
         public long getExpiration() { return _expiration; }
 
         public boolean isMatch(I2NPMessage message) {
-            if (message instanceof DeliveryStatusMessage) {
+            if (message.getType() == DeliveryStatusMessage.MESSAGE_TYPE) {
                 return ((DeliveryStatusMessage)message).getMessageId() == _id;
             }
             return false;
@@ -289,7 +312,7 @@ class TestJob extends JobImpl {
         private long _successTime;
         private OutNetMessage _sentMessage;
 
-        public OnTestReply(RouterContext ctx) { super(ctx); }
+        public OnTestReply() { super(TestJob.this.getContext()); }
 
         public String getName() { return "Tunnel test success"; }
 
@@ -325,25 +348,55 @@ class TestJob extends JobImpl {
     private class OnTestTimeout extends JobImpl {
         private final long _started;
 
-        public OnTestTimeout(RouterContext ctx) { 
-            super(ctx); 
-            _started = ctx.clock().now();
+        public OnTestTimeout(long now) {
+            super(TestJob.this.getContext()); 
+            _started = now;
         }
 
         public String getName() { return "Tunnel test timeout"; }
 
         public void runJob() {
-            if (_log.shouldLog(Log.WARN))
-                _log.warn("Timeout: found? " + _found);
-            if (!_found) {
+            if (_log.shouldDebug())
+                _log.debug("Tunnel test #" + _id + " timeout: found? " + _found);
+            if (!_found && (_encryptTag != null || _ratchetEncryptTag != null)) {
                 // don't clog up the SKM with old one-tag tagsets
-                if (_cfg.isInbound() && !_pool.getSettings().isExploratory()) {
-                    SessionKeyManager skm = getContext().clientManager().getClientSessionKeyManager(_pool.getSettings().getDestination());
-                    if (skm != null)
-                        skm.consumeTag(_encryptTag);
+                SessionKeyManager skm;
+                if (!_pool.getSettings().isExploratory()) {
+                    skm = getContext().clientManager().getClientSessionKeyManager(_pool.getSettings().getDestination());
                 } else {
-                    getContext().sessionKeyManager().consumeTag(_encryptTag);
+                    skm = getContext().sessionKeyManager();
                 }
+                if (skm != null) {
+                    if (_encryptTag != null) {
+                        // AES
+                        skm.consumeTag(_encryptTag);
+                    } else {
+                        // ratchet
+                        RatchetSKM rskm;
+                        switch (skm.getSKMType()) {
+                          case RATCHET:
+                            rskm = (RatchetSKM) skm;
+                            break;
+
+                          case MUXED:
+                            rskm = ((MuxedSKM) skm).getECSKM();
+                            break;
+
+                          case MUXEDPQ:
+                            rskm = ((MuxedPQSKM) skm).getECSKM();
+                            break;
+
+                          default:
+                            // shouldn't happen
+                            rskm = null;
+                            break;
+                        }
+                        if (rskm != null)
+                            rskm.consumeTag(_ratchetEncryptTag);
+                    }
+                }
+            }
+            if (!_found) {
                 testFailed(getContext().clock().now() - _started);
             }
         }

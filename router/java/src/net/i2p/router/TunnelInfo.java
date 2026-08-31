@@ -87,4 +87,39 @@ public interface TunnelInfo {
      *  @since 0.8.11
      */
     public void setReused();
+
+    /**
+     * Has the tunnel failed completely?
+     *
+     * @since 0.9.53 copied from TunnelCreatorConfig
+     */
+    public boolean getTunnelFailed();
+
+    /**
+     *  Bandwidth requested, or 0 if unset
+     *  @return Bps
+     *  @since 0.9.69
+     */
+    public int getRequestedBW();
+
+    /**
+     *  Bandwidth requested, or 0 if unset
+     *  @param bw Bps
+     *  @since 0.9.69
+     */
+    public void setRequestedBW(int bw);
+
+    /**
+     *  Bandwidth allocated, or 0 if unset
+     *  @return Bps
+     *  @since 0.9.69
+     */
+    public int getAllocatedBW();
+
+    /**
+     *  Bandwidth allocated, or 0 if unset
+     *  @param bw Bps
+     *  @since 0.9.69
+     */
+    public void setAllocatedBW(int bw);
 }

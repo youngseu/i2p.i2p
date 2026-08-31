@@ -17,6 +17,8 @@ import java.util.Properties;
 import java.util.StringTokenizer;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.eclipse.jetty.server.Server;
+
 import net.i2p.CoreVersion;
 import net.i2p.I2PAppContext;
 import net.i2p.app.ClientApp;
@@ -30,11 +32,14 @@ import net.i2p.router.startup.LoadClientAppsJob;
 import net.i2p.router.update.ConsoleUpdateManager;
 import static net.i2p.update.UpdateType.*;
 import net.i2p.util.ConcurrentHashSet;
+import net.i2p.util.FileSuffixFilter;
 import net.i2p.util.FileUtil;
 import net.i2p.util.I2PAppThread;
 import net.i2p.util.Log;
+import net.i2p.util.OrderedProperties;
 import net.i2p.util.PortMapper;
 import net.i2p.util.SimpleTimer2;
+import net.i2p.util.SystemVersion;
 import net.i2p.util.Translate;
 import net.i2p.util.VersionComparator;
 
@@ -57,7 +62,7 @@ public class PluginStarter implements Runnable {
     public static final String ENABLED = ".startOnLoad";
     public static final String DELETED = "deleted";
     public static final String PLUGIN_DIR = "plugins";
-    private static final String[] STANDARD_WEBAPPS = { "i2psnark", "i2ptunnel", "susidns",
+    private static final String[] STANDARD_WEBAPPS = { "i2psnark", "i2ptunnel", "imagegen", "susidns",
                                                        "susimail", "addressbook", "routerconsole" };
     private static final String[] STANDARD_THEMES = { "images", "light", "dark", "classic",
                                                       "midnight" };
@@ -77,24 +82,44 @@ public class PluginStarter implements Runnable {
     public static final Map<String, String> jetty9Blacklist;
 
     static {
-        Map<String, String> map = new HashMap<String, String>(4);
+        Map<String, String> map = new HashMap<String, String>(2);
         map.put("i2pbote", "0.4.5");
         map.put("BwSchedule", "0.0.36");
         jetty9Blacklist = Collections.unmodifiableMap(map);
+    }
+
+    /**
+     *  Plugin name to plugin version of plugins that do not work
+     *  with Java 9+
+     *  Unmodifiable.
+     *
+     *  @since 0.9.30
+     */
+    public static final Map<String, String> java9Blacklist;
+
+    static {
+        Map<String, String> map = new HashMap<String, String>(2);
+        map.put("01_neodatis", "2.1-2.14-209-17");
+        map.put("02_seedless", "0.1.7-0.1.12");
+        java9Blacklist = Collections.unmodifiableMap(map);
     }
 
     public PluginStarter(RouterContext ctx) {
         _context = ctx;
     }
 
-    static boolean pluginsEnabled(I2PAppContext ctx) {
+    /**
+     *  @since public since 0.9.33, was package private
+     */
+    public static boolean pluginsEnabled(I2PAppContext ctx) {
          return ctx.getBooleanPropertyDefaultTrue("router.enablePlugins");
     }
 
     public void run() {
         deferredDeletePlugins(_context);
         if (_context.getBooleanPropertyDefaultTrue("plugins.autoUpdate") &&
-            !NewsHelper.isUpdateInProgress()) {
+            !NewsHelper.isUpdateInProgress() &&
+            !_context.commSystem().isDummy()) {
             String prev = _context.getProperty("router.previousVersion");
             if (prev != null &&
                 VersionComparator.comp(RouterVersion.VERSION, prev) > 0) {
@@ -106,9 +131,9 @@ public class PluginStarter implements Runnable {
 
     /**
      *  threaded
-     *  @since 0.8.13
+     *  @since 0.8.13, public since 0.9.33, was package private
      */
-    static void updateAll(RouterContext ctx) {
+    public static void updateAll(RouterContext ctx) {
         Thread t = new I2PAppThread(new PluginUpdater(ctx), "PluginUpdater", true);
         t.start();
     }
@@ -152,14 +177,24 @@ public class PluginStarter implements Runnable {
             return;
 
         if (delay) {
+            // wait for router.
+            // i2ptunnel won't start until isRunning()
+            int loop = 0;
+            while (!ctx.router().isRunning()) {
+                try {
+                    Thread.sleep(10*1000);
+                } catch (InterruptedException ie) { return; }
+                // 30 minutes
+                if (loop++ > 180) return;
+            }
             // wait for proxy
             mgr.update(TYPE_DUMMY, 3*60*1000);
             mgr.notifyProgress(null, Messages.getString("Checking for plugin updates", ctx));
-            int loop = 0;
+            loop = 0;
             do {
                 try {
                     Thread.sleep(5*1000);
-                } catch (InterruptedException ie) {}
+                } catch (InterruptedException ie) { break; }
                 if (loop++ > 40) break;
             } while (mgr.isUpdateInProgress(TYPE_DUMMY));
         }
@@ -168,7 +203,7 @@ public class PluginStarter implements Runnable {
         int proxyPort = ConfigUpdateHandler.proxyPort(ctx);
         if (proxyPort == ConfigUpdateHandler.DEFAULT_PROXY_PORT_INT &&
             proxyHost.equals(ConfigUpdateHandler.DEFAULT_PROXY_HOST) &&
-            ctx.portMapper().getPort(PortMapper.SVC_HTTP_PROXY) < 0) {
+            !ctx.portMapper().isRegistered(PortMapper.SVC_HTTP_PROXY)) {
             mgr.notifyComplete(null, Messages.getString("Plugin update check failed", ctx) +
                                      " - " +
                                      Messages.getString("HTTP client proxy tunnel must be running", ctx));
@@ -213,7 +248,7 @@ public class PluginStarter implements Runnable {
                 updated++;
         }
         if (updated > 0)
-            mgr.notifyComplete(null, ngettext("1 plugin updated", "{0} plugins updated", updated, ctx));
+            mgr.notifyComplete(null, ngettext("{0} plugin updated", "{0} plugins updated", updated, ctx));
         else
             mgr.notifyComplete(null, Messages.getString("Plugin update check complete", ctx));
     }
@@ -316,7 +351,7 @@ public class PluginStarter implements Runnable {
         // For the following, we use the exact same translated strings as in PluginUpdateRunner
         // to avoid duplication
 
-        String minVersion = ConfigClientsHelper.stripHTML(props, "min-i2p-version");
+        String minVersion = stripHTML(props, "min-i2p-version");
         if (minVersion != null &&
             VersionComparator.comp(CoreVersion.VERSION, minVersion) < 0) {
             String foo = "Plugin " + appName + " requires I2P version " + minVersion + " or higher";
@@ -326,9 +361,8 @@ public class PluginStarter implements Runnable {
             throw new Exception(foo);
         }
 
-        minVersion = ConfigClientsHelper.stripHTML(props, "min-java-version");
-        if (minVersion != null &&
-            VersionComparator.comp(System.getProperty("java.version"), minVersion) < 0) {
+        minVersion = stripHTML(props, "min-java-version");
+        if (minVersion != null && !SystemVersion.isJava(minVersion)) {
             String foo = "Plugin " + appName + " requires Java version " + minVersion + " or higher";
             log.error(foo);
             disablePlugin(appName);
@@ -336,8 +370,8 @@ public class PluginStarter implements Runnable {
             throw new Exception(foo);
         }
 
-        String jVersion = LogsHelper.jettyVersion();
-        minVersion = ConfigClientsHelper.stripHTML(props, "min-jetty-version");
+        String jVersion = RouterConsoleRunner.jettyVersion();
+        minVersion = stripHTML(props, "min-jetty-version");
         if (minVersion != null &&
             VersionComparator.comp(minVersion, jVersion) > 0) {
             String foo = "Plugin " + appName + " requires Jetty version " + minVersion + " or higher";
@@ -348,7 +382,7 @@ public class PluginStarter implements Runnable {
         }
 
         String blacklistVersion = jetty9Blacklist.get(appName);
-        String curVersion = ConfigClientsHelper.stripHTML(props, "version");
+        String curVersion = stripHTML(props, "version");
         if (blacklistVersion != null &&
             VersionComparator.comp(curVersion, blacklistVersion) <= 0) {
             String foo = "Plugin " + appName + " requires Jetty version 8.9999 or lower";
@@ -358,7 +392,19 @@ public class PluginStarter implements Runnable {
             throw new Exception(foo);
         }
 
-        String maxVersion = ConfigClientsHelper.stripHTML(props, "max-jetty-version");
+        if (SystemVersion.isJava9()) {
+            blacklistVersion = java9Blacklist.get(appName);
+            if (blacklistVersion != null &&
+                VersionComparator.comp(curVersion, blacklistVersion) <= 0) {
+                String foo = "Plugin " + appName + " requires Jetty version 8.9999 or lower";
+                log.error(foo);
+                disablePlugin(appName);
+                foo = gettext("Plugin requires Java version {0} or lower", "8.9999", ctx);
+                throw new Exception(foo);
+            }
+        }
+
+        String maxVersion = stripHTML(props, "max-jetty-version");
         if (maxVersion != null &&
             VersionComparator.comp(maxVersion, jVersion) < 0) {
             String foo = "Plugin " + appName + " requires Jetty version " + maxVersion + " or lower";
@@ -379,7 +425,7 @@ public class PluginStarter implements Runnable {
                 String name = tfiles[i].getName();
                 if (tfiles[i].isDirectory() && (!Arrays.asList(STANDARD_THEMES).contains(tfiles[i]))) {
                     // deprecated
-                    ctx.router().setConfigSetting(ConfigUIHelper.PROP_THEME_PFX + name, tfiles[i].getAbsolutePath());
+                    ctx.router().setConfigSetting(CSSHelper.PROP_THEME_PFX + name, tfiles[i].getAbsolutePath());
                     // we don't need to save
                 }
             }
@@ -390,7 +436,7 @@ public class PluginStarter implements Runnable {
         if(fullprop != null && fullprop.length() > 1){
             byte[] decoded = Base64.decode(fullprop);
             if(decoded != null) {
-                NavHelper.setBinary(appName, decoded);
+                NavHelper.getInstance(ctx).setBinary(appName, decoded);
                 iconfile = "/Plugins/pluginicon?plugin=" + appName;
             } else {
                 iconfile = "/themes/console/images/plugin.png";
@@ -407,18 +453,19 @@ public class PluginStarter implements Runnable {
         }
 
         // start console webapps in console/webapps
-        ContextHandlerCollection server = WebAppStarter.getConsoleServer();
+        ContextHandlerCollection server = WebAppStarter.getConsoleServer(ctx);
         if (server != null) {
             File consoleDir = new File(pluginDir, "console");
             Properties wprops = RouterConsoleRunner.webAppProperties(consoleDir.getAbsolutePath());
             File webappDir = new File(consoleDir, "webapps");
-            String fileNames[] = webappDir.list(RouterConsoleRunner.WarFilenameFilter.instance());
-            if (fileNames != null) {
+            File files[] = webappDir.listFiles(RouterConsoleRunner.WAR_FILTER);
+            if (files != null) {
                 if(!pluginWars.containsKey(appName))
                     pluginWars.put(appName, new ConcurrentHashSet<String>());
-                for (int i = 0; i < fileNames.length; i++) {
+                for (int i = 0; i < files.length; i++) {
                     try {
-                        String warName = fileNames[i].substring(0, fileNames[i].lastIndexOf(".war"));
+                        String warName = files[i].getName();
+                        warName = warName.substring(0, warName.lastIndexOf(".war"));
                         //log.error("Found webapp: " + warName);
                         // check for duplicates in $I2P
                         if (Arrays.asList(STANDARD_WEBAPPS).contains(warName)) {
@@ -429,21 +476,35 @@ public class PluginStarter implements Runnable {
                         if (! "false".equals(enabled)) {
                             if (log.shouldLog(Log.INFO))
                                 log.info("Starting webapp: " + warName);
-                            String path = new File(webappDir, fileNames[i]).getCanonicalPath();
-                            WebAppStarter.startWebApp(ctx, server, warName, path);
+                            String path = files[i].getCanonicalPath();
+                            WebAppStarter.startWebApp(ctx, server, warName, path, appName);
                             pluginWars.get(appName).add(warName);
                         }
                     } catch (IOException ioe) {
-                        log.error("Error resolving '" + fileNames[i] + "' in '" + webappDir, ioe);
+                        log.error("Error resolving '" + files[i] + "' in '" + webappDir, ioe);
                     }
                 }
                 // Check for iconfile in plugin.properties
-                String icfile = ConfigClientsHelper.stripHTML(props, "console-icon");
+                String icfile = stripHTML(props, "console-icon");
                 if (icfile != null && !icfile.contains("..")) {
                     StringBuilder buf = new StringBuilder(32);
-                    buf.append('/').append(appName);
-                    if (!icfile.startsWith("/"))
+                    String url = stripHTML(props, "consoleLinkURL");
+                    if (url != null) {
+                        if (url.endsWith(".html") || url.endsWith(".htm") || url.endsWith(".jsp") || url.endsWith("/home")) {
+                            int slash = url.lastIndexOf('/');
+                            if (slash > 0)
+                                url = url.substring(0, slash);
+                        }
+                    } else {
+                        url = appName;
+                    }
+                    if (!url.startsWith("/"))
                         buf.append('/');
+                    buf.append(url);
+                    if (!url.endsWith("/") && !icfile.startsWith("/"))
+                        buf.append('/');
+                    else if (url.endsWith("/") && icfile.startsWith("/"))
+                        icfile = icfile.substring(1);
                     buf.append(icfile);
                     iconfile = buf.toString();
                 }
@@ -457,23 +518,21 @@ public class PluginStarter implements Runnable {
         // later in the classpath.
         File localeDir = new File(pluginDir, "console/locale");
         if (localeDir.exists() && localeDir.isDirectory()) {
-            File[] files = localeDir.listFiles();
+            File[] files = localeDir.listFiles(new FileSuffixFilter(".jar"));
             if (files != null) {
                 boolean added = false;
                 for (int i = 0; i < files.length; i++) {
                     File f = files[i];
-                    if (f.getName().endsWith(".jar")) {
-                        try {
-                            addPath(f.toURI().toURL());
-                            log.info("INFO: Adding translation plugin to classpath: " + f);
-                            added = true;
-                        } catch (ClassCastException e) {
-                            log.logAlways(Log.WARN, "Java version: " + System.getProperty("java.version") +
-                                                    " does not support adding classpath element: " + f +
-                                                    " for plugin " + appName);
-                        } catch (RuntimeException e) {
-                            log.error("Plugin " + appName + " bad classpath element: " + f, e);
-                        }
+                    try {
+                        addPath(f.toURI().toURL());
+                        log.info("INFO: Adding translation plugin to classpath: " + f);
+                        added = true;
+                    } catch (ClassCastException e) {
+                        log.logAlways(Log.WARN, "Java version: " + System.getProperty("java.version") +
+                                                " does not support adding classpath element: " + f +
+                                                " for plugin " + appName);
+                    } catch (RuntimeException e) {
+                        log.error("Plugin " + appName + " bad classpath element: " + f, e);
                     }
                 }
                 if (added)
@@ -481,15 +540,15 @@ public class PluginStarter implements Runnable {
             }
         }
         // add summary bar link
-        String name = ConfigClientsHelper.stripHTML(props, "consoleLinkName_" + Messages.getLanguage(ctx));
+        String name = stripHTML(props, "consoleLinkName_" + Messages.getLanguage(ctx));
         if (name == null)
-            name = ConfigClientsHelper.stripHTML(props, "consoleLinkName");
-        String url = ConfigClientsHelper.stripHTML(props, "consoleLinkURL");
+            name = stripHTML(props, "consoleLinkName");
+        String url = stripHTML(props, "consoleLinkURL");
         if (name != null && url != null && name.length() > 0 && url.length() > 0) {
-            String tip = ConfigClientsHelper.stripHTML(props, "consoleLinkTooltip_" + Messages.getLanguage(ctx));
+            String tip = stripHTML(props, "consoleLinkTooltip_" + Messages.getLanguage(ctx));
             if (tip == null)
-                tip = ConfigClientsHelper.stripHTML(props, "consoleLinkTooltip");
-            NavHelper.registerApp(name, url, tip, iconfile);
+                tip = stripHTML(props, "consoleLinkTooltip");
+            NavHelper.getInstance(ctx).registerApp(appName, name, url, tip, iconfile);
         }
 
         return true;
@@ -500,20 +559,42 @@ public class PluginStarter implements Runnable {
      *  @throws Exception just about anything, caller would be wise to catch Throwable
      */
     public static boolean stopPlugin(RouterContext ctx, String appName) throws Exception {
+        Server s = RouterConsoleRunner.getConsoleServer(ctx);
+        return stopPlugin(ctx, s, appName);
+    }
+
+    /**
+     *  @return true on success
+     *  @throws Exception just about anything, caller would be wise to catch Throwable
+     *  @since 0.9.41
+     */
+    protected static boolean stopPlugin(RouterContext ctx, Server s, String appName) throws Exception {
         Log log = ctx.logManager().getLog(PluginStarter.class);
         File pluginDir = new File(ctx.getConfigDir(), PLUGIN_DIR + '/' + appName);
         if ((!pluginDir.exists()) || (!pluginDir.isDirectory())) {
             log.error("Cannot stop nonexistent plugin: " + appName);
             return false;
         }
+        if (log.shouldLog(Log.WARN))
+            log.warn("Stopping plugin: " + appName);
 
-        // stop things in clients.config
-        File clientConfig = new File(pluginDir, "clients.config");
-        if (clientConfig.exists()) {
-            Properties props = new Properties();
-            DataHelper.loadProps(props, clientConfig);
-            List<ClientAppConfig> clients = ClientAppConfig.getClientApps(clientConfig);
-            runClientApps(ctx, pluginDir, clients, "stop");
+        ClientApp client = ctx.clientAppManager().getRegisteredApp(appName);
+        if (client != null) {
+            try{
+                client.shutdown(null);
+            }catch(Throwable t){
+                if (log.shouldLog(Log.ERROR))
+                    log.error("Error stopping client app: " + appName, t);
+            }
+        } else {
+            // stop things in clients.config
+            File clientConfig = new File(pluginDir, "clients.config");
+            if (clientConfig.exists()) {
+                Properties props = new Properties();
+                DataHelper.loadProps(props, clientConfig);
+                List<ClientAppConfig> clients = ClientAppConfig.getClientApps(clientConfig);
+                runClientApps(ctx, pluginDir, clients, "stop");
+            }
         }
 
         // stop console webapps in console/webapps
@@ -534,31 +615,30 @@ public class PluginStarter implements Runnable {
                 }
             }
         */
-            if(pluginWars.containsKey(appName)) {
-                Iterator <String> wars = pluginWars.get(appName).iterator();
-                while (wars.hasNext()) {
-                    String warName = wars.next();
-                    WebAppStarter.stopWebApp(warName);
+            if (s != null) {
+                Collection<String> wars = pluginWars.get(appName);
+                if (wars != null) {
+                    for (String warName : wars) {
+                        if (log.shouldInfo())
+                            log.info("Stopping webapp " + warName + " in plugin " + appName);
+                        WebAppStarter.stopWebApp(ctx, s, warName);
+                    }
+                    wars.clear();
                 }
-                pluginWars.get(appName).clear();
             }
         //}
 
         // remove summary bar link
-        Properties props = pluginProperties(ctx, appName);
-        String name = ConfigClientsHelper.stripHTML(props, "consoleLinkName_" + Messages.getLanguage(ctx));
-        if (name == null)
-            name = ConfigClientsHelper.stripHTML(props, "consoleLinkName");
-        if (name != null && name.length() > 0)
-            NavHelper.unregisterApp(name);
+        NavHelper.getInstance(ctx).unregisterApp(appName);
 
-        if (log.shouldLog(Log.WARN))
-            log.warn("Stopping plugin: " + appName);
         return true;
     }
 
-    /** @return true on success - caller should call stopPlugin() first */
-    static boolean deletePlugin(RouterContext ctx, String appName) throws Exception {
+    /**
+     *  @return true on success - caller should call stopPlugin() first
+     *  @since public since 0.9.33, was package private
+     */
+    public static boolean deletePlugin(RouterContext ctx, String appName) throws Exception {
         Log log = ctx.logManager().getLog(PluginStarter.class);
         File pluginDir = new File(ctx.getConfigDir(), PLUGIN_DIR + '/' + appName);
         if ((!pluginDir.exists()) || (!pluginDir.isDirectory())) {
@@ -584,7 +664,7 @@ public class PluginStarter implements Runnable {
             for (int i = 0; i < tfiles.length; i++) {
                 String name = tfiles[i].getName();
                 if (tfiles[i].isDirectory() && (!Arrays.asList(STANDARD_THEMES).contains(tfiles[i]))) {
-                    removes.add(ConfigUIHelper.PROP_THEME_PFX + name);
+                    removes.add(CSSHelper.PROP_THEME_PFX + name);
                     if (name.equals(current))
                         changes.put(CSSHelper.PROP_THEME_NAME, CSSHelper.DEFAULT_THEME);
                 }
@@ -627,7 +707,7 @@ public class PluginStarter implements Runnable {
         File dir = I2PAppContext.getGlobalContext().getConfigDir();
         Properties rv = new Properties();
         File cfgFile = new File(dir, CONFIG_FILE);
-        
+
         try {
             DataHelper.loadProps(rv, cfgFile);
         } catch (IOException ioe) {}
@@ -725,6 +805,11 @@ public class PluginStarter implements Runnable {
      *  plugins.config
      */
     public static void storePluginProperties(Properties props) {
+        if (!(props instanceof OrderedProperties)) {
+            Properties p = new OrderedProperties();
+            p.putAll(props);
+            props = p;
+        }
         File cfgFile = new File(I2PAppContext.getGlobalContext().getConfigDir(), CONFIG_FILE);
         try {
             DataHelper.storeProps(props, cfgFile);
@@ -738,7 +823,7 @@ public class PluginStarter implements Runnable {
      */
     private static void runClientApps(RouterContext ctx, File pluginDir, List<ClientAppConfig> apps, String action) throws Exception {
         Log log = ctx.logManager().getLog(PluginStarter.class);
-        
+
         // initialize pluginThreadGroup and _pendingPluginClients
         String pluginName = pluginDir.getName();
         if (!pluginThreadGroups.containsKey(pluginName))
@@ -746,7 +831,7 @@ public class PluginStarter implements Runnable {
         ThreadGroup pluginThreadGroup = pluginThreadGroups.get(pluginName);
         if (action.equals("start"))
             _pendingPluginClients.put(pluginName, new ConcurrentHashSet<SimpleTimer2.TimedEvent>());
-        
+
         for(ClientAppConfig app : apps) {
             // If the client is a running ClientApp that we want to stop,
             // bypass all the logic below.
@@ -760,6 +845,8 @@ public class PluginStarter implements Runnable {
                         argVal[i] = argVal[i].replace("$I2P", ctx.getBaseDir().getAbsolutePath());
                         argVal[i] = argVal[i].replace("$CONFIG", ctx.getConfigDir().getAbsolutePath());
                         argVal[i] = argVal[i].replace("$PLUGIN", pluginDir.getAbsolutePath());
+                        argVal[i] = argVal[i].replace("$OS", SystemVersion.getOS());
+                        argVal[i] = argVal[i].replace("$ARCH", SystemVersion.getArch());
                     }
                 }
                 ClientApp ca = ctx.routerAppManager().getClientApp(app.className, argVal);
@@ -799,6 +886,8 @@ public class PluginStarter implements Runnable {
                     argVal[i] = argVal[i].replace("$I2P", ctx.getBaseDir().getAbsolutePath());
                     argVal[i] = argVal[i].replace("$CONFIG", ctx.getConfigDir().getAbsolutePath());
                     argVal[i] = argVal[i].replace("$PLUGIN", pluginDir.getAbsolutePath());
+                    argVal[i] = argVal[i].replace("$OS", SystemVersion.getOS());
+                    argVal[i] = argVal[i].replace("$ARCH", SystemVersion.getArch());
                 }
             }
 
@@ -809,6 +898,8 @@ public class PluginStarter implements Runnable {
                     cp = cp.replace("$I2P", ctx.getBaseDir().getAbsolutePath());
                     cp = cp.replace("$CONFIG", ctx.getConfigDir().getAbsolutePath());
                     cp = cp.replace("$PLUGIN", pluginDir.getAbsolutePath());
+                    cp = cp.replace("$OS", SystemVersion.getOS());
+                    cp = cp.replace("$ARCH", SystemVersion.getArch());
                 }
 
                 // Old way - add for the whole JVM
@@ -849,7 +940,7 @@ public class PluginStarter implements Runnable {
                     // quick check
                     LoadClientAppsJob.testClient(app.className, cl);
                 } catch (ClassNotFoundException ex) {
-                    // Try again 1 or 2 seconds later. 
+                    // Try again 1 or 2 seconds later.
                     // This should be enough time. Although it is a lousy hack
                     // it should work for most cases.
                     // Perhaps it may be even better to delay a percentage
@@ -903,36 +994,65 @@ public class PluginStarter implements Runnable {
     }
 
     public static boolean isPluginRunning(String pluginName, RouterContext ctx) {
+        Server s = RouterConsoleRunner.getConsoleServer(ctx);
+        return isPluginRunning(pluginName, ctx, s);
+    }
+
+    /**
+     *  @since 0.9.41
+     */
+    protected static boolean isPluginRunning(String pluginName, RouterContext ctx, Server s) {
         Log log = ctx.logManager().getLog(PluginStarter.class);
-        
+
         boolean isJobRunning = false;
         Collection<SimpleTimer2.TimedEvent> pending = _pendingPluginClients.get(pluginName);
         if (pending != null && !pending.isEmpty()) {
             // TODO have a pending indication too
             isJobRunning = true;
         }
+
         boolean isWarRunning = false;
-        if(pluginWars.containsKey(pluginName)) {
-            Iterator <String> it = pluginWars.get(pluginName).iterator();
-            while(it.hasNext() && !isWarRunning) {
-                String warName = it.next();
-                if(WebAppStarter.isWebAppRunning(warName)) {
-                    isWarRunning = true;
+        if (s != null) {
+            Collection<String> wars = pluginWars.get(pluginName);
+            if (wars != null) {
+                for (String warName : wars) {
+                    if (WebAppStarter.isWebAppRunning(s, warName)) {
+                        isWarRunning = true;
+                        break;
+                    }
                 }
             }
         }
 
+        // load and check for ShellServices.
+        boolean isProcessRunning = false;
+        ClientApp client = ctx.clientAppManager().getRegisteredApp(pluginName);
+        if (client != null) {
+            if (log.shouldLog(Log.DEBUG))
+                log.debug("Checking state of client " + pluginName + client.getState());
+            if (client.getState() == ClientAppState.RUNNING) {
+                isProcessRunning = true;
+            }
+        } else {
+            if (log.shouldLog(Log.DEBUG))
+                log.debug("No client found for plugin " + pluginName);
+        }
+
         boolean isClientThreadRunning = isClientThreadRunning(pluginName, ctx);
         if (log.shouldLog(Log.DEBUG))
-            log.debug("plugin name = <" + pluginName + ">; threads running? " + isClientThreadRunning + "; webapp running? " + isWarRunning + "; jobs running? " + isJobRunning);
-        return isClientThreadRunning || isWarRunning || isJobRunning;
+            log.debug("plugin name = <" + pluginName +
+            ">; threads running? " + isClientThreadRunning +
+            "; webapp running? " + isWarRunning +
+            "; jobs running? " + isJobRunning +
+            "; process running? " + isProcessRunning);
+        return isClientThreadRunning || isWarRunning || isJobRunning || isProcessRunning;
         //
         //if (log.shouldLog(Log.DEBUG))
         //    log.debug("plugin name = <" + pluginName + ">; threads running? " + isClientThreadRunning(pluginName) + "; webapp running? " + WebAppStarter.isWebAppRunning(pluginName) + "; jobs running? " + isJobRunning);
         //return isClientThreadRunning(pluginName) || WebAppStarter.isWebAppRunning(pluginName) || isJobRunning;
         //
     }
-    
+
     /**
      * Returns <code>true</code> if one or more client threads are running in a given plugin.
      * @param pluginName
@@ -943,8 +1063,8 @@ public class PluginStarter implements Runnable {
         if (group == null)
             return false;
         boolean rv = group.activeCount() > 0;
-        
-        // Plugins start before the eepsite, and will create the static Timer thread
+
+        // Plugins start before the I2P Site, and will create the static Timer thread
         // in RolloverFileOutputStream, which never stops. Don't count it.
         // Ditto HSQLDB Timer (jwebcache)
         if (rv) {
@@ -956,7 +1076,8 @@ public class PluginStarter implements Runnable {
                 if (activeThreads[i] != null) {
                     String name = activeThreads[i].getName();
                     if (!"org.eclipse.jetty.util.RolloverFileOutputStream".equals(name) &&
-                        !name.startsWith("HSQLDB Timer"))
+                        !name.startsWith("HSQLDB Timer") &&
+                        !name.startsWith("Scanner"))
                         notRollover = true;
                     if (log.shouldLog(Log.DEBUG))
                         log.debug("Found " + activeThreads[i].getState() + " thread " + name + " for " + pluginName + ": " + name);
@@ -967,7 +1088,7 @@ public class PluginStarter implements Runnable {
 
         return rv;
     }
-    
+
     /**
      *  Perhaps there's an easy way to use Thread.setContextClassLoader()
      *  but I don't see how to make it magically get used for everything.
@@ -1031,6 +1152,19 @@ public class PluginStarter implements Runnable {
         Method method = urlClass.getDeclaredMethod("addURL", URL.class);
         method.setAccessible(true);
         method.invoke(urlClassLoader, new Object[]{u});
+    }
+
+    /**
+     *  Like in DataHelper but doesn't convert null to ""
+     *  There's a lot worse things a plugin could do but...
+     *  @since moved from ConfigClientsHelper in 0.9.33
+     */
+    public static String stripHTML(Properties props, String key) {
+        String orig = props.getProperty(key);
+        if (orig == null) return null;
+        String t1 = orig.replace('<', ' ');
+        String rv = t1.replace('>', ' ');
+        return rv;
     }
 
     /**

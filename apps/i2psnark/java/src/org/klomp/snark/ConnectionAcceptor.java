@@ -30,6 +30,7 @@ import net.i2p.I2PAppContext;
 import net.i2p.I2PException;
 import net.i2p.client.streaming.I2PServerSocket;
 import net.i2p.client.streaming.I2PSocket;
+import net.i2p.client.streaming.RouterRestartException;
 import net.i2p.data.Hash;
 import net.i2p.util.I2PAppThread;
 import net.i2p.util.Log;
@@ -52,7 +53,7 @@ class ConnectionAcceptor implements Runnable
 
   // protocol errors before blacklisting.
   private static final int MAX_BAD = 1;
-  private static final long BAD_CLEAN_INTERVAL = 30*60*1000;
+  private static final long BAD_CLEAN_INTERVAL = 147*60*1000;
 
   /**
    *  Multitorrent. Caller MUST call startAccepting()
@@ -78,22 +79,6 @@ class ConnectionAcceptor implements Runnable
       }
   }
   
-  /**
-   *  Unused (single torrent).
-   *  Do NOT call startAccepting().
-   */
-  public ConnectionAcceptor(I2PSnarkUtil util,
-                            PeerAcceptor peeracceptor)
-  {
-    this.peeracceptor = peeracceptor;
-    _util = util;
-    
-    thread = new I2PAppThread(this, "I2PSnark acceptor");
-    thread.setDaemon(true);
-    thread.start();
-    _cleaner = new Cleaner();
-  }
-
   /**
    *  May be restarted later with startAccepting().
    */
@@ -131,12 +116,13 @@ class ConnectionAcceptor implements Runnable
   /**
    *  Effectively unused, would only be called if we changed
    *  I2CP host/port, which is hidden in the gui if in router context
-   *  FIXME this only works if already running
    */
   public synchronized void restart() {
       Thread t = thread;
       if (t != null)
           t.interrupt();
+      else
+          startAccepting();
   }
 
   public int getPort()
@@ -178,29 +164,47 @@ class ConnectionAcceptor implements Runnable
             } else {
                 if (socket.getPeerDestination().equals(_util.getMyDestination())) {
                     _log.error("Incoming connection from myself");
-                    try { socket.close(); } catch (IOException ioe) {}
+                    try { socket.reset(); } catch (IOException ioe) {}
                     continue;
                 }
                 Hash h = socket.getPeerDestination().calculateHash();
                 if (socket.getLocalPort() == 80) {
                      _badCounter.increment(h);
                     if (_log.shouldLog(Log.WARN))
-                        _log.error("Dropping incoming HTTP from " + h);
-                    try { socket.close(); } catch (IOException ioe) {}
+                        _log.warn("Dropping incoming HTTP from " + h.toBase32());
+                    try { socket.reset(); } catch (IOException ioe) {}
                     continue;
                 }
                 int bad = _badCounter.count(h);
                 if (bad >= MAX_BAD) {
                     if (_log.shouldLog(Log.WARN))
-                        _log.warn("Rejecting connection from " + h +
+                        _log.warn("Rejecting connection from " + h.toBase32() +
                                   " after " + bad + " failures, max is " + MAX_BAD);
-                    try { socket.close(); } catch (IOException ioe) {}
+                    try { socket.reset(); } catch (IOException ioe) {}
                     continue;
                 }
                 Thread t = new I2PAppThread(new Handler(socket), "I2PSnark incoming connection");
                 t.start();
             }
           }
+        catch (RouterRestartException rre) {
+            if (_log.shouldWarn())
+                _log.warn("Waiting for router restart", rre);
+            try {
+                Thread.sleep(2*60*1000);
+            } catch (InterruptedException ie) {}
+            while (true) {
+                if (_util.connected())
+                    break;
+                if (_util.connect())
+                    break;
+                try {
+                    Thread.sleep(60*1000);
+                } catch (InterruptedException ie) { break; }
+            }
+            if (_log.shouldWarn())
+                _log.warn("Router restarted");
+        }
         catch (I2PException ioe)
           {
             int level = stop ? Log.WARN : Log.ERROR;
@@ -261,20 +265,34 @@ class ConnectionAcceptor implements Runnable
               // this is for the readahead in PeerAcceptor.connection()
               in = new BufferedInputStream(in);
               if (_log.shouldLog(Log.DEBUG))
-                  _log.debug("Handling socket from " + _socket.getPeerDestination().calculateHash());
+                  _log.debug("Handling socket from " + _socket.getPeerDestination().calculateHash().toBase32() + " to port: " + _socket.getLocalPort());
               peeracceptor.connection(_socket, in, out);
           } catch (PeerAcceptor.ProtocolException ihe) {
               _badCounter.increment(_socket.getPeerDestination().calculateHash());
               if (_log.shouldLog(Log.INFO))
-                  _log.info("Protocol error from " + _socket.getPeerDestination().calculateHash(), ihe);
-              try { _socket.close(); } catch (IOException ignored) { }
+                  _log.info("Protocol error from " + _socket.getPeerDestination().calculateHash().toBase32(), ihe);
+              try { _socket.reset(); } catch (IOException ignored) { }
           } catch (IOException ioe) {
               if (_log.shouldLog(Log.DEBUG))
-                  _log.debug("Error handling connection from " + _socket.getPeerDestination().calculateHash(), ioe);
-              try { _socket.close(); } catch (IOException ignored) { }
+                  _log.debug("Error handling connection from " + _socket.getPeerDestination().calculateHash().toBase32(), ioe);
+              try { _socket.reset(); } catch (IOException ignored) { }
           }
       }
   }
+
+    /**
+     *  @since 0.9.71
+     */
+    public boolean isBanned(Hash h) {
+        return _badCounter.count(h) > 0;
+    }
+
+    /**
+     *  @since 0.9.71
+     */
+    public void ban(Hash h) {
+        _badCounter.increment(h);
+    }
 
     /** @since 0.9.1 */    
     private class Cleaner extends SimpleTimer2.TimedEvent {

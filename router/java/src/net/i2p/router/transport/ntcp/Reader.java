@@ -64,9 +64,8 @@ class Reader {
                 already = true;
             } else {
                 _pendingConnections.add(con);
-                // only notify here if added?
+                _pendingConnections.notify();
             }
-            _pendingConnections.notify();
         }
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("wantsRead: " + con + " already live? " + already);
@@ -122,8 +121,18 @@ class Reader {
                         // FailedEstablishState.receive() (race - see below)
                         if (_log.shouldWarn())
                             _log.warn("Error in the ntcp reader", ise);
+                    } catch (IllegalArgumentException iae) {
+                        // probably a race with a cancelled key
+                        // java.lang.IllegalArgumentException
+                        // at java.nio.Buffer.position(Unknown Source)
+                        // at java.nio.HeapByteBuffer.get(Unknown Source)
+                        // at net.i2p.router.transport.ntcp.NTCPConnection$NTCP2ReadState.receive(NTCPConnection.java:2054)
+                        // at net.i2p.router.transport.ntcp.NTCPConnection.recvEncryptedI2NP(NTCPConnection.java:1383)
+                        // at net.i2p.router.transport.ntcp.Reader.processRead(Reader.java:170)
+                        if (_log.shouldWarn())
+                            _log.warn("Error in the ntcp reader", iae);
                     } catch (RuntimeException re) {
-                        _log.log(Log.CRIT, "Error in the ntcp reader", re);
+                        _log.error("Error in the ntcp reader", re);
                     }
                     if (_log.shouldLog(Log.DEBUG))
                         _log.debug("end read for " + con);
@@ -149,8 +158,6 @@ class Reader {
             if ((buf = con.getNextReadBuf()) == null)
                 return;
             EstablishState est = con.getEstablishState();
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Processing read buffer as an establishment for " + con + " with [" + est + "]");
             
             if (est.isComplete()) {
                 // why is it complete yet !con.isEstablished?
@@ -163,20 +170,13 @@ class Reader {
             est.receive(buf);
             EventPumper.releaseBuf(buf);
             if (est.isCorrupt()) {
-                if (_log.shouldLog(Log.WARN))
-                    _log.warn("closing connection on establishment because: " +est.getError(), est.getException());
-                if (!est.getFailedBySkew())
-                    _context.statManager().addRateData("ntcp.receiveCorruptEstablishment", 1);
                 con.close();
                 return;
             }
-            if (est.isComplete() && est.getExtraBytes() != null)
-                con.recvEncryptedI2NP(ByteBuffer.wrap(est.getExtraBytes()));
+            // EstablishState is responsible for passing "extra" data to the con
         }
         while (!con.isClosed() && (buf = con.getNextReadBuf()) != null) {
             // decrypt the data and push it into an i2np message
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Processing read buffer as part of an i2np message (" + buf.remaining() + " bytes)");
             con.recvEncryptedI2NP(buf);
             EventPumper.releaseBuf(buf);
         }

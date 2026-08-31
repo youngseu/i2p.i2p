@@ -22,8 +22,11 @@
         </depend>
     </target>
 
-    <property name="javac.compilerargs7" value="" />
-    <property name="javac.version" value="1.7" />
+    <!-- only used if not set by a higher build.xml -->
+    <property name="javac.compilerargs" value="" />
+    <property name="javac.version" value="1.8" />
+    <property name="javac.release" value="8" />
+    <property name="manifest.classpath.name" value="Class-Path" />
 
     <!-- compile everything including client classes -->
     <target name="compile" depends="depend">
@@ -32,32 +35,43 @@
         <javac 
             srcdir="./src" 
             debug="true" deprecation="on" source="${javac.version}" target="${javac.version}" 
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./build/obj" 
             classpath="../../../core/java/build/i2p.jar:../../../core/java/build/gnu-getopt.jar:../../ministreaming/java/build/mstreaming.jar" >
-            <compilerarg line="${javac.compilerargs7}" />
+            <compilerarg line="${javac.compilerargs}" />
         </javac>
     </target>
 
     <target name="compileTest" depends="compile">
         <javac 
             srcdir="./test" 
-            debug="true" deprecation="on" source="1.7" target="1.7" 
+            debug="true" deprecation="on" source="${javac.version}" target="${javac.version}"
+            release="${javac.release}"
             includeAntRuntime="false"
+            encoding="UTF-8"
             destdir="./build/obj" 
             classpath="../../../core/java/build/i2p.jar:../../ministreaming/java/build/mstreaming.jar" >
-            <compilerarg line="${javac.compilerargs7}" />
+            <compilerarg line="${javac.compilerargs}" />
         </javac>
     </target>
 
     <target name="listChangedFiles" depends="jarUpToDate" if="shouldListChanges" >
-        <exec executable="mtn" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="." />
         </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes}" outputproperty="workspace.changes.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
+        </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.sed}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
@@ -71,7 +85,7 @@
         <jar destfile="./build/sam.jar" basedir="./build/obj" includes="**/*.class" excludes="net/i2p/sam/client/*">
             <manifest>
                 <attribute name="Main-Class" value="net.i2p.sam.SAMBridge" />
-                <attribute name="Class-Path" value="i2p.jar mstreaming.jar streaming.jar" />
+                <attribute name="${manifest.classpath.name}" value="i2p.jar mstreaming.jar streaming.jar" />
                 <attribute name="Implementation-Version" value="${full.version}" />
                 <attribute name="Built-By" value="${build.built-by}" />
                 <attribute name="Build-Date" value="${build.timestamp}" />
@@ -108,7 +122,7 @@
                 <not>
                     <isset property="jar.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>

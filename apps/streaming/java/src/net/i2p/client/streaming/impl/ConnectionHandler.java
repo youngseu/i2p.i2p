@@ -6,7 +6,10 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import net.i2p.I2PAppContext;
+import net.i2p.client.streaming.RouterRestartException;
+import net.i2p.data.ByteArray;
 import net.i2p.data.Destination;
+import net.i2p.util.ByteCache;
 import net.i2p.util.Log;
 import net.i2p.util.SimpleTimer;
 import net.i2p.util.SimpleTimer2;
@@ -22,11 +25,13 @@ import net.i2p.util.SimpleTimer2;
 class ConnectionHandler {
     private final I2PAppContext _context;
     private final Log _log;
+    private final ByteCache _cache = ByteCache.getInstance(32, 4*1024);
     private final ConnectionManager _manager;
     private final LinkedBlockingQueue<Packet> _synQueue;
     private final SimpleTimer2 _timer;
     private volatile boolean _active;
     private int _acceptTimeout;
+    private boolean _restartPending;
     
     /** max time after receiveNewSyn() and before the matched accept() */
     private static final int DEFAULT_ACCEPT_TIMEOUT = 3*1000;
@@ -48,14 +53,27 @@ class ConnectionHandler {
         _acceptTimeout = DEFAULT_ACCEPT_TIMEOUT;
     }
     
+    /**
+     * The router told us it's going to restart.
+     * Call instead of setActive(false).
+     *
+     * @since 0.9.34
+     */
+    public synchronized void setRestartPending() { 
+        _restartPending = true;
+        setActive(false);
+    }
+
     public synchronized void setActive(boolean active) { 
         // FIXME active=false this only kills for one thread in accept()
         // if there are more, they won't get a poison packet.
-        if (_log.shouldLog(Log.WARN))
-            _log.warn("setActive(" + active + ") called, previously " + _active, new Exception("I did it"));
+        if (_log.shouldInfo())
+            _log.info("setActive(" + active + ") called, previously " + _active, new Exception("I did it"));
         // if starting, clear any old poison
-        if (active && !_active)
+        if (active && !_active) {
+            _restartPending = false;
             _synQueue.clear();
+        }
         boolean wasActive = _active;
         _active = active; 
         if (wasActive && !active) {
@@ -65,7 +83,7 @@ class ConnectionHandler {
         }
     }
 
-    public boolean getActive() { return _active; }
+    public synchronized boolean getActive() { return _active; }
     
     /**
      * Non-SYN packets with a zero SendStreamID may also be queued here so 
@@ -116,12 +134,13 @@ class ConnectionHandler {
      *                  than 1ms, wait indefinitely)
      * @return connection received. Prior to 0.9.17, or null if there was a timeout or the 
      *                  handler was shut down. As of 0.9.17, never null.
+     * @throws RouterRestartException (extends I2PException) if the router is apparently restarting, since 0.9.34
      * @throws ConnectException since 0.9.17, returned null before;
      *                  if the I2PServerSocket is closed, or if interrupted.
      * @throws SocketTimeoutException since 0.9.17, returned null before;
      *                  if a timeout was previously set with setSoTimeout and the timeout has been reached.
      */
-    public Connection accept(long timeoutMs) throws ConnectException, SocketTimeoutException {
+    public Connection accept(long timeoutMs) throws RouterRestartException, ConnectException, SocketTimeoutException {
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("Accept("+ timeoutMs+") called");
 
@@ -137,6 +156,8 @@ class ConnectionHandler {
                         break;
                     sendReset(packet);
                 }
+                if (_restartPending)
+                    throw new RouterRestartException();
                 throw new ConnectException("ServerSocket closed");
             }
             
@@ -174,8 +195,11 @@ class ConnectionHandler {
             }
 
             if (syn != null) {
-                if (syn.getOptionalDelay() == PoisonPacket.POISON_MAX_DELAY_REQUEST)
+                if (syn.getOptionalDelay() == PoisonPacket.POISON_MAX_DELAY_REQUEST) {
+                    if (_restartPending)
+                        throw new RouterRestartException();
                     throw new ConnectException("ServerSocket closed");
+                }
 
                 // deal with forged / invalid syn packets in _manager.receiveConnection()
 
@@ -238,21 +262,31 @@ class ConnectionHandler {
         }
     }
 
+    /**
+     *  Send a reset in response to this packet, but only if it
+     *  contains a FROM field and Signature that can be verified.
+     *
+     *  @param packet the incoming packet we're responding to
+     */
     private void sendReset(Packet packet) {
-        boolean ok = packet.verifySignature(_context, packet.getOptionalFrom(), null);
+        ByteArray ba = _cache.acquire();
+        boolean ok = packet.verifySignature(_context, ba.getData());
+        _cache.release(ba);
         if (!ok) {
-            if (_log.shouldLog(Log.WARN))
-                _log.warn("Received a spoofed SYN packet: they said they were " + packet.getOptionalFrom());
+            if (_log.shouldWarn())
+                _log.warn("Can't send reset in response to packet: " + packet);
             return;
         }
         PacketLocal reply = new PacketLocal(_context, packet.getOptionalFrom(), packet.getSession());
-        reply.setFlag(Packet.FLAG_RESET);
-        reply.setFlag(Packet.FLAG_SIGNATURE_INCLUDED);
+        reply.setFlag(Packet.FLAG_RESET | Packet.FLAG_SIGNATURE_INCLUDED);
         reply.setAckThrough(packet.getSequenceNum());
         reply.setSendStreamId(packet.getReceiveStreamId());
         reply.setReceiveStreamId(0);
-        // TODO remove this someday, as of 0.9.20 we do not require it
-        reply.setOptionalFrom();
+        // As of 0.9.20 we do not require FROM
+        // Removed in 0.9.39
+        //reply.setOptionalFrom();
+        reply.setLocalPort(packet.getLocalPort());
+        reply.setRemotePort(packet.getRemotePort());
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("Sending RST: " + reply + " because of " + packet);
         // this just sends the packet - no retries or whatnot

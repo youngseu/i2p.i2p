@@ -20,8 +20,11 @@
         </depend>
     </target>
 
+    <!-- only used if not set by a higher build.xml -->
     <property name="javac.compilerargs" value="" />
-    <property name="javac.version" value="1.7" />
+    <property name="javac.version" value="1.8" />
+    <property name="javac.release" value="8" />
+    <property name="manifest.classpath.name" value="Class-Path" />
 
     <target name="compile" depends="depend">
         <mkdir dir="./build" />
@@ -32,8 +35,10 @@
             deprecation="on"
             source="${javac.version}"
             target="${javac.version}"
+            release="${javac.release}"
             destdir="./build/obj"
             includeAntRuntime="false"
+            encoding="UTF-8"
             includes="**/*.java"
             classpath="../../../core/java/build/i2p.jar" >
             <compilerarg line="${javac.compilerargs}" />
@@ -41,13 +46,20 @@
     </target>
 
     <target name="listChangedFiles" depends="jarUpToDate" if="shouldListChanges" >
-        <exec executable="mtn" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
-            <arg value="list" />
-            <arg value="changed" />
+        <exec executable="git" outputproperty="workspace.changes" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="status" />
+            <arg value="-s" />
+            <arg value="--porcelain" />
+            <arg value="-uno" />
             <arg value="." />
         </exec>
+        <!-- trim flags -->
+        <exec executable="sed" inputstring="${workspace.changes}" outputproperty="workspace.changes.sed" errorproperty="mtn.error2" failifexecutionfails="false" >
+            <arg value="-e" />
+            <arg value="s/^[MTADRCU ]*//" />
+        </exec>
         <!-- \n in an attribute value generates an invalid manifest -->
-        <exec executable="tr" inputstring="${workspace.changes}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
+        <exec executable="tr" inputstring="${workspace.changes.sed}" outputproperty="workspace.changes.tr" errorproperty="mtn.error2" failifexecutionfails="false" >
             <arg value="-s" />
             <arg value="[:space:]" />
             <arg value="," />
@@ -59,7 +71,7 @@
         <property name="workspace.changes.tr" value="" />
         <jar destfile="./build/systray.jar" basedir="./build/obj" includes="**/*.class">
             <manifest>
-                <attribute name="Main-Class" value="net.i2p.apps.systray.SysTray" />
+                <attribute name="${manifest.classpath.name}" value="i2p.jar" />
                 <attribute name="Implementation-Version" value="${full.version}" />
                 <attribute name="Built-By" value="${build.built-by}" />
                 <attribute name="Build-Date" value="${build.timestamp}" />
@@ -80,7 +92,7 @@
                 <not>
                     <isset property="jar.uptodate" />
                 </not>
-                <isset property="mtn.available" />
+                <isset property="git.available" />
             </and>
         </condition>
     </target>

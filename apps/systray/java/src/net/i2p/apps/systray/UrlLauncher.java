@@ -20,12 +20,17 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Scanner;
 
 import net.i2p.I2PAppContext;
 import net.i2p.app.*;
 import static net.i2p.app.ClientAppState.*;
 import net.i2p.util.I2PAppThread;
+import net.i2p.util.Log;
 import net.i2p.util.ShellCommand;
 import net.i2p.util.SystemVersion;
 
@@ -46,12 +51,14 @@ public class UrlLauncher implements ClientApp {
     private final I2PAppContext _context;
     private final ClientAppManager _mgr;
     private final String[] _args;
+    private final Log _log;
 
     private static final int WAIT_TIME = 5*1000;
     private static final int MAX_WAIT_TIME = 5*60*1000;
     private static final int MAX_TRIES = 99;
     private static final String REGISTERED_NAME = "UrlLauncher";
     private static final String PROP_BROWSER = "routerconsole.browser";
+    private static final boolean IS_SERVICE = SystemVersion.isService();
 
     /**
      *  Browsers to try IN-ORDER
@@ -69,6 +76,7 @@ public class UrlLauncher implements ClientApp {
             "defaultbrowser",  // puppy linux
             "opera -newpage",
             "firefox",
+            "chromium-browser",
             "mozilla",
             "netscape",
             "konqueror",
@@ -82,14 +90,17 @@ public class UrlLauncher implements ClientApp {
     /**
      *  ClientApp constructor used from clients.config
      *
+     *  @param mgr null OK
+     *  @param args URL in args[0] or null args for router console
      *  @since 0.9.18
      */
     public UrlLauncher(I2PAppContext context, ClientAppManager mgr, String[] args) {
         _state = UNINITIALIZED;
         _context = context;
+        _log = _context.logManager().getLog(UrlLauncher.class);
         _mgr = mgr;
         if (args == null || args.length <= 0)
-            args = new String[] {"http://127.0.0.1:7657/index.jsp"};
+            args = new String[] { context.portMapper().getConsoleURL() };
         _args = args;
         _shellCommand = new ShellCommand();
         _state = INITIALIZED;
@@ -103,6 +114,7 @@ public class UrlLauncher implements ClientApp {
     public UrlLauncher() {
         _state = UNINITIALIZED;
         _context = I2PAppContext.getGlobalContext();
+        _log = _context.logManager().getLog(UrlLauncher.class);
         _mgr = null;
         _args = null;
         _shellCommand = new ShellCommand();
@@ -136,13 +148,15 @@ public class UrlLauncher implements ClientApp {
         long done = System.currentTimeMillis() + MAX_WAIT_TIME;
         for (int i = 0; i < MAX_TRIES; i++) {
             try {
-                Socket test = new Socket();
-                // this will usually fail right away if it's going to fail since it's local
-                test.connect(sa, WAIT_TIME);
-                // it worked
+                Socket test = null;
                 try {
-                   test.close();
-                } catch (IOException ioe) {}
+                    test = new Socket();
+                    // this will usually fail right away if it's going to fail since it's local
+                    test.connect(sa, WAIT_TIME);
+                    // it worked
+                } finally {
+                    if (test != null) try { test.close(); } catch (IOException ioe) {}
+                }
                 // Jetty 6 seems to start the Connector before the
                 // webapp is completely ready
                 try {
@@ -160,12 +174,156 @@ public class UrlLauncher implements ClientApp {
     }
 
     /**
+     * Obtains the default browser for the Windows platform, which by now should
+     * be Edgium in the worst-case scenario but in case it isn't, we can use this
+     * function to figure it out. It can find:
+     *
+     * 1. The current user's HTTPS default browser if they configured it to be
+     * non-default
+     * 2. The current user's HTTP default browser if they configured it to be
+     * non-default
+     * 3. Edgium if it's available
+     * 4. iexplore if it's not
+     *
+     * and it will return the first one we find in exactly that order.
+     *
+     * Adapted from:
+     * https://stackoverflow.com/questions/15852885/me...
+     *
+     * @param url containing full scheme, i.e. http://127.0.0.1:7657
+     * @return path to command[0] and target URL[1] to the default browser ready for execution, non-null
+     * @since 2.0.0
+     */
+    private String getDefaultWindowsBrowser(String url) {
+        String defaultBrowser;
+        String key;
+        if (url.startsWith("https://")){
+            // User-Configured HTTPS Browser
+            key = "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\Shell\\Associations\\URLAssociations\\https\\UserChoice";
+        } else {
+            // User-Configure HTTP Browser
+            key = "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\Shell\\Associations\\URLAssociations\\http\\UserChoice";
+        }
+        defaultBrowser = getDefaultOutOfRegistry(key);
+        if (defaultBrowser != null)
+            return defaultBrowser;
+        // MSEdge on pretty much everything after Windows 7
+        key = "HKEY_CLASSES_ROOT\\MSEdgeHTM\\shell\\open\\command";
+        defaultBrowser = getDefaultOutOfRegistry(key);
+        if (defaultBrowser != null)
+            return defaultBrowser;
+        // iexplore usually, depends on the Windows, sometimes Edge
+        key = "HKEY_CLASSES_ROOT\\http\\shell\\open\\command";
+        defaultBrowser = getDefaultOutOfRegistry(key);
+        if (defaultBrowser != null)
+            return defaultBrowser;
+        return "C:\\Program Files\\Internet Explorer\\iexplore.exe";
+    }
+
+    /**
+     * obtains a value matching a key contained in the windows registry at a path
+     * represented by hkeyquery
+     *
+     * @param hkeyquery registry entry to ask for.
+     * @param key key to retrieve value from
+     * @param additionalArgs additional arguments to pass to the `REG QUERY` command
+     * @return either a registry "Default" value or null if one does not exist/is empty
+     * @since 2.0.0
+     */
+    private String registryQuery(String hkeyquery, String key) {
+        try {
+            // Get registry where we find the default browser
+            String[] cmd = {"REG", "QUERY", hkeyquery};
+            Process process = Runtime.getRuntime().exec(cmd);
+            Scanner kb = new Scanner(process.getInputStream());
+            while (kb.hasNextLine()) {
+                String line = kb.nextLine().trim();
+                if (line.startsWith(key)) {
+                    String[] splitLine = line.split("  ");
+                    kb.close();
+                    String finalValue = splitLine[splitLine.length - 1].trim();
+                    if (!finalValue.equals("")) {
+                        return finalValue;
+                    }
+                }
+            }
+            // Match wasn't found, still need to close Scanner
+            kb.close();
+        } catch (Exception e) {
+            if (_log.shouldError())
+                _log.error(hkeyquery, e);
+        }
+        return null;
+    }
+
+    /**
+     * If following a query back to the Default value doesn't work then what
+     * we have is a "ProgID" which will be registered in \HKEY_CLASSES_ROOT\%ProgId%,
+     * and will have an entry \shell\open\command, where \shell\open\command yields the
+     * value that contains the command it needs. This function takes a registry query
+     * in the same format as getDefaultOutOfRegistry but instead of looking for the
+     * default entry
+     *
+     * @param hkeyquery
+     * @return the command required to run the application referenced in hkeyquery, or null
+     * @since 2.0.0
+     */
+    private String followUserConfiguredBrowserToCommand(String hkeyquery) {
+        String progIdValue = registryQuery(hkeyquery,"ProgId");
+        return followProgIdToCommand(progIdValue);
+    }
+
+    /**
+     * Cross-references a progId obtained by followUserConfiguredBrowserToCommand against
+     * HKEY_CLASSES_ROOT\%ProgId%\shell\open\command, which holds the value of the command
+     * which we need to run to launch the default browser.
+     *
+     * @param hkeyquery
+     * @return the command required to run the application referenced in hkeyquery, or null
+     * @since 2.0.0
+     */
+    private String followProgIdToCommand(String progid) {
+        String hkeyquery = "HKEY_CLASSES_ROOT\\"+progid+"\\shell\\open\\command";
+        String finalValue = registryQuery(hkeyquery, "(Default)");
+        if (finalValue != null) {
+            if (!finalValue.equals(""))
+                return finalValue;
+        }
+        return null;
+    }
+
+    /**
+     * obtains a default browsing command out of the Windows registry.
+     *
+     * @param hkeyquery registry entry to ask for.
+     * @return either a registry "Default" value or null if one does not exist/is empty
+     * @since 2.0.0
+     */
+    private String getDefaultOutOfRegistry(String hkeyquery) {
+        String defaultValue = registryQuery(hkeyquery, "Default");
+        if (defaultValue != null) {
+            if (!defaultValue.equals(""))
+                return defaultValue;
+        }else{
+            defaultValue = followUserConfiguredBrowserToCommand(hkeyquery);
+            if (defaultValue != null) {
+                if (!defaultValue.equals(""))
+                    return defaultValue;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Discovers the operating system the installer is running under and tries
      * to launch the given URL using the default browser for that platform; if
      * unsuccessful, an attempt is made to launch the URL using the most common
      * browsers.
      * 
-     * BLOCKING
+     * As of 0.9.46, fails immediately if JVM is a Windows or Linux Service.
+     * 
+     * BLOCKING. This repeatedly probes the server port at the given url
+     * until it is apparently ready.
      * 
      * @param  url The URL to open.
      * @return     <code>true</code> if the operation was successful, otherwise
@@ -174,7 +332,11 @@ public class UrlLauncher implements ClientApp {
      * @throws IOException
      */ 
     public boolean openUrl(String url) throws IOException {
+        if (IS_SERVICE)
+            return false;
+        if (_log.shouldDebug()) _log.debug("Waiting for server");
         waitForServer(url);
+        if (_log.shouldDebug()) _log.debug("Done waiting for server");
         if (validateUrlFormat(url)) {
             String cbrowser = _context.getProperty(PROP_BROWSER);
             if (cbrowser != null) {
@@ -183,54 +345,39 @@ public class UrlLauncher implements ClientApp {
             if (SystemVersion.isMac()) {
                 String osName = System.getProperty("os.name");
                 if (osName.toLowerCase(Locale.US).startsWith("mac os x")) {
-
-                    if (_shellCommand.executeSilentAndWaitTimed("open " + url, 5))
+                    String[] args = new String[] { "open", url };
+                    if (_log.shouldDebug()) _log.debug("Execute: " + Arrays.toString(args));
+                    if (_shellCommand.executeSilentAndWaitTimed(args , 5))
                         return true;
-
                 } else {
                     return false;
                 }
-
-                if (_shellCommand.executeSilentAndWaitTimed("iexplore " + url, 5))
+                String[] args = new String[] { "iexplore", url };
+                if (_log.shouldDebug()) _log.debug("Execute: " + Arrays.toString(args));
+                if (_shellCommand.executeSilentAndWaitTimed(args , 5))
                     return true;
             } else if (SystemVersion.isWindows()) {
-                String         browserString  = "\"C:\\Program Files\\Internet Explorer\\iexplore.exe\" -nohome";
-                BufferedReader bufferedReader = null;
-
-                File foo = new File(_context.getTempDir(), "browser.reg");
-                _shellCommand.executeSilentAndWait("regedit /E \"" + foo.getAbsolutePath() + "\" \"HKEY_CLASSES_ROOT\\http\\shell\\open\\command\"");
-
-                try {
-                    bufferedReader = new BufferedReader(new InputStreamReader(new FileInputStream(foo), "UTF-16"));
-                    for (String line; (line = bufferedReader.readLine()) != null; ) {
-                        if (line.startsWith("@=")) {
-                            // we should really use the whole line and replace %1 with the url
-                            browserString = line.substring(3, line.toLowerCase(Locale.US).indexOf(".exe") + 4);
-                            if (browserString.startsWith("\\\""))
-                                browserString = browserString.substring(2);
-                            browserString = "\"" + browserString + "\"";
-                        }
-                    }
-                    try {
-                        bufferedReader.close();
-                    } catch (IOException e) {
-                        // No worries.
-                    }
-                    foo.delete();
-                } catch (IOException e) {
-                    // Defaults to IE.
-                } finally {
-                    if (bufferedReader != null)
-                        try { bufferedReader.close(); } catch (IOException ioe) {}
+                String[] browserString  = new String[] { "C:\\Program Files\\Internet Explorer\\iexplore.exe", "-nohome", url };
+                String line = getDefaultWindowsBrowser(url);
+                String[] aarg = parseArgs(line, url);
+                if (aarg.length > 0) {
+                    browserString = aarg;
                 }
-                if (_shellCommand.executeSilentAndWaitTimed(browserString + ' ' + url, 5))
+                if (_log.shouldDebug()) _log.debug("Execute: " + Arrays.toString(browserString));
+                if (_shellCommand.executeSilentAndWaitTimed(browserString, 5))
                     return true;
+                if (_log.shouldInfo()) _log.info("Failed: " + Arrays.toString(browserString));
             } else {
                 // fall through
             }
+            String[] args = new String[2];
+            args[1] = url;
             for (int i = 0; i < BROWSERS.length; i++) {
-                if (_shellCommand.executeSilentAndWaitTimed(BROWSERS[i] + ' ' + url, 5))
+                args[0] = BROWSERS[i];
+                if (_log.shouldDebug()) _log.debug("Execute: " + Arrays.toString(args));
+                if (_shellCommand.executeSilentAndWaitTimed(args, 5))
                     return true;
+                if (_log.shouldInfo()) _log.info("Failed: " + Arrays.toString(args));
             }
         }
         return false;
@@ -238,23 +385,108 @@ public class UrlLauncher implements ClientApp {
 
     /**
      * Opens the given URL with the given browser.
+     * As of 0.9.38, the browser parameter will be parsed into arguments
+     * separated by spaces or tabs.
+     * %1, if present, will be replaced with the url.
+     * Arguments may be surrounded by single or double quotes if
+     * they contain spaces or tabs.
+     * There is no mechanism to escape quotes or other chars with backslashes.
      * 
-     * BLOCKING
+     * As of 0.9.46, fails immediately if JVM is a Windows or Linux Service.
+     * 
+     * BLOCKING. However, this does NOT probe the server port to see if it is ready.
      * 
      * @param  url     The URL to open.
-     * @param  browser The browser to use.
+     * @param  browser The browser to use. See above for quoting rules.
      * @return         <code>true</code> if the operation was successful,
      *                 otherwise <code>false</code>.
      * 
      * @throws IOException
      */
     public boolean openUrl(String url, String browser) throws IOException {
+        if (IS_SERVICE)
+            return false;
         waitForServer(url);
         if (validateUrlFormat(url)) {
-            if (_shellCommand.executeSilentAndWaitTimed(browser + " " + url, 5))
-                return true;
+            String[] args = parseArgs(browser, url);
+            if (args.length > 0) {
+                if (_log.shouldDebug()) _log.debug("Execute: " + Arrays.toString(args));
+                if (_shellCommand.executeSilentAndWaitTimed(args, 5))
+                    return true;
+            }
         }
         return false;
+    }
+
+    /**
+     *  Parse args into arguments
+     *  separated by spaces or tabs.
+     *  %1, if present, will be replaced with the url,
+     *  otherwise it will be added as the last argument.
+     *  Arguments may be surrounded by single or double quotes if
+     *  they contain spaces or tabs.
+     *  There is no mechanism to escape quotes or other chars with backslashes.
+     *  Adapted from i2ptunnel SSLHelper.
+     *
+     *  @return param args non-null
+     *  @return non-null
+     *  @since 0.9.38
+     */
+    private static String[] parseArgs(String args, String url) {
+        List<String> argList = new ArrayList<String>(4);
+        StringBuilder buf = new StringBuilder(32);
+        boolean isQuoted = false;
+        for (int j = 0; j < args.length(); j++) {
+            char c = args.charAt(j);
+            switch (c) {
+                case '\'':
+                case '"':
+                    if (isQuoted) {
+                        String str = buf.toString().trim();
+                        if (str.length() > 0)
+                            argList.add(str);
+                        buf.setLength(0);
+                    }
+                    isQuoted = !isQuoted;
+                    break;
+                case ' ':
+                case '\t':
+                    // whitespace - if we're in a quoted section, keep this as part of the quote,
+                    // otherwise use it as a delim
+                    if (isQuoted) {
+                        buf.append(c);
+                    } else {
+                        String str = buf.toString().trim();
+                        if (str.length() > 0)
+                            argList.add(str);
+                        buf.setLength(0);
+                    }
+                    break;
+                default:
+                    buf.append(c);
+                    break;
+            }
+        }
+        if (buf.length() > 0) {
+            String str = buf.toString().trim();
+            if (str.length() > 0)
+                argList.add(str);
+        }
+        if (argList.isEmpty())
+            return new String[] {};
+        boolean foundpct = false;
+        // replace %1 with the url
+        for (int i = 0; i < argList.size(); i++) {
+            String arg = argList.get(i);
+            if (arg.contains("%1")) {
+                argList.set(i, arg.replace("%1", url));
+                foundpct = true;
+            }
+        }
+        // add url if no %1
+        if (!foundpct)
+            argList.add(url);
+        return argList.toArray(new String[argList.size()]);
     }
 
     private static boolean validateUrlFormat(String urlString) {
@@ -269,9 +501,16 @@ public class UrlLauncher implements ClientApp {
 
     /**
      *  ClientApp interface
+     *  As of 0.9.46, stops immediately if JVM is a Windows or Linux Service.
+     * 
      *  @since 0.9.18
      */
     public void startup() {
+        if (IS_SERVICE) {
+            // not START_FAILED so manager doesn't log CRIT
+            changeState(STOPPED);
+            return;
+        }
         String url = _args[0];
         if (!validateUrlFormat(url)) {
             changeState(START_FAILED, new MalformedURLException("Bad url: " + url));
@@ -353,7 +592,7 @@ public class UrlLauncher implements ClientApp {
             if (args.length > 0)
                 launcher.openUrl(args[0]);
             else
-                launcher.openUrl("http://127.0.0.1:7657/index.jsp");
+                launcher.openUrl(I2PAppContext.getGlobalContext().portMapper().getConsoleURL());
          } catch (IOException e) {}
     }
 }

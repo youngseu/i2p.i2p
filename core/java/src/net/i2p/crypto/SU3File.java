@@ -81,6 +81,10 @@ public class SU3File {
     public static final int TYPE_XML_GZ = 3;
     /** @since 0.9.28 */
     public static final int TYPE_TXT_GZ = 4;
+    /** @since 0.9.51 */
+    public static final int TYPE_DMG = 5;
+    /** @since 0.9.51 */
+    public static final int TYPE_EXE = 6;
 
     public static final int CONTENT_UNKNOWN = 0;
     public static final int CONTENT_ROUTER = 1;
@@ -324,7 +328,7 @@ public class SU3File {
                 try {
                     _signerPubkey = ring.getKey(_signer, _contentType.getName(), _sigType);
                 } catch (GeneralSecurityException gse) {
-                    IOException ioe = new IOException("keystore error");
+                    IOException ioe = new IOException("Certificate error for " + _signer + ": " + gse);
                     ioe.initCause(gse);
                     throw ioe;
                 }
@@ -338,7 +342,7 @@ public class SU3File {
                         try {
                             _signerPubkey = ring.getKey(_signer, _contentType.getName(), _sigType);
                         } catch (GeneralSecurityException gse) {
-                            IOException ioe = new IOException("keystore error");
+                            IOException ioe = new IOException("Certificate error for " + _signer + ": " + gse);
                             ioe.initCause(gse);
                             throw ioe;
                         }
@@ -386,7 +390,7 @@ public class SU3File {
      */
     public boolean verifyAndMigrate(File migrateTo) throws IOException {
         InputStream in = null;
-        OutputStream out = null;
+        FileOutputStream out = null;
         boolean rv = false;
         try {
             in = new BufferedInputStream(new FileInputStream(_file));
@@ -421,7 +425,7 @@ public class SU3File {
                     throw new IOException("unknown signer: " + _signer + " for content type: " + _contentType.getName());
             }
             if (migrateTo != null)  // else verify only
-                out = new FileOutputStream(migrateTo);
+                out = new SecureFileOutputStream(migrateTo);
             byte[] buf = new byte[16*1024];
             long tot = 0;
             while (tot < _contentLength) {
@@ -454,7 +458,15 @@ public class SU3File {
             throw ioe;
         } finally {
             if (in != null) try { in.close(); } catch (IOException ioe) {}
-            if (out != null) try { out.close(); } catch (IOException ioe) {}
+            if (out != null) {
+                // We will generally be reading this file right back in,
+                // so do a POSIX flush and sync to ensure it will be there.
+                try {
+                    out.flush();
+                    out.getFD().sync();
+                } catch (IOException ioe) {}
+                try { out.close(); } catch (IOException ioe) {}
+            }
             if (migrateTo != null && !rv)
                 migrateTo.delete();
         }
@@ -607,7 +619,7 @@ public class SU3File {
             }
 
             int idx = g.getOptind();
-            String cmd = args[idx];
+            String cmd = args[idx].toLowerCase(Locale.US);
             List<String> a = new ArrayList<String>(Arrays.asList(args).subList(idx + 1, args.length));
 
             if (error) {
@@ -615,25 +627,34 @@ public class SU3File {
             } else if ("showversion".equals(cmd)) {
                 ok = showVersionCLI(a.get(0));
             } else if ("sign".equals(cmd)) {
-                // speed things up by specifying a small PRNG buffer size
-                Properties props = new Properties();
-                props.setProperty("prng.bufferSize", "16384");
-                new I2PAppContext(props);
+                if (I2PAppContext.getCurrentContext() == null) {
+                    // speed things up by specifying a small PRNG buffer size
+                    Properties props = new Properties();
+                    props.setProperty("prng.bufferSize", "16384");
+                    new I2PAppContext(props);
+                }
                 ok = signCLI(stype, ctype, ftype, a.get(0), a.get(1), a.get(2), a.get(3), a.get(4), "", kspass);
             } else if ("bulksign".equals(cmd)) {
-                Properties props = new Properties();
-                props.setProperty("prng.bufferSize", "16384");
-                new I2PAppContext(props);
+                if (I2PAppContext.getCurrentContext() == null) {
+                    // speed things up by specifying a small PRNG buffer size
+                    Properties props = new Properties();
+                    props.setProperty("prng.bufferSize", "16384");
+                    new I2PAppContext(props);
+                }
                 ok = bulkSignCLI(stype, ctype, a.get(0), a.get(1), a.get(2), a.get(3), kspass);
             } else if ("verifysig".equals(cmd)) {
                 ok = verifySigCLI(a.get(0), kfile);
             } else if ("keygen".equals(cmd)) {
-                Properties props = new Properties();
-                props.setProperty("prng.bufferSize", "16384");
-                new I2PAppContext(props);
+                if (I2PAppContext.getCurrentContext() == null) {
+                    // speed things up by specifying a small PRNG buffer size
+                    Properties props = new Properties();
+                    props.setProperty("prng.bufferSize", "16384");
+                    new I2PAppContext(props);
+                }
                 ok = genKeysCLI(stype, a.get(0), a.get(1), crlfile, a.get(2), kspass);
             } else if ("extract".equals(cmd)) {
-                ok = extractCLI(a.get(0), a.get(1), shouldVerify, kfile);
+                String outfile = (a.size() > 1) ? a.get(1) : null;
+                ok = extractCLI(a.get(0), outfile, shouldVerify, kfile);
             } else {
                 showUsageCLI();
             }
@@ -653,7 +674,7 @@ public class SU3File {
                            "                            (signs all .zip, .xml, and .xml.gz files in the directory)\n" +
                            "       SU3File showversion  signedFile.su3\n" +
                            "       SU3File verifysig    [-k file.crt] signedFile.su3  ## -k use this pubkey cert for verification\n" +
-                           "       SU3File extract      [-x] [-k file.crt] signedFile.su3 outFile   ## -x don't check sig");
+                           "       SU3File extract      [-x] [-k file.crt] signedFile.su3 [outFile]   ## -x don't check sig");
         System.err.println("Default keystore password: \"" + KeyStoreUtil.DEFAULT_KEYSTORE_PASSWORD + '"');
         System.err.println(dumpTypes());
     }
@@ -661,19 +682,7 @@ public class SU3File {
     /** @since 0.9.9 */
     private static String dumpTypes() {
         StringBuilder buf = new StringBuilder(256);
-        buf.append("Available signature types (-t):\n");
-        for (SigType t : EnumSet.allOf(SigType.class)) {
-            if (!t.isAvailable())
-                continue;
-            if (t == SigType.EdDSA_SHA512_Ed25519)
-                continue; // not supported by keytool, and does double hashing right now
-            buf.append("      ").append(t).append("\t(code: ").append(t.getCode()).append(')');
-            if (t.getCode() == DEFAULT_SIG_CODE)
-                buf.append(" DEFAULT");
-            if (!t.isAvailable())
-                buf.append(" UNAVAILABLE");
-            buf.append('\n');
-        }
+        dumpSigTypes(buf);
         buf.append("Available content types (-c):\n");
         for (ContentType t : EnumSet.allOf(ContentType.class)) {
             buf.append("      ").append(t).append("\t(code: ").append(t.getCode()).append(')');
@@ -687,12 +696,35 @@ public class SU3File {
                    "      HTML\t(code: 2)\n" +
                    "      XML_GZ\t(code: 3)\n" +
                    "      TXT_GZ\t(code: 4)\n" +
-                   "      (user defined)\t(code: 5-255)\n");
+                   "      DMG\t(code: 5)\n" +
+                   "      EXE\t(code: 6)\n" +
+                   "      (user defined)\t(code: 7-255)\n");
         return buf.toString();
     }
 
     /**
-     *  @param stype number or name
+     *  @since 0.9.65 split out from above for SelfSignedGenerator.usage()
+     */
+    static void dumpSigTypes(StringBuilder buf) {
+        buf.append("Available signature types (-t):\n");
+        for (SigType t : EnumSet.allOf(SigType.class)) {
+            if (!t.isAvailable())
+                continue;
+            if (t == SigType.EdDSA_SHA512_Ed25519 ||
+                t == SigType.RedDSA_SHA512_Ed25519)
+                continue; // not supported by keytool, and does double hashing right now
+            buf.append("      ").append(t).append("\t(code: ").append(t.getCode()).append(')');
+            int code = t.getCode();
+            if (code == DEFAULT_SIG_CODE)
+                buf.append(" DEFAULT");
+            else if (code < DEFAULT_SIG_CODE)
+                buf.append(" DEPRECATED");
+            buf.append('\n');
+        }
+    }
+
+    /**
+     *  @param ctype number or name
      *  @return null if not found
      *  @since 0.9.9
      */
@@ -717,8 +749,16 @@ public class SU3File {
             String versionString = file.getVersionString();
             if (versionString.equals(""))
                 System.out.println("No version string found in file '" + signedFile + "'");
-            else
-                System.out.println("Version:  " + versionString);
+            else {
+                long ver = 0;
+                try {
+                    ver = Long.parseLong(versionString);
+                } catch (NumberFormatException nfe) {}
+                if (ver > 1000000000L)
+                    System.out.println("Version:  " + versionString + " (" + DataHelper.formatTime(ver * 1000) + ')');
+                else
+                    System.out.println("Version:  " + versionString);
+            }
             String signerString = file.getSignerString();
             if (signerString.equals(""))
                 System.out.println("No signer string found in file '" + signedFile + "'");
@@ -737,6 +777,10 @@ public class SU3File {
                 ftype = "HTML";
             else if (file._fileType == TYPE_XML_GZ)
                 ftype = "XML_GZ";
+            else if (file._fileType == TYPE_DMG)
+                ftype = "DMG";
+            else if (file._fileType == TYPE_EXE)
+                ftype = "EXE";
             else
                 ftype = Integer.toString(file._fileType);
                 System.out.println("FileType: " + ftype);
@@ -837,6 +881,10 @@ public class SU3File {
                 ft = TYPE_HTML;
             } else if (ftype.equalsIgnoreCase("XML_GZ")) {
                 ft = TYPE_XML_GZ;
+            } else if (ftype.equalsIgnoreCase("DMG")) {
+                ft = TYPE_DMG;
+            } else if (ftype.equalsIgnoreCase("EXE")) {
+                ft = TYPE_EXE;
             } else {
                 try {
                     ft = Integer.parseInt(ftype);
@@ -847,7 +895,7 @@ public class SU3File {
                     System.out.println("File type " + ftype + " is not supported");
                     return false;
                 }
-                if (ft  > TYPE_XML_GZ)
+                if (ft  > TYPE_EXE)
                     System.out.println("Warning: File type " + ftype + " is undefined");
             }
         }
@@ -919,6 +967,7 @@ public class SU3File {
     }
 
     /**
+     *  @param outFile if null, will use a name derived from signedFile
      *  @return success
      *  @since 0.9.9
      */
@@ -929,10 +978,46 @@ public class SU3File {
             if (pkFile != null)
                 file.setPublicKeyCertificate(new File(pkFile));
             file.setVerifySignature(verifySig);
+            if (outFile == null) {
+                outFile = signedFile;
+                if (outFile.endsWith(".su3") && outFile.length() > 4)
+                    outFile = outFile.substring(0, outFile.length() - 4);
+                String sfx;
+                switch (file.getFileType()) {
+                  case TYPE_ZIP:
+                    sfx = ".zip";
+                    break;
+                  case TYPE_XML:
+                    sfx = ".xml";
+                    break;
+                  case TYPE_HTML:
+                    sfx = ".html";
+                    break;
+                  case TYPE_XML_GZ:
+                    sfx = ".xml.gz";
+                    break;
+                  case TYPE_TXT_GZ:
+                    sfx = ".txt.gz";
+                    break;
+                  case TYPE_DMG:
+                    sfx = ".dmg";
+                    break;
+                  case TYPE_EXE:
+                    sfx = ".exe";
+                    break;
+                  default:
+                    sfx = ".extracted";
+                    break;
+                }
+                outFile = outFile + sfx;
+                // above causes failure, quick fix
+                file = new SU3File(signedFile);
+                file.setVerifySignature(verifySig);
+            }
             File out = new File(outFile);
             boolean ok = file.verifyAndMigrate(out);
             if (ok)
-                System.out.println("File extracted (signed by " + file.getSignerString() + ' ' + file._sigType + ')');
+                System.out.println("File extracted to " + outFile + " (signed by " + file.getSignerString() + ' ' + file._sigType + ')');
             else
                 System.out.println("Signature INVALID (signed by " + file.getSignerString() + ' ' + file._sigType +')');
             return ok;

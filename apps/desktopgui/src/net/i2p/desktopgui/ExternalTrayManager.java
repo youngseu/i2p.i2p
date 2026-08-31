@@ -5,13 +5,14 @@ import java.awt.PopupMenu;
 import java.awt.TrayIcon;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.lang.reflect.Method;
 
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
 import javax.swing.SwingWorker;
 
 import net.i2p.I2PAppContext;
-import net.i2p.desktopgui.router.RouterManager;
+//import net.i2p.desktopgui.router.RouterManager;
 
 /**
  *  When started before the router, e.g. with
@@ -22,8 +23,8 @@ import net.i2p.desktopgui.router.RouterManager;
  */
 class ExternalTrayManager extends TrayManager {
 	
-    public ExternalTrayManager(I2PAppContext ctx, Main main, boolean useSwing) {
-        super(ctx, main, useSwing);
+    public ExternalTrayManager(I2PAppContext ctx, boolean useSwing) {
+        super(ctx, useSwing);
     }
 
     public PopupMenu getMainMenu() {
@@ -35,7 +36,13 @@ class ExternalTrayManager extends TrayManager {
                 new SwingWorker<Object, Object>() {
                     @Override
                     protected Object doInBackground() throws Exception {
-                        RouterManager.start();
+                        // Use reflection to compile without router classes for external-only
+                        //RouterManager.start();
+                        try {
+                            Class mgr = Class.forName("net.i2p.desktopgui.router.RouterManager");
+                            Method start = mgr.getMethod("start", new Class[0]);
+                            start.invoke(mgr);
+                        } catch (Exception e) {}
                         return null;
                     }
                     
@@ -51,11 +58,15 @@ class ExternalTrayManager extends TrayManager {
             }
         });
         popup.add(startItem);
+        initializeNotificationItems();
+        popup.add(_notificationItem2);
+        popup.add(_notificationItem1);
         return popup;
     }
 
     public JPopupMenu getSwingMainMenu() {
         JPopupMenu popup = new JPopupMenu();
+/*
         JMenuItem startItem = new JMenuItem(_t("Start I2P"));
         startItem.addActionListener(new ActionListener() {
             @Override
@@ -79,6 +90,10 @@ class ExternalTrayManager extends TrayManager {
             }
         });
         popup.add(startItem);
+*/
+        initializeJNotificationItems();
+        popup.add(_jnotificationItem2);
+        popup.add(_jnotificationItem1);
         return popup;
     }
 
@@ -86,5 +101,14 @@ class ExternalTrayManager extends TrayManager {
      * Update the menu
      * @since 0.9.26
      */
-    protected void updateMenu() {}
+    protected void updateMenu() {
+        if (_notificationItem1 != null)
+            _notificationItem1.setEnabled(_showNotifications);
+        if (_notificationItem2 != null)
+            _notificationItem2.setEnabled(!_showNotifications);
+        if (_jnotificationItem1 != null)
+            _jnotificationItem1.setVisible(_showNotifications);
+        if (_jnotificationItem2 != null)
+            _jnotificationItem2.setVisible(!_showNotifications);
+    }
 }

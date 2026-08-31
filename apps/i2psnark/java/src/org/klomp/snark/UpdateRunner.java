@@ -33,9 +33,9 @@ class UpdateRunner implements UpdateTask, CompleteListener {
     private URI _currentURI;
     private Snark _snark;
 
-    private static final long MAX_LENGTH = 30*1024*1024;
-    private static final long METAINFO_TIMEOUT = 30*60*1000;
-    private static final long COMPLETE_TIMEOUT = 3*60*60*1000;
+    private static final long MAX_LENGTH = 128*1024*1024;
+    private static final long METAINFO_TIMEOUT = 60*60*1000;
+    private static final long COMPLETE_TIMEOUT = 12*60*60*1000;
     private static final long CHECK_INTERVAL = 3*60*1000;
 
     public UpdateRunner(I2PAppContext ctx, UpdateManager umgr, SnarkManager smgr,
@@ -88,6 +88,8 @@ class UpdateRunner implements UpdateTask, CompleteListener {
             try {
                 MagnetURI magnet = new MagnetURI(_smgr.util(), updateURL);
                 byte[] ih = magnet.getInfoHash();
+                if (ih == null)
+                    throw new IllegalArgumentException();
                 // do we already have it?
                 _snark = _smgr.getTorrentByInfoHash(ih);
                 if (_snark != null) {
@@ -105,7 +107,6 @@ class UpdateRunner implements UpdateTask, CompleteListener {
                     }
                     break;
                 }
-                String name = magnet.getName();
                 String trackerURL = magnet.getTrackerURL();
                 if (trackerURL == null && !_smgr.util().shouldUseDHT() &&
                     !_smgr.util().shouldUseOpenTrackers()) {
@@ -113,7 +114,7 @@ class UpdateRunner implements UpdateTask, CompleteListener {
                     _umgr.notifyAttemptFailed(this, "No tracker, no DHT, no OT", null);
                     continue;
                 }
-                _snark = _smgr.addMagnet(name, ih, trackerURL, true, true, null, this);
+                _snark = _smgr.addMagnet(magnet, true, true, null, this);
                 if (_snark != null) {
                     updateStatus("<b>" + _smgr.util().getString("Updating from {0}", linkify(updateURL)) + "</b>");
                     new Timeout();
@@ -186,7 +187,9 @@ class UpdateRunner implements UpdateTask, CompleteListener {
     private void fatal(String error) {
             if (_snark != null) {
                 if (_hasMetaInfo) {
-                    _smgr.stopTorrent(_snark, true);
+                    // avoid loop stopTorrent() ... updateStatus() ... fatal() ...
+                    if (!_snark.isStopped())
+                        _smgr.stopTorrent(_snark, true);
                     String file = _snark.getName();
                     _smgr.removeTorrent(file);
                     // delete torrent file
@@ -310,6 +313,18 @@ class UpdateRunner implements UpdateTask, CompleteListener {
     /** @since 0.9.31 */
     public void locked_saveComments(Snark snark, CommentSet comments) {
         _smgr.locked_saveComments(snark, comments);
+    }
+
+    /** @since 0.9.42 */
+    public boolean shouldAutoStart() {
+        return _smgr.shouldAutoStart();
+    }
+
+    /**
+     * @since 0.9.62
+     */
+    public BandwidthListener getBandwidthListener() {
+        return _smgr.getBandwidthListener();
     }
 
     //////// end CompleteListener methods

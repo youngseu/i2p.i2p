@@ -64,6 +64,21 @@ public interface I2PClient {
      */
     public final static String PROP_FAST_RECEIVE = "i2cp.fastReceive";
 
+    /** @since 0.9.44, was protected in I2PSessionImpl */
+    public static final String PROP_ENABLE_SSL = "i2cp.SSL";
+    /** @since 0.9.44, was protected in I2PSessionImpl */
+    public static final String PROP_USER = "i2cp.username";
+    /** @since 0.9.44, was protected in I2PSessionImpl */
+    public static final String PROP_PW = "i2cp.password";
+    /** @since 0.9.46 */
+    public static final String PROP_GZIP = "i2cp.gzip";
+
+    /**
+     *  7654
+     *  @since 0.9.38
+     */
+    public static final int DEFAULT_LISTEN_PORT = 7654;
+
     /** protocol flag that must be sent when opening the i2cp connection to the router */
     public final static int PROTOCOL_BYTE = 0x2A;
 
@@ -77,7 +92,7 @@ public interface I2PClient {
      * @param destKeyStream location from which to read the Destination, PrivateKey, and SigningPrivateKey from,
      *                      format is specified in {@link net.i2p.data.PrivateKeyFile PrivateKeyFile}
      * @param options set of options to configure the router with, if null will use System properties
-     * @return new session allowing a Destination to recieve all of its messages and send messages to any other Destination.
+     * @return new session allowing a Destination to receive all of its messages and send messages to any other Destination.
      */
     public I2PSession createSession(InputStream destKeyStream, Properties options) throws I2PSessionException;
 

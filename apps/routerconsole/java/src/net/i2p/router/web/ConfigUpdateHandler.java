@@ -38,7 +38,12 @@ public class ConfigUpdateHandler extends FormHandler {
     public static final String DEFAULT_NEWS_URL = "http://echelon.i2p/i2p/news.xml";
     /** old default */
     public static final String OLD_DEFAULT_NEWS_URL_SU3 = "http://echelon.i2p/news/news.su3";
-    /** current default, i2pnews.i2p, run by echelon */
+    /**
+     *  current default, i2pnews.i2p, run by echelon
+     *
+     *  NOTE: If you change, also change in Android:
+     *  app/src/main/java/net/i2p/android/apps/NewsFetcher.java
+     */
     public static final String DEFAULT_NEWS_URL_SU3 = "http://tc73n4kivdroccekirco7rhgxdg5f3cjvbaapabupeyzrqwv5guq.b32.i2p/news.su3";
     public static final String PROP_REFRESH_FREQUENCY = "router.newsRefreshFrequency";
     public static final long DEFAULT_REFRESH_FREQ = 36*60*60*1000l;
@@ -55,7 +60,7 @@ public class ConfigUpdateHandler extends FormHandler {
     public static final String DEFAULT_PROXY_HOST = "127.0.0.1";
     public static final String PROP_PROXY_PORT = "router.updateProxyPort";
     public static final int DEFAULT_PROXY_PORT_INT = 4444;
-    public static final String DEFAULT_PROXY_PORT = "" + DEFAULT_PROXY_PORT_INT;
+    public static final String DEFAULT_PROXY_PORT = Integer.toString(DEFAULT_PROXY_PORT_INT);
     /** default false */
     public static final String PROP_UPDATE_UNSIGNED = "router.updateUnsigned";
     /** default false - use for distros */
@@ -80,24 +85,26 @@ public class ConfigUpdateHandler extends FormHandler {
      *  Changed as of release 0.8 to support both .sud and .su2
      *  Some JVMs (IcedTea) don't have pack200
      *  Update hosts must maintain both
+     *
+     *  These versions have not been released since 0.9.22, 2015.
      */
     private static final String PACK200_URLS =
     "http://echelon.i2p/i2p/i2pupdate.su2\r\n" +
-    "http://inr.i2p/i2p/i2pupdate.su2\r\n" +
+    //"http://inr.i2p/i2p/i2pupdate.su2\r\n" +
     //"http://meeh.i2p/i2pupdate/i2pupdate.su2\r\n" +
-    "http://stats.i2p/i2p/i2pupdate.su2\r\n" +
+    "http://stats.i2p/i2p/i2pupdate.su2";
     // "http://www.i2p2.i2p/_static/i2pupdate.su2\r\n" +
-    "http://update.dg.i2p/files/i2pupdate.su2";
+    //"http://update.dg.i2p/files/i2pupdate.su2";
     //"http://update.killyourtv.i2p/i2pupdate.su2\r\n" ;
     // "http://update.postman.i2p/i2pupdate.su2" ;
 
     private static final String NO_PACK200_URLS =
     "http://echelon.i2p/i2p/i2pupdate.sud\r\n" +
-    "http://inr.i2p/i2p/i2pupdate.sud\r\n" +
+    //"http://inr.i2p/i2p/i2pupdate.sud\r\n" +
     //"http://meeh.i2p/i2pupdate/i2pupdate.sud\r\n" +
-    "http://stats.i2p/i2p/i2pupdate.sud\r\n" +
+    "http://stats.i2p/i2p/i2pupdate.sud";
     // "http://www.i2p2.i2p/_static/i2pupdate.sud\r\n" +
-    "http://update.dg.i2p/files/i2pupdate.sud";
+    //"http://update.dg.i2p/files/i2pupdate.sud";
     //"http://update.killyourtv.i2p/i2pupdate.sud\r\n" ;
     // "http://update.postman.i2p/i2pupdate.sud" ;
 
@@ -116,30 +123,14 @@ public class ConfigUpdateHandler extends FormHandler {
     private static final String SU3_CERT_DIR = "certificates/router";
 
     /**
-     *  Only enabled if we have pack200 and trusted public key certificates installed
+     *  Only enabled if we have trusted public key certificates installed
      *  @since 0.9.9
      */
     public static final boolean USE_SU3_UPDATE;
     static {
         String[] files = (new File(I2PAppContext.getGlobalContext().getBaseDir(), SU3_CERT_DIR)).list();
-        USE_SU3_UPDATE = FileUtil.isPack200Supported() && files != null && files.length > 0;
+        USE_SU3_UPDATE = files != null && files.length > 0;
     }
-
-    private static final String DEFAULT_SU3_UPDATE_URLS =
-    "http://echelon.i2p/i2p/i2pupdate.su3\r\n" +
-    "http://inr.i2p/i2p/i2pupdate.su3\r\n" +
-    //"http://meeh.i2p/i2pupdate/i2pupdate.su3\r\n" +
-    "http://stats.i2p/i2p/i2pupdate.su3\r\n" +
-    // "http://www.i2p2.i2p/_static/i2pupdate.su3\r\n" +
-    "http://update.dg.i2p/files/i2pupdate.su3";
-    //"http://update.killyourtv.i2p/i2pupdate.su3\r\n" ;
-    // "http://update.postman.i2p/i2pupdate.su3" ;
-
-    /**
-     *  Empty string if disabled. Cannot be overridden by config.
-     *  @since 0.9.9
-     */
-    public static final String SU3_UPDATE_URLS = USE_SU3_UPDATE ? DEFAULT_SU3_UPDATE_URLS : "";
 
     public static final String PROP_TRUSTED_KEYS = "router.trustedUpdateKeys";
     
@@ -155,8 +146,6 @@ public class ConfigUpdateHandler extends FormHandler {
 
     @Override
     protected void processForm() {
-        if (_action == null)
-            return;
         if (_action.equals(_t("Check for updates"))) {
             ConsoleUpdateManager mgr = UpdateHandler.updateManager(_context);
             if (mgr == null) {
@@ -173,7 +162,7 @@ public class ConfigUpdateHandler extends FormHandler {
             int proxyPort = proxyPort(_context);
             if (shouldProxy && proxyPort == ConfigUpdateHandler.DEFAULT_PROXY_PORT_INT &&
                 proxyHost.equals(ConfigUpdateHandler.DEFAULT_PROXY_HOST) &&
-                _context.portMapper().getPort(PortMapper.SVC_HTTP_PROXY) < 0) {
+                !_context.portMapper().isRegistered(PortMapper.SVC_HTTP_PROXY)) {
                 addFormError(_t("HTTP client proxy tunnel must be running"));
                 return;
             }
@@ -236,18 +225,20 @@ public class ConfigUpdateHandler extends FormHandler {
             }
         }
         
-        changes.put(PROP_SHOULD_PROXY, Boolean.toString(_updateThroughProxy));
-        changes.put(PROP_SHOULD_PROXY_NEWS, Boolean.toString(_newsThroughProxy));
         if (isAdvanced()) {
-            changes.put(PROP_UPDATE_UNSIGNED, Boolean.toString(_updateUnsigned));
-            changes.put(PROP_UPDATE_DEV_SU3, Boolean.toString(_updateDevSU3));
+            changes.put(PROP_SHOULD_PROXY_NEWS, Boolean.toString(_newsThroughProxy));
+            if (!_context.getBooleanProperty(PROP_UPDATE_DISABLED)) {
+                changes.put(PROP_SHOULD_PROXY, Boolean.toString(_updateThroughProxy));
+                changes.put(PROP_UPDATE_UNSIGNED, Boolean.toString(_updateUnsigned));
+                changes.put(PROP_UPDATE_DEV_SU3, Boolean.toString(_updateDevSU3));
+            }
         }
         
         String oldFreqStr = _context.getProperty(PROP_REFRESH_FREQUENCY, DEFAULT_REFRESH_FREQUENCY);
         long oldFreq = DEFAULT_REFRESH_FREQ;
         try { oldFreq = Long.parseLong(oldFreqStr); } catch (NumberFormatException nfe) {}
         if (_refreshFrequency != oldFreq) {
-            changes.put(PROP_REFRESH_FREQUENCY, ""+_refreshFrequency);
+            changes.put(PROP_REFRESH_FREQUENCY, Long.toString(_refreshFrequency));
             addFormNoticeNoEscape(_t("Updating refresh frequency to {0}",
                             _refreshFrequency <= 0 ? _t("Never") : DataHelper.formatDuration2(_refreshFrequency)));
         }
@@ -261,7 +252,7 @@ public class ConfigUpdateHandler extends FormHandler {
         }
 
         if ( (_updateURL != null) && (_updateURL.length() > 0) ) {
-            _updateURL = _updateURL.replace("\r\n", ",").replace("\n", ",");
+            _updateURL = _updateURL.replace("\r\n", ",").replace('\n', ',');
             String oldURL = _context.router().getConfigSetting(PROP_UPDATE_URL);
             if ( (oldURL == null) || (!_updateURL.equals(oldURL)) ) {
                 changes.put(PROP_UPDATE_URL, _updateURL);
@@ -270,7 +261,7 @@ public class ConfigUpdateHandler extends FormHandler {
         }
 
         if ( (_trustedKeys != null) && (_trustedKeys.length() > 0) ) {
-            _trustedKeys = _trustedKeys.replace("\r\n", ",").replace("\n", ",");
+            _trustedKeys = _trustedKeys.replace("\r\n", ",").replace('\n', ',');
             String oldKeys = new TrustedUpdate(_context).getTrustedKeysString();
             oldKeys = oldKeys.replace("\r\n", ",");
             if (!_trustedKeys.equals(oldKeys)) {

@@ -1,13 +1,18 @@
 package net.i2p.util;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.io.Writer;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.channels.ServerSocketChannel;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -18,7 +23,7 @@ import java.util.concurrent.LinkedBlockingQueue;
  *  Can only be connected by InternalSocket.
  *
  *  Warning - this uses Piped Streams, which don't like multiple writers from threads
- *  that may vanish. If you do use multipe writers,
+ *  that may vanish. If you do use multiple writers,
  *  you may get intermittent 'write end dead' or 'pipe broken' IOExceptions on the reader side.
  *  See http://techtavern.wordpress.com/2008/07/16/whats-this-ioexception-write-end-dead/
  * @since 0.7.9
@@ -68,7 +73,9 @@ public class InternalServerSocket extends ServerSocket {
             try {
                 serverSock = _acceptQueue.take();
             } catch (InterruptedException ie) {
-                continue;
+                if (_running)
+                    throw new InterruptedIOException();
+                throw new IOException("closed");
             }
             if (serverSock.getInputStream() == null) // poison
                 throw new IOException("closed");
@@ -93,10 +100,10 @@ public class InternalServerSocket extends ServerSocket {
         InternalServerSocket iss = _sockets.get(Integer.valueOf(port));
         if (iss == null)
              throw new IOException("No server for port: " + port);
-        PipedInputStream cis = BigPipedInputStream.getInstance();
-        PipedInputStream sis = BigPipedInputStream.getInstance();
-        PipedOutputStream cos = new PipedOutputStream(sis);
-        PipedOutputStream sos = new PipedOutputStream(cis);
+        TimeoutPipedInputStream cis = new TimeoutPipedInputStream(64*1024);
+        TimeoutPipedInputStream sis = new TimeoutPipedInputStream(64*1024);
+        PipedOutputStream cos = new TimeoutPipedOutputStream(sis);
+        PipedOutputStream sos = new TimeoutPipedOutputStream(cis);
         clientSock.setInputStream(cis);
         clientSock.setOutputStream(cos);
         iss.queueConnection(new InternalSocket(sis, sos));
@@ -128,7 +135,8 @@ public class InternalServerSocket extends ServerSocket {
         return 0;
     }
 
-    // everything below here unsupported
+    // most below here unsupported
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -141,12 +149,15 @@ public class InternalServerSocket extends ServerSocket {
     public void bind(SocketAddress endpoint, int backlog) {
         throw new IllegalArgumentException("unsupported");
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Returns null as of 0.9.33, prior to that threw IllegalArgumentException
+     */
     @Override
     public ServerSocketChannel getChannel() {
-        throw new IllegalArgumentException("unsupported");
+        return null;
     }
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -171,18 +182,23 @@ public class InternalServerSocket extends ServerSocket {
     public boolean getReuseAddress() {
         throw new IllegalArgumentException("unsupported");
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Returns true as of 0.9.33, prior to that threw IllegalArgumentException
+     */
     @Override
     public boolean isBound() {
-        throw new IllegalArgumentException("unsupported");
+        return true;
     }
-    /** @deprecated unsupported */
-    @Deprecated
+
+    /**
+     * Supported as of 0.9.33, prior to that threw IllegalArgumentException
+     */
     @Override
     public boolean isClosed() {
-        throw new IllegalArgumentException("unsupported");
+        return !_running;
     }
+
     /** @deprecated unsupported */
     @Deprecated
     @Override
@@ -194,5 +210,24 @@ public class InternalServerSocket extends ServerSocket {
     @Override
     public void setReuseAddress(boolean on) {
         throw new IllegalArgumentException("unsupported");
+    }
+
+    /**
+     *  For debugging only
+     *  @since 0.9.33
+     */
+    public static void renderStatusHTML(Writer out) throws IOException {
+        out.write("<h2 id=\"debug_portmapper\">Internal Server Sockets</h2><table id=\"portmapper\">\n");
+        List<Integer> ports = new ArrayList<Integer>(_sockets.keySet());
+        if (!ports.isEmpty()) {
+            out.write("<tr><th>Port\n");
+            Collections.sort(ports);
+            for (Integer i : ports) {
+                out.write("<tr><td>" + i + '\n');
+            }
+        } else {
+            out.write("<tr><td><i>none</i>\n");
+        }
+        out.write("</table>\n");
     }
 }

@@ -1,7 +1,9 @@
 package net.i2p.router.peermanager;
 
 import net.i2p.data.router.RouterInfo;
+import net.i2p.router.Router;
 import net.i2p.router.RouterContext;
+import net.i2p.router.NetworkDatabaseFacade;
 import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
 import net.i2p.stat.Rate;
 import net.i2p.stat.RateAverages;
@@ -22,57 +24,79 @@ class CapacityCalculator {
 
     // total of all possible bonuses should be less than 4, since
     // crappy peers start at 1 and the base is 5.
-    private static final double BONUS_NEW = 0.85;
+    private static final double PENALTY_NEW = 4;
     private static final double BONUS_ESTABLISHED = 0.65;
     private static final double BONUS_SAME_COUNTRY = 0;
     private static final double BONUS_XOR = .25;
     private static final double PENALTY_UNREACHABLE = 2;
+    private static final double PENALTY_NO_RI = 2;
+    private static final double PENALTY_L_CAP = 1;
+    private static final double PENALTY_NO_R_CAP = 1;
+    private static final double PENALTY_U_CAP = 2;
+    private static final double PENALTY_LAST_SEND_FAIL = 4;
+    private static final String PROP_D_CAP = "router.penaltyCapD";
+    private static final double PENALTY_CAP_D = 2.5;
+    private static final String PROP_E_CAP = "router.penaltyCapE";
+    private static final double PENALTY_CAP_E = 4.75;
+    // private static final String PROP_G_CAP = "router.gcapPenalty";
+    // private static final double PENALTY_G_CAP = 0;
+    private static final double PENALTY_RECENT_SEND_FAIL = 4;
+    private static final double BONUS_LAST_SEND_SUCCESS = 1;
+    private static final double BONUS_RECENT_SEND_SUCCESS = 1;
     // we make this a bonus for non-ff, not a penalty for ff, so we
     // don't drive the ffs below the default
     private static final double BONUS_NON_FLOODFILL = 1.0;
     
     public static double calc(PeerProfile profile) {
         double capacity;
-
-        if (tooOld(profile)) { 
+        RouterContext context = profile.getContext();
+        long now = context.clock().now();
+        TunnelHistory history = profile.getTunnelHistory();
+        long down = context.router().getEstimatedDowntime();
+        long up = context.router().getUptime();
+        boolean enableAgeChecks = (down > 0 && down < 45*60*1000) || up > 60*60*1000;
+        if (enableAgeChecks && tooOld(profile, now)) {
             capacity = 1;
         } else {
             RateStat acceptStat = profile.getTunnelCreateResponseTime();
-            RateStat rejectStat = profile.getTunnelHistory().getRejectionRate();
-            RateStat failedStat = profile.getTunnelHistory().getFailedRate();
+            RateStat rejectStat = history.getRejectionRate();
+            RateStat failedStat = history.getFailedRate();
         
             double capacity10m = estimateCapacity(acceptStat, rejectStat, failedStat, 10*60*1000);
             // if we actively know they're bad, who cares if they used to be good?
             if (capacity10m <= 0) {
                 capacity = 0;
             } else {
-                double capacity30m = estimateCapacity(acceptStat, rejectStat, failedStat, 30*60*1000);
                 double capacity60m = estimateCapacity(acceptStat, rejectStat, failedStat, 60*60*1000);
                 double capacity1d  = estimateCapacity(acceptStat, rejectStat, failedStat, 24*60*60*1000);
-        
-                capacity = capacity10m * periodWeight(10*60*1000) + 
-                           capacity30m * periodWeight(30*60*1000) + 
-                           capacity60m * periodWeight(60*60*1000) + 
-                           capacity1d  * periodWeight(24*60*60*1000);
-            }
-        }        
-        
-        // now take into account non-rejection tunnel rejections (which haven't 
-        // incremented the rejection counter, since they were only temporary)
-        RouterContext context = profile.getContext();
-        long now = context.clock().now();
-        if (profile.getTunnelHistory().getLastRejectedTransient() > now - 5*60*1000)
-            capacity = 1;
-        else if (profile.getTunnelHistory().getLastRejectedProbabalistic() > now - 5*60*1000)
-            capacity -= context.random().nextInt(5);
 
-        // boost new profiles
-        if (now - profile.getFirstHeardAbout() < 45*60*1000)
-            capacity += BONUS_NEW;
+                // now take into account recent tunnel rejections
+                long cutoff = now - PeerManager.REORGANIZE_TIME_LONG;
+                if (history.getLastRejectedProbabalistic() > cutoff) {
+                    capacity10m /= 2;
+                } else if (history.getLastRejectedTransient() > cutoff) {
+                    // never happens
+                    capacity10m /= 4;
+                }
+
+                capacity = capacity10m * 0.4 + 
+                           capacity60m * 0.5 + 
+                           capacity1d  * 0.1;
+            }
+        }
+
+        // penalize new profiles
+        if (enableAgeChecks) {
+            long firstHeard = profile.getFirstHeardAbout();
+            long ago = now - firstHeard;
+            if (ago < 2*60*60*1000)
+                capacity -= PENALTY_NEW * (2*60*60*1000 - ago) / 2*60*60*1000;
+        }
         // boost connected peers
         if (profile.isEstablished())
             capacity += BONUS_ESTABLISHED;
 
+/*
         // boost same country
         if (profile.isSameCountry()) {
             double bonus = BONUS_SAME_COUNTRY;
@@ -84,6 +108,7 @@ class CapacityCalculator {
             }
             capacity += bonus;
         }
+*/
 
         // penalize unreachable peers
         if (profile.wasUnreachable())
@@ -91,9 +116,68 @@ class CapacityCalculator {
 
         // credit non-floodfill to reduce conn limit issues at floodfills
         // TODO only if we aren't floodfill ourselves?
-        RouterInfo ri = context.netDb().lookupRouterInfoLocally(profile.getPeer());
-        if (!FloodfillNetworkDatabaseFacade.isFloodfill(ri))
-            capacity += BONUS_NON_FLOODFILL;
+        // null for tests
+        NetworkDatabaseFacade ndb =  context.netDb();
+        if (ndb != null) {
+            RouterInfo ri = (RouterInfo) ndb.lookupLocallyWithoutValidation(profile.getPeer());
+            if (ri != null) {
+                if (!FloodfillNetworkDatabaseFacade.isFloodfill(ri))
+                    capacity += BONUS_NON_FLOODFILL;
+                String caps = ri.getCapabilities();
+                if (caps.indexOf(Router.CAPABILITY_REACHABLE) < 0)
+                    capacity -= PENALTY_NO_R_CAP;
+                if (caps.indexOf(Router.CAPABILITY_UNREACHABLE) >= 0)
+                    capacity -= PENALTY_U_CAP;
+                if (caps.indexOf(Router.CAPABILITY_BW32) >= 0)
+                    capacity -= PENALTY_L_CAP;
+                if (caps.indexOf(Router.CAPABILITY_CONGESTION_MODERATE) >= 0) {
+                    String dcapPenalty = context.getProperty(PROP_D_CAP);
+                    if (dcapPenalty != null) {
+                        try {
+                            double dcap = Double.parseDouble(dcapPenalty);
+                            capacity -= dcap;
+                        } catch (NumberFormatException nfe) {
+                            capacity -= PENALTY_CAP_D;
+                        }
+                    } else {
+                        capacity -= PENALTY_CAP_D;
+                    }
+                } else if (caps.indexOf(Router.CAPABILITY_CONGESTION_SEVERE) >= 0){
+                    String ecapPenalty = context.getProperty(PROP_E_CAP);
+                    if (ecapPenalty != null) {
+                        try {
+                            double ecap = Double.parseDouble(ecapPenalty);
+                            capacity -= ecap;
+                        } catch (NumberFormatException nfe) {
+                            capacity -= PENALTY_CAP_E;
+                        }
+                    } else {
+                        // treat older than a few minutes as D, as recommended in proposal 162
+                        long age = context.clock().now() - ri.getPublished();
+                        if (age < 30*60*1000)
+                            capacity -= PENALTY_CAP_E;
+                        else
+                            capacity -= PENALTY_CAP_D;
+                    }
+                } else if (caps.indexOf(Router.CAPABILITY_NO_TUNNELS) >= 0) {
+                    capacity = 0;
+                }
+            } else {
+                capacity -= PENALTY_NO_RI;
+            }
+        }
+
+        long lastGood = profile.getLastSendSuccessful();
+        long lastBad = profile.getLastSendFailed();
+        if (lastBad > lastGood) {
+            capacity -= PENALTY_LAST_SEND_FAIL;
+            if (lastGood > now - 30*60*1000)
+                capacity += PENALTY_RECENT_SEND_FAIL;
+        } else if (lastGood > 0) {
+            capacity += BONUS_LAST_SEND_SUCCESS;
+            if (lastGood > now - 30*60*1000)
+                capacity += BONUS_RECENT_SEND_SUCCESS;
+        }
 
         // a tiny tweak to break ties and encourage closeness, -.25 to +.25
         capacity -= profile.getXORDistance() * (BONUS_XOR / 128);
@@ -109,11 +193,8 @@ class CapacityCalculator {
      * If we haven't heard from them in an hour, they aren't too useful.
      *
      */
-    private static boolean tooOld(PeerProfile profile) {
-        if (profile.getIsActive(60*60*1000)) 
-            return false;
-        else 
-            return true;
+    private static boolean tooOld(PeerProfile profile, long now) {
+        return !profile.getIsActive(60*60*1000, now);
     }
     
     /**
@@ -176,16 +257,6 @@ class CapacityCalculator {
             return val;
         } else {
             return 0.0d;
-        }
-    }
-    
-    private static double periodWeight(int period) {
-        switch (period) {
-            case 10*60*1000: return .4;
-            case 30*60*1000: return .3;
-            case 60*60*1000: return .2;
-            case 24*60*60*1000: return .1;
-            default: throw new IllegalArgumentException("undefined period passed, period [" + period + "]???");
         }
     }
 }

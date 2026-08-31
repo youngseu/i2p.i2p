@@ -16,7 +16,6 @@ import java.util.Set;
 
 import net.i2p.data.Hash;
 import net.i2p.router.PeerManagerFacade;
-import net.i2p.router.PeerSelectionCriteria;
 import net.i2p.router.RouterContext;
 import net.i2p.util.Log;
 
@@ -30,24 +29,28 @@ public class PeerManagerFacadeImpl implements PeerManagerFacade {
     private final RouterContext _context;
     private final ProfilePersistenceHelper _persistenceHelper;
     private final PeerTestJob _testJob;
+
+    private static final boolean ENABLE_PEER_TEST = false;
     
     public PeerManagerFacadeImpl(RouterContext ctx) {
         _context = ctx;
         _log = ctx.logManager().getLog(PeerManagerFacadeImpl.class);
         _persistenceHelper = new ProfilePersistenceHelper(ctx);
-        _testJob = new PeerTestJob(_context);
+        _testJob = ENABLE_PEER_TEST ? new PeerTestJob(_context) : null;
     }
     
     public synchronized void startup() {
         _log.info("Starting up the peer manager");
         _manager = new PeerManager(_context);
         _persistenceHelper.setUs(_context.routerHash());
-        _testJob.startTesting(_manager);
+        if (_testJob != null)
+            _testJob.startTesting(_manager);
     }
     
     public synchronized void shutdown() {
         _log.info("Shutting down the peer manager");
-        _testJob.stopTesting();
+        if (_testJob != null)
+            _testJob.stopTesting();
         if (_manager != null) {
             _manager.storeProfiles();
             _manager.clearProfiles();
@@ -60,10 +63,6 @@ public class PeerManagerFacadeImpl implements PeerManagerFacade {
         _manager.loadProfiles();
     }
     
-    public List<Hash> selectPeers(PeerSelectionCriteria criteria) {
-        return _manager.selectPeers(criteria);
-    }
-
     /**
      *  @param caps non-null
      */
@@ -92,6 +91,16 @@ public class PeerManagerFacadeImpl implements PeerManagerFacade {
     public Set<Hash> getPeersByCapability(char capability) { 
         if (_manager == null) return Collections.emptySet();
         return _manager.getPeersByCapability(capability); 
+    }
+
+    /**
+     *  @param capability case-insensitive
+     *  @return how many
+     *  @since 0.9.45
+     */
+    public int countPeersByCapability(char capability) { 
+        if (_manager == null) return 0;
+        return _manager.countPeersByCapability(capability); 
     }
 
     /** @deprecated moved to routerconsole */

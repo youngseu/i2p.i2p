@@ -3,7 +3,7 @@
 .\" This file was generated with po4a. Translate the source file.
 .\"
 .\"*******************************************************************
-.TH EEPGET 1 2017年1月26日 "" I2P
+.TH EEPGET 1 "November 27, 2021" "" I2P
 
 .SH 名称
 Eepget \- I2P 下载器
@@ -40,14 +40,14 @@ Eepget 能够处理缓慢或不稳定的网络连接；如果由于网络问题�
 控制进度显示。\fB\ lineLen \fP 控制进度行的字符长度。默认为40。
 .TP 
 
-\fB\-m\fP markSize
+标记大小
 .TP 
-Controls the progress display. \fB\ markSize \fP is the number of bytes one '#' character represents. The default is 1024.
+控制进度显示。\fB\ markSize \fP 控制进度行的字符长度。默认为1024。
 .TP 
 
 \fB\-n\fP 次重试
 .TP 
-Specify the number of times to retry downloading if the download isn't successful. If this option is not specified, eepget will not retry.
+指定在下载不成功的情况下重试下载的次数。如果不指定这个选项，eepget将不会重试。
 .TP 
 
 \fB\-o\fP 文件
@@ -55,34 +55,35 @@ Specify the number of times to retry downloading if the download isn't successfu
 设置要写入的输出文件。 如果未指定此选项，输出文件名将由URL确定。
 .TP 
 
-\fB\-p\fP proxy_host[:port]
+\fB\-p\fP代理主机:[端口]
 .TP 
-Specify an I2P proxy server (eeproxy) to use. If the port is not specified, eepget will use 4444. If this option is not specified, eepget will use 127.0.0.1:4444. Specify \fB\-c\fP or \fB\-p\fP :0 to disable the eeproxy.
+指定一个要使用的I2P代理服务器(eeproxy)。如果不指定这个选项，eepget将使用127.0.0.1:4444。指定\fB\-c\fP或\fB\-p\fP:0来禁用eeproxy。
 .TP 
 
 \fB\-t\fP 秒
 .TP 
-Sets the inactivity timeout. The default is 60 seconds.
+设置不活动超时。默认是60秒。
 .TP 
 
 \fB\-u\fP 用户名
 .TP 
-Sets the username for proxy authorization, if required.
+如果需要的话，设置代理授权的用户名。
 .TP 
 
 \fB\-x\fP 密码
 .TP 
-Sets the password for proxy authorization, if required. If a username is specified but not a password, EepGet will prompt for the password.
+如果需要的话，设置代理授权的密码。如果指定了用户名但没有密码，EepGet将提示密码。
 
 .SH 退出状态
 
 \fBeepget\fP 退出状态为 0 表示传输成功。如果下载遇到问题，则退出状态非 0。
 
-.SH "REPORTING BUGS"
-Please enter a ticket on
-.UR https://trac.i2p2.de/
-the I2P trac page
+.SH 报告漏洞
+请在
+.UR https://i2pgit.org/i2p\-hackers/i2p.i2p/\-/issues
+I2P GitLab服务器
 .UE .
+上输入一个问题。
 
 .SH 另见
 \fBi2prouter\fP(1)  \fBcurl\fP(1)  \fBwget\fP(1)

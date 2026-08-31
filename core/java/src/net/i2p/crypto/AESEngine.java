@@ -18,15 +18,14 @@ import net.i2p.util.SimpleByteCache;
 
 /** 
  * Dummy wrapper for AES cipher operation.
- * Warning - 
- * most methods UNUSED unless i2p.encryption = off
+ * Warning - most methods UNUSED.
  * See CryptixAESEngine overrides for the real thing.
  */
 public class AESEngine {
     protected final Log _log;
     protected final I2PAppContext _context;
 
-    public AESEngine(I2PAppContext ctx) {
+    protected AESEngine(I2PAppContext ctx) {
         _context = ctx;
         _log = _context.logManager().getLog(getClass());
         if (getClass().equals(AESEngine.class))
@@ -79,7 +78,7 @@ public class AESEngine {
         int size = Hash.HASH_LENGTH 
                  + 4 // sizeof(payload)
                  + payload.length;
-        int padding = ElGamalAESEngine.getPaddingSize(size, paddedSize);
+        int padding = getPaddingSize(size, paddedSize);
         
         byte data[] = new byte[size + padding];
         _context.sha().calculateHash(iv, 0, 16, data, 0);
@@ -89,7 +88,7 @@ public class AESEngine {
         cur += 4;
         System.arraycopy(payload, 0, data, cur, payload.length);
         cur += payload.length;
-        byte paddingData[] = ElGamalAESEngine.getPadding(_context, size, paddedSize);
+        byte paddingData[] = getPadding(_context, size, paddedSize);
         System.arraycopy(paddingData, 0, data, cur, paddingData.length);
         
         encrypt(data, 0, data, 0, sessionKey, iv, data.length);
@@ -182,7 +181,44 @@ public class AESEngine {
     public void decryptBlock(byte payload[], int inIndex, SessionKey sessionKey, byte rv[], int outIndex) {
         System.arraycopy(payload, inIndex, rv, outIndex, rv.length - outIndex);
     }
-    
+
+    /**
+     * Return random bytes for padding the data to a mod 16 size so that it is
+     * at least minPaddedSize
+     *
+     * Public for ElGamalAESEngine.
+     * Not a public API, not for external use.
+     *
+     * @since 0.9.38 moved from ElGamalAESEngine
+     */
+    public final static byte[] getPadding(I2PAppContext context, int curSize, long minPaddedSize) {
+        int size = getPaddingSize(curSize, minPaddedSize);
+        byte rv[] = new byte[size];
+        context.random().nextBytes(rv);
+        return rv;
+    }
+
+    /**
+     * Return size for padding the data to a mod 16 size so that it is
+     * at least minPaddedSize
+     *
+     * Public for ElGamalAESEngine.
+     * Not a public API, not for external use.
+     *
+     * @since 0.9.38 moved from ElGamalAESEngine
+     */
+    public final static int getPaddingSize(int curSize, long minPaddedSize) {
+        int diff = 0;
+        if (curSize < minPaddedSize) {
+            diff = (int) minPaddedSize - curSize;
+        }
+
+        int numPadding = diff;
+        if (((curSize + diff) % 16) != 0) numPadding += (16 - ((curSize + diff) % 16));
+        return numPadding;
+    }
+
+ 
 /******
     public static void main(String args[]) {
         I2PAppContext ctx = new I2PAppContext();

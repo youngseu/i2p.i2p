@@ -1,10 +1,5 @@
 package net.i2p.router.tasks;
 
-import java.security.GeneralSecurityException;
-import java.security.NoSuchAlgorithmException;
-import javax.crypto.Cipher;
-import javax.crypto.spec.SecretKeySpec;
-
 import net.i2p.crypto.CryptoCheck;
 import net.i2p.crypto.SigType;
 import net.i2p.router.RouterContext;
@@ -57,11 +52,11 @@ public class CryptoChecker {
                 if (log != null)
                     log.logAlways(Log.WARN, s);
                 System.out.println(s);
-            } else if (SystemVersion.isJava9()) {
-                s = "Java 9 support is beta, check for Java updates";
-                if (log != null)
-                    log.logAlways(Log.WARN, s);
-                System.out.println("Warning: " + s);
+            //} else if (SystemVersion.isJava9()) {
+            //    s = "Java 9 support is beta, check for Java updates";
+            //    if (log != null)
+            //        log.logAlways(Log.WARN, s);
+            //    System.out.println("Warning: " + s);
             }
             if (!CryptoCheck.isUnlimited() && !SystemVersion.isJava9()) {
                 s = "Please consider installing the Java Cryptography Unlimited Strength Jurisdiction Policy Files from ";

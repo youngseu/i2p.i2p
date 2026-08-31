@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.lang.IllegalArgumentException;
 import java.net.URI;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 
@@ -16,11 +17,10 @@ import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
 import net.i2p.data.SigningPublicKey;
 import net.i2p.router.RouterContext;
-import net.i2p.router.web.ConfigClientsHelper;
 import net.i2p.router.web.ConfigUpdateHandler;
-import net.i2p.router.web.LogsHelper;
 import net.i2p.router.web.Messages;
 import net.i2p.router.web.PluginStarter;
+import net.i2p.router.web.RouterConsoleRunner;
 import net.i2p.update.*;
 import net.i2p.util.EepGet;
 import net.i2p.util.FileUtil;
@@ -29,6 +29,7 @@ import net.i2p.util.OrderedProperties;
 import net.i2p.util.PortMapper;
 import net.i2p.util.SecureDirectory;
 import net.i2p.util.SecureFile;
+import net.i2p.util.SystemVersion;
 import net.i2p.util.VersionComparator;
 
 
@@ -50,6 +51,7 @@ import net.i2p.util.VersionComparator;
 class PluginUpdateRunner extends UpdateRunner {
 
     private String _appName;
+    private final String _appDisplayName;
     private final String _oldVersion;
     private final URI _uri;
     private final String _xpi2pURL;
@@ -70,6 +72,27 @@ class PluginUpdateRunner extends UpdateRunner {
             _uri = uris.get(0);
         _xpi2pURL = _uri.toString();
         _appName = appName;
+        // For new plugin installs, ConsoleUpdateManager gives us a fake appName
+        // which is a random long. See installPlugin() for why.
+        // If that's the case, create a better name from the URI.
+        String appDisplayName = appName;
+        try {
+            Long.parseLong(appName);
+            String s = _uri.getPath();
+            if (s != null) {
+                int p = s.lastIndexOf('/');
+                if (p >= 0)
+                    s = s.substring(p + 1);
+                String slc = s.toLowerCase(Locale.US);
+                if (slc.endsWith(".su3"))
+                    s = s.substring(0, s.length() - 4);
+                else if (slc.endsWith(".xpi2p"))
+                    s = s.substring(0, s.length() - 6);
+                if (s.length() > 0)
+                    appDisplayName = s;
+            }
+        } catch (NumberFormatException nfe) {}
+        _appDisplayName = appDisplayName;
         _oldVersion = oldVersion;
     }
 
@@ -128,15 +151,29 @@ class PluginUpdateRunner extends UpdateRunner {
                     _log.error("Error downloading plugin", t);
                 }
             }
-            if (_updated)
+            if (_updated) {
                 _mgr.notifyComplete(this, _newVersion, null);
-            else
+                _mgr.notifyComplete(this, _errMsg);
+            } else {
                 _mgr.notifyTaskFailed(this, _errMsg, null);
+            }
         }
+
+    /**
+     *  Overridden to change the "Updating I2P" text in super
+     *  @since 0.9.35
+     */
+    @Override
+    public void bytesTransferred(long alreadyTransferred, int currentWrite, long bytesTransferred, long bytesRemaining, String url) {
+        long d = currentWrite + bytesTransferred;
+        String status = "<b>" + _t("Downloading plugin") + ": " + _appDisplayName + "</b>";
+        _mgr.notifyProgress(this, status, d, d + bytesRemaining);
+    }
 
         @Override
         public void transferComplete(long alreadyTransferred, long bytesTransferred, long bytesRemaining, String url, String outputFile, boolean notModified) {
-            updateStatus("<b>" + _t("Plugin downloaded") + "</b>");
+            if (!(_xpi2pURL.startsWith("file:") || _method == UpdateMethod.FILE))
+                updateStatus("<b>" + _t("Plugin downloaded") + ": " + _appDisplayName + "</b>");
             File f = new File(_updateFile);
             File appDir = new SecureDirectory(_context.getConfigDir(), PLUGIN_DIR);
             if ((!appDir.exists()) && (!appDir.mkdir())) {
@@ -295,7 +332,8 @@ class PluginUpdateRunner extends UpdateRunner {
             String sudVersion;
             String signingKeyName;
             try {
-                su3.verifyAndMigrate(to);
+                if (!su3.verifyAndMigrate(to))
+                    throw new IOException("bad signature");
                 if (su3.getFileType() != SU3File.TYPE_ZIP)
                     throw new IOException("bad file type");
                 if (su3.getContentType() != SU3File.CONTENT_PLUGIN)
@@ -342,7 +380,11 @@ class PluginUpdateRunner extends UpdateRunner {
                 f.delete();
                 to.delete();
                 FileUtil.rmdir(tempDir, false);
-                statusDone("<b>" + _t("Plugin from {0} is corrupt", url) + "</b>");
+                String msg = _t("Plugin from {0} is corrupt", url);
+                // too hard to figure out if it actually contains pack200 files, so just add a hint...
+                if (!FileUtil.isPack200Supported())
+                    msg += " (or requires Pack200 which is unsupported in this JVM)";
+                statusDone("<b>" + msg + "</b>");
                 return null;
             }
             File installProps = new File(tempDir, "plugin.config");
@@ -386,7 +428,7 @@ class PluginUpdateRunner extends UpdateRunner {
             _appName = appName;
             _newVersion = version;
 
-            String minVersion = ConfigClientsHelper.stripHTML(props, "min-i2p-version");
+            String minVersion = PluginStarter.stripHTML(props, "min-i2p-version");
             if (minVersion != null &&
                 VersionComparator.comp(CoreVersion.VERSION, minVersion) < 0) {
                 to.delete();
@@ -394,9 +436,8 @@ class PluginUpdateRunner extends UpdateRunner {
                 return;
             }
 
-            minVersion = ConfigClientsHelper.stripHTML(props, "min-java-version");
-            if (minVersion != null &&
-                VersionComparator.comp(System.getProperty("java.version"), minVersion) < 0) {
+            minVersion = PluginStarter.stripHTML(props, "min-java-version");
+            if (minVersion != null && !SystemVersion.isJava(minVersion)) {
                 to.delete();
                 statusDone("<b>" + _t("This plugin requires Java version {0} or higher", minVersion) + "</b>");
                 return;
@@ -405,7 +446,7 @@ class PluginUpdateRunner extends UpdateRunner {
             boolean wasRunning = false;
             File destDir = new SecureDirectory(appDir, appName);
             if (destDir.exists()) {
-                if (Boolean.valueOf(props.getProperty("install-only")).booleanValue()) {
+                if (Boolean.parseBoolean(props.getProperty("install-only"))) {
                     to.delete();
                     statusDone("<b>" + _t("Downloaded plugin is for new installs only, but the plugin is already installed", url) + "</b>");
                     return;
@@ -435,22 +476,22 @@ class PluginUpdateRunner extends UpdateRunner {
                     statusDone("<b>" + _t("Downloaded plugin version {0} is not newer than installed plugin", version) + "</b>");
                     return;
                 }
-                minVersion = ConfigClientsHelper.stripHTML(props, "min-installed-version");
+                minVersion = PluginStarter.stripHTML(props, "min-installed-version");
                 if (minVersion != null &&
                     VersionComparator.comp(minVersion, oldVersion) > 0) {
                     to.delete();
                     statusDone("<b>" + _t("Plugin update requires installed plugin version {0} or higher", minVersion) + "</b>");
                     return;
                 }
-                String maxVersion = ConfigClientsHelper.stripHTML(props, "max-installed-version");
+                String maxVersion = PluginStarter.stripHTML(props, "max-installed-version");
                 if (maxVersion != null &&
                     VersionComparator.comp(maxVersion, oldVersion) < 0) {
                     to.delete();
                     statusDone("<b>" + _t("Plugin update requires installed plugin version {0} or lower", maxVersion) + "</b>");
                     return;
                 }
-                oldVersion = LogsHelper.jettyVersion();
-                minVersion = ConfigClientsHelper.stripHTML(props, "min-jetty-version");
+                oldVersion = RouterConsoleRunner.jettyVersion();
+                minVersion = PluginStarter.stripHTML(props, "min-jetty-version");
                 if (minVersion != null &&
                     VersionComparator.comp(minVersion, oldVersion) > 0) {
                     to.delete();
@@ -464,7 +505,16 @@ class PluginUpdateRunner extends UpdateRunner {
                     statusDone("<b>" + _t("Plugin requires Jetty version {0} or lower", "8.9999") + "</b>");
                     return;
                 }
-                maxVersion = ConfigClientsHelper.stripHTML(props, "max-jetty-version");
+                if (SystemVersion.isJava9()) {
+                    blacklistVersion = PluginStarter.java9Blacklist.get(appName);
+                    if (blacklistVersion != null &&
+                        VersionComparator.comp(version, blacklistVersion) <= 0) {
+                        to.delete();
+                        statusDone("<b>" + _t("Plugin requires Java version {0} or lower", "8.9999") + "</b>");
+                        return;
+                    }
+                }
+                maxVersion = PluginStarter.stripHTML(props, "max-jetty-version");
                 if (maxVersion != null &&
                     VersionComparator.comp(maxVersion, oldVersion) < 0) {
                     to.delete();
@@ -472,7 +522,7 @@ class PluginUpdateRunner extends UpdateRunner {
                     return;
                 }
                 // do we defer extraction and installation?
-                if (Boolean.valueOf(props.getProperty("router-restart-required")).booleanValue()) {
+                if (Boolean.parseBoolean(props.getProperty("router-restart-required"))) {
                     // Yup!
                     try {
                         if(!FileUtil.copy(to, (new SecureFile( new SecureFile(appDir.getCanonicalPath() +"/" + appName +"/"+ ZIP).getCanonicalPath())) , true, true)) {
@@ -503,7 +553,7 @@ class PluginUpdateRunner extends UpdateRunner {
                 }
                 update = true;
             } else {
-                if (Boolean.valueOf(props.getProperty("update-only")).booleanValue()) {
+                if (Boolean.parseBoolean(props.getProperty("update-only"))) {
                     to.delete();
                     statusDone("<b>" + _t("Plugin is for upgrades only, but the plugin is not installed") + ". " + appName + ' ' + version + "</b>");
                     return;
@@ -524,7 +574,7 @@ class PluginUpdateRunner extends UpdateRunner {
             _updated = true;
             to.delete();
             // install != update. Changing the user's settings like this is probabbly a bad idea.
-            if (Boolean.valueOf( props.getProperty("dont-start-at-install")).booleanValue()) {
+            if (Boolean.parseBoolean( props.getProperty("dont-start-at-install"))) {
                 statusDone("<b>" + _t("Plugin {0} installed", appName + ' ' + version) + "</b>");
                 if(!update) {
                     Properties pluginProps = PluginStarter.pluginProperties();
@@ -535,10 +585,10 @@ class PluginUpdateRunner extends UpdateRunner {
                 // start everything unless it was disabled and not running before
                 try {
                     if (PluginStarter.startPlugin(_context, appName)) {
-                        String linkName = ConfigClientsHelper.stripHTML(props, "consoleLinkName_" + Messages.getLanguage(_context));
+                        String linkName = PluginStarter.stripHTML(props, "consoleLinkName_" + Messages.getLanguage(_context));
                         if (linkName == null)
-                           linkName = ConfigClientsHelper.stripHTML(props, "consoleLinkName");
-                        String linkURL = ConfigClientsHelper.stripHTML(props, "consoleLinkURL");
+                           linkName = PluginStarter.stripHTML(props, "consoleLinkName");
+                        String linkURL = PluginStarter.stripHTML(props, "consoleLinkURL");
                         String link;
                         if (linkName != null && linkURL != null)
                             link = "<a target=\"_blank\" href=\"" + linkURL + "\"/>" + linkName + ' ' + version + "</a>";

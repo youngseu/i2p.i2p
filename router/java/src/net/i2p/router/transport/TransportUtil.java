@@ -11,10 +11,14 @@ package net.i2p.router.transport;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import net.i2p.I2PAppContext;
 import net.i2p.data.router.RouterAddress;
+import net.i2p.util.AddressType;
+import net.i2p.util.Log;
 import net.i2p.router.RouterContext;
 
 /**
@@ -27,6 +31,17 @@ public abstract class TransportUtil {
     public static final String PROP_IPV4_FIREWALLED = "i2np.ipv4.firewalled";
     /** @since 0.9.28 */
     public static final String PROP_IPV6_FIREWALLED = "i2np.ipv6.firewalled";
+    private static final String PROP_PORT_PFX = "i2np.";
+    private static final String PROP_MIN_PORT_SFX = ".minPort";
+    private static final String PROP_MAX_PORT_SFX = ".maxPort";
+    /**
+     * 8998 is monotone, and 31000 is the wrapper outbound, so let's stay between those
+     * Was 9111, increase to skip Tor browser at 9050
+     */
+    private static final int MIN_RANDOM_PORT = 9151;
+    private static final int MAX_RANDOM_PORT = 30777;
+
+    private static final Pattern YGGDRASIL_PATTERN = Pattern.compile("^[2-3][0-9a-fA-F]{2}:[0-9a-fA-F:]*");
 
     public enum IPv6Config {
         /** IPv6 disabled */
@@ -109,12 +124,69 @@ public abstract class TransportUtil {
 
     /**
      *  Addresses without a host (i.e. w/introducers)
-     *  are assumed to be IPv4
+     *  are assumed to be IPv4 unless a '6' cap is present
+     *
+     *  @param addr non-null
      */
     public static boolean isIPv6(RouterAddress addr) {
         // do this the fast way, without calling getIP() to parse the host string
         String host = addr.getHost();
-        return host != null && host.contains(":");
+        if (host != null)
+            return host.contains(":");
+        String caps = addr.getOption("caps");
+        return caps != null && caps.contains(TransportImpl.CAP_IPV6) && !caps.contains(TransportImpl.CAP_IPV4);
+    }
+
+    /**
+     *  @since 0.9.49
+     */
+    public static boolean isYggdrasil(RouterAddress addr) {
+        // do this the fast way, without calling getIP() to parse the host string
+        String host = addr.getHost();
+        return host != null && YGGDRASIL_PATTERN.matcher(host).matches();
+    }
+
+    /**
+     *  @return null if unknown
+     *  @since 0.9.54
+     */
+    public static AddressType getType(RouterAddress addr) {
+        String host = addr.getHost();
+        return getType(host);
+    }
+
+    /**
+     *  @return null if unknown
+     *  @since 0.9.54
+     */
+    public static AddressType getType(String host) {
+        if (host == null)
+            return null;
+        if (host.indexOf('.') > 0)
+            return AddressType.IPV4;
+        if (host.indexOf(':') >= 0) {
+            if (YGGDRASIL_PATTERN.matcher(host).matches())
+                return AddressType.YGG;
+            return AddressType.IPV6;
+        }
+        return null;
+    }
+
+    /**
+     *  @return null if unknown
+     *  @since 0.9.54
+     */
+    public static AddressType getType(byte[] ip) {
+        if (ip == null)
+            return null;
+        if (ip.length == 4)
+            return AddressType.IPV4;
+        if (ip.length == 16) {
+            if (ip[0] == 2 || ip[0] == 3)
+                return AddressType.YGG;
+            return AddressType.IPV6;
+        }
+        return null;
     }
 
     /**
@@ -176,11 +248,8 @@ public abstract class TransportUtil {
             return true; // or at least possible to be true
         } else if (addr.length == 16) {
             if (allowIPv6) {
-                // loopback, broadcast,
-                // IPv4 compat ::xxxx:xxxx
-                if (addr[0] == 0)
-                    return false;
-                if (addr[0] == 0x20) {
+                int a0 = addr[0] & 0xFF;
+                if (a0 == 0x20) {
                     // disallow 2002::/16 (6to4 RFC 3056)
                     if (addr[1] == 0x02)
                         return false;
@@ -192,26 +261,29 @@ public abstract class TransportUtil {
                         if (addr[2] == 0x0d && (addr[3] & 0xff) == 0xb8)
                             return false;
                     }
+                    return true;
+                } else if (a0 == 0x26) {
+                    // Hamachi IPv6
+                    if (addr[1] == 0x20 && addr[2] == 0x00 && (addr[3] & 0xff) == 0x9b)
+                        return false;
+                    return true;
+                } else {
+                    // https://www.iana.org/assignments/ipv6-address-space/ipv6-address-space.xhtml
+                    // Global unicast
+                    if (a0 >= 0x20 && a0 <= 0x3f)
+                        return true;
+                    // 00-1f and 40-ff
+                    // loopback, broadcast,
+                    // IPv4 compat ::xxxx:xxxx
+                    // Yggdrasil 0200:/7
+                    // https://yggdrasil-network.github.io/faq.html
+                    // reserved
+                    // 6bone RFC 2471 3ff3::
+                    // disallow fc00::/8 and fd00::/8 (Unique local addresses RFC 4193)
+                    // not recognized as local by InetAddress
+                    // reserved, unique local, site local, multicast
+                    // fall through return false
                 }
-                // disallow fc00::/8 and fd00::/8 (Unique local addresses RFC 4193)
-                // not recognized as local by InetAddress
-                if ((addr[0] & 0xfe) == 0xfc)
-                    return false;
-                // Hamachi IPv6
-                if (addr[0] == 0x26 && addr[1] == 0x20 && addr[2] == 0x00 && (addr[3] & 0xff) == 0x9b)
-                    return false;
-                // 6bone RFC 2471
-                if (addr[0] == 0x3f && (addr[1] & 0xff) == 0xfe)
-                    return false;
-                try {
-                    InetAddress ia = InetAddress.getByAddress(addr);
-                    return
-                        (!ia.isLinkLocalAddress()) &&
-                        (!ia.isMulticastAddress()) &&
-                        (!ia.isAnyLocalAddress()) &&
-                        (!ia.isLoopbackAddress()) &&
-                        (!ia.isSiteLocalAddress());
-                } catch (UnknownHostException uhe) {}
             }
         }
         return false;
@@ -226,24 +298,71 @@ public abstract class TransportUtil {
      *  @since 0.9.17 moved from logic in individual transports
      */
     public static boolean isValidPort(int port) {
-        // update log message in UDPEndpoint if you update this list
-        return port >= 1024 &&
+        // update log message below if you update this list
+        // do the fast check first
+        return (port >= MIN_RANDOM_PORT && port <= MAX_RANDOM_PORT) || (
+               port >= 1024 &&
                port <= 65535 &&
                port != 1900 &&  // UPnP SSDP
+               port != 1719 &&  // H.323
+               port != 1720 &&  // H.323
                port != 2049 &&  // NFS
                port != 2827 &&  // BOB
                port != 3659 &&  // Apple-sasl
                port != 4045 &&  // lockd
                port != 4444 &&  // HTTP
                port != 4445 &&  // HTTPS
+               port != 5060 &&  // SIP https://groups.google.com/a/chromium.org/g/blink-dev/c/tTGznHWRB9U
+               port != 5061 &&  // SIP https://groups.google.com/a/chromium.org/g/blink-dev/c/tTGznHWRB9U
                port != 6000 &&  // lockd
                (!(port >= 6665 && port <= 6669)) && // IRC and alternates
                port != 6697 &&  // IRC+TLS
-               (!(port >= 7650 && port <= 7664)) && // standard I2P range
-               port != 8998 &&  // mtn
+               (!(port >= 7650 && port <= 7668)) && // standard I2P range
+               port != 7070 &&  // i2pd console
+               port != 8080 &&  // web server
+               port != 9001 &&  // Tor
+               port != 9030 &&  // Tor
+               port != 9050 &&  // Tor
                port != 9100 &&  // network printer
-               // do not block anything in 9111 - 30777, this is the standard random selection range
+               port != 9150 &&  // Tor browser
                port != 31000 && // Wrapper
-               port != 32000;   // Wrapper
+               port != 32000);   // Wrapper
     }
+
+    /**
+     *  log an error
+     *  @since 0.9.39 pulled out of UDPEndpoint
+     */
+    public static void logInvalidPort(Log log, String transportStyle, int port) {
+        log.error("Specified " + transportStyle + " port " + port + " is not valid, selecting a new port");
+        log.error("Invalid ports are: 0-1023, 1719, 1720, 1900, 2049, 2827, 3659, 4045, 4444, 4445, 5060, 5061, 6000, 6665-6669, 6697, 7650-7668, 7070, 8080, 9001, 9030, 9050, 9100, 9150, 31000, 32000, 65536+");
+    }
+
+    /**
+     *  Pick a random port between the configured boundaries
+     *  @since IPv6, moved from UDPEndpoint in 0.9.39 to support NTCP also
+     */
+    public static int selectRandomPort(RouterContext ctx, String transportStyle) {
+        if (transportStyle.equals("SSU"))
+            transportStyle = "udp";
+        else
+            transportStyle = transportStyle.toLowerCase(Locale.US);
+        String minprop = PROP_PORT_PFX + transportStyle + PROP_MIN_PORT_SFX;
+        String maxprop = PROP_PORT_PFX + transportStyle + PROP_MAX_PORT_SFX;
+        int minPort = Math.min(65535, Math.max(1, ctx.getProperty(minprop, MIN_RANDOM_PORT)));
+        int maxPort = Math.min(65535, Math.max(minPort, ctx.getProperty(maxprop, MAX_RANDOM_PORT)));
+        return minPort + ctx.random().nextInt(1 + maxPort - minPort);
+    }
+
+/*
+    public static void main(String[] args) {
+        java.util.Set<String> addrs = net.i2p.util.Addresses.getAddresses(true, true, true, true);
+        net.i2p.util.OrderedProperties props = new net.i2p.util.OrderedProperties();
+        RouterAddress ra = new RouterAddress("foo", props, 10);
+        for (String a : addrs) {
+            props.setProperty("host", a);
+            System.out.println(a + " - " + isYggdrasil(ra));
+        }
+    }
+*/
 }

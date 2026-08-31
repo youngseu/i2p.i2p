@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 
+import net.i2p.crypto.Blinding;
 import net.i2p.crypto.SigType;
 
 /**
@@ -118,9 +119,9 @@ public class SigningPublicKey extends SimpleDataStructure {
      *  The type of the returned key will be null if the kcert sigtype is null.
      *
      *  @throws IllegalArgumentException if this is already typed to a different type
-     *  @since 0.9.12
+     *  @since 0.9.12 changed from public to package private in 0.9.66, not for external use
      */
-    public SigningPublicKey toTypedKey(KeyCertificate kcert) {
+    SigningPublicKey toTypedKey(KeyCertificate kcert) {
         if (_data == null)
             throw new IllegalStateException();
         SigType newType = kcert.getSigType();
@@ -184,9 +185,9 @@ public class SigningPublicKey extends SimpleDataStructure {
     /**
      *  Write the data up to a max of 128 bytes.
      *  If longer, the rest will be written in the KeyCertificate.
-     *  @since 0.9.12
+     *  @since 0.9.12 changed from public to package private in 0.9.66, not for external use
      */
-    public void writeTruncatedBytes(OutputStream out) throws DataFormatException, IOException {
+    void writeTruncatedBytes(OutputStream out) throws DataFormatException, IOException {
         // we don't use _type here so we can write the data even for unknown type
         //if (_type.getPubkeyLen() <= KEYSIZE_BYTES)
         if (_data == null) throw new DataFormatException("No data to write out");
@@ -197,16 +198,30 @@ public class SigningPublicKey extends SimpleDataStructure {
     }
 
     /**
+     *  Only for SigType EdDSA_SHA512_Ed25519
+     *
+     *  @param alpha the secret data
+     *  @throws UnsupportedOperationException unless supported
+     *  @since 0.9.38
+     */
+    public SigningPublicKey blind(SigningPrivateKey alpha) {
+        return Blinding.blind(this, alpha);
+    }
+
+    /**
      *  @since 0.9.8
      */
     @Override
     public String toString() {
         StringBuilder buf = new StringBuilder(64);
-        buf.append('[').append(getClass().getSimpleName()).append(' ').append(_type).append(": ");
+        buf.append("[SigningPublicKey ").append((_type != null) ? _type.toString() : "unknown type").append(' ');
+        int length = length();
         if (_data == null) {
             buf.append("null");
+        } else if (length <= 32) {
+            buf.append(toBase64());
         } else {
-            buf.append("size: ").append(Integer.toString(length()));
+            buf.append("size: ").append(length);
         }
         buf.append(']');
         return buf.toString();

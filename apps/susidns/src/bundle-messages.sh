@@ -10,6 +10,7 @@
 #
 # zzz - public domain
 #
+cd `dirname $0`
 CLASS=i2p.susi.dns.messages
 TMPFILE=tmp/javafiles.txt
 export TZ=UTC
@@ -32,8 +33,13 @@ fi
 # Fast mode - update ondemond
 # set LG2 to the language you need in environment variables to enable this
 
+#
+# generated build/SVG.java from svg/how.svg
+#
+SVGFILE=build/HowSVG.java
+
 # add ../src/ so the refs will work in the po file
-JPATHS="../src/java/ ../src/tmp/"
+JPATHS="../src/java/ ../src/tmp/ $SVGFILE"
 for i in ../locale/messages_*.po
 do
 	# get language
@@ -63,6 +69,7 @@ do
 	 	echo "Updating the $i file from the tags..."
 		# extract strings from java and jsp files, and update messages.po files
 		# translate calls must be one of the forms:
+		# _("foo")
 		# _t("foo")
 		# _x("foo")
 		# intl._t("foo")
@@ -71,7 +78,7 @@ do
 		# then ant distclean updater.
 		find $JPATHS -name *.java > $TMPFILE
 		xgettext -f $TMPFILE -F -L java --from-code=UTF-8 --add-comments\
-	                 --keyword=_t --keyword=_x --keyword=intl._ --keyword=intl.title \
+	                 --keyword=_ --keyword=_t --keyword=_x --keyword=intl._ --keyword=intl.title \
 		         -o ${i}t
 		if [ $? -ne 0 ]
 		then
@@ -98,12 +105,12 @@ do
         # only generate for non-source language
         echo "Generating ${CLASS}_$LG ResourceBundle..."
 
-        msgfmt -V | grep -q '0\.19'
+        msgfmt -V | grep -q -E ' 0\.((19)|[2-9])| [1-9]\.'
         if [ $? -ne 0 ]
         then
             # slow way
             # convert to class files in WEB-INF/classes
-            msgfmt --java --statistics -r $CLASS -l $LG -d WEB-INF/classes $i
+            msgfmt --java2 --statistics -r $CLASS -l $LG -d WEB-INF/classes $i
             if [ $? -ne 0 ]
             then
                 echo "ERROR - msgfmt failed on ${i}, not updating translations"
@@ -121,7 +128,7 @@ do
             TDY=$TD2/i2p/susi/dns
             rm -rf $TD
             mkdir -p $TD $TDY
-            msgfmt --java --statistics --source -r $CLASS -l $LG -d $TD $i
+            msgfmt --java2 --statistics --source -r $CLASS -l $LG -d $TD $i
             if [ $? -ne 0 ]
             then
                 echo "ERROR - msgfmt failed on ${i}, not updating translations"
@@ -130,7 +137,12 @@ do
                 RC=1
                 break
             fi
-            mv $TDX/messages_$LG.java $TDY
+            # fixup Enumeration code for generics
+            sed -e 's/Enumeration/Enumeration<String>/g' \
+                -e 's/Object nextElement/String nextElement/g' \
+                -e 's/return key/return (String) key/g' \
+                $TDX/messages_$LG.java > $TDY/messages_$LG.java
+            rm -f $TDX/messages_$LG.java
             rm -rf $TD
         fi
     fi

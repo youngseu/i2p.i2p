@@ -23,7 +23,9 @@ import net.i2p.util.RandomSource;
  * ref: https://en.wikipedia.org/wiki/ElGamal_signature_scheme
  *
  * @since 0.9.25
+ * @deprecated unused, unsupported by SigType or SigUtil, may need constant-time fixes
  */
+@Deprecated
 public final class ElGamalSigEngine extends Signature {
     private final MessageDigest digest;
     private ElGamalKey key;
@@ -150,6 +152,7 @@ public final class ElGamalSigEngine extends Signature {
      * @deprecated replaced with <a href="#engineSetParameter(java.security.spec.AlgorithmParameterSpec)">this</a>
      */
     @Override
+    @Deprecated
     protected void engineSetParameter(String param, Object value) {
         throw new UnsupportedOperationException("engineSetParameter unsupported");
     }
@@ -158,6 +161,7 @@ public final class ElGamalSigEngine extends Signature {
      * @deprecated
      */
     @Override
+    @Deprecated
     protected Object engineGetParameter(String param) {
         throw new UnsupportedOperationException("engineSetParameter unsupported");
     }

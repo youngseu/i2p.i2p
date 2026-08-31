@@ -25,19 +25,25 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
+import java.security.DigestException;
 import java.security.MessageDigest;
+import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.StringTokenizer;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import gnu.getopt.Getopt;
 
@@ -72,16 +78,20 @@ public class Storage implements Closeable
   private final boolean _preserveFileNames;
   private boolean changed;
   private volatile boolean _isChecking;
+  private boolean _inOrder;
   private final AtomicInteger _allocateCount = new AtomicInteger();
   private final AtomicInteger _checkProgress = new AtomicInteger();
+  private final AtomicLong _activity = new AtomicLong();
 
   /** The default piece size. */
   private static final int DEFAULT_PIECE_SIZE = 256*1024;
   /** bigger than this will be rejected */
-  public static final int MAX_PIECE_SIZE = 16*1024*1024;
+  public static final int MAX_PIECE_SIZE = 64*1024*1024;
   /** The maximum number of pieces in a torrent. */
-  public static final int MAX_PIECES = 32*1024;
+  public static final int MAX_PIECES = 64*1024;
   public static final long MAX_TOTAL_SIZE = MAX_PIECE_SIZE * (long) MAX_PIECES;
+  public static final int PRIORITY_SKIP = -9;
+  public static final int PRIORITY_NORMAL = 0;
 
   private static final Map<String, String> _filterNameCache = new ConcurrentHashMap<String, String>();
 
@@ -136,6 +146,30 @@ public class Storage implements Closeable
                  boolean privateTorrent, StorageListener listener)
     throws IOException
   {
+      this(util, baseFile, announce, announce_list, created_by, privateTorrent, null, null, listener);
+  }
+
+  /**
+   * Creates a storage from the existing file or directory.
+   * Creates an in-memory metainfo but does not save it to
+   * a file, caller must do that.
+   *
+   * Creates the metainfo, this may take a LONG time. BLOCKING.
+   *
+   * @param announce may be null
+   * @param listener may be null
+   * @param created_by may be null
+   * @param url_list may be null
+   * @param comment may be null
+   * @throws IOException when creating and/or checking files fails.
+   * @since 0.9.48
+   */
+  public Storage(I2PSnarkUtil util, File baseFile, String announce,
+                 List<List<String>> announce_list,
+                 String created_by,
+                 boolean privateTorrent, List<String> url_list, String comment, StorageListener listener)
+    throws IOException
+  {
     _util = util;
     _base = baseFile;
     _log = util.getContext().logManager().getLog(Storage.class);
@@ -145,7 +179,7 @@ public class Storage implements Closeable
     _torrentFiles = getFiles(baseFile);
     
     long total = 0;
-    ArrayList<Long> lengthsList = new ArrayList<Long>();
+    ArrayList<Long> lengthsList = new ArrayList<Long>(_torrentFiles.size());
     for (TorrentFile tf : _torrentFiles)
       {
         long length = tf.length;
@@ -178,7 +212,7 @@ public class Storage implements Closeable
     bitfield = new BitField(pieces);
     needed = 0;
 
-    List<List<String>> files = new ArrayList<List<String>>();
+    List<List<String>> files = new ArrayList<List<String>>(_torrentFiles.size());
     for (TorrentFile tf : _torrentFiles)
       {
         List<String> file = new ArrayList<String>();
@@ -199,9 +233,9 @@ public class Storage implements Closeable
 
     // TODO thread this so we can return and show something on the UI
     byte[] piece_hashes = fast_digestCreate();
-    metainfo = new MetaInfo(announce, baseFile.getName(), null, files,
+    metainfo = new MetaInfo(announce, baseFile.getName(), files,
                             lengthsList, piece_size, piece_hashes, total, privateTorrent,
-                            announce_list, created_by);
+                            announce_list, created_by, url_list, comment);
 
   }
 
@@ -220,15 +254,35 @@ public class Storage implements Closeable
 
     byte[] piece_hashes = new byte[20 * pieces];
 
-    byte[] piece = new byte[piece_size];
-    for (int i = 0; i < pieces; i++)
-      {
-        int length = getUncheckedPiece(i, piece);
-        digest.update(piece, 0, length);
-        byte[] hash = digest.digest();
-        System.arraycopy(hash, 0, piece_hashes, 20 * i, 20);
-        bitfield.set(i);
-      }
+    ByteArray ba;
+    byte[] buf;
+    if (piece_size <= BUFSIZE) {
+        ba = _cache.acquire();
+        buf = ba.getData();
+    } else {
+        ba = null;
+        buf = new byte[Math.min(piece_size, 128*1024)];
+    }
+    try {
+        for (int i = 0; i < pieces; i++) {
+            int pclen = getPieceLength(i);
+            int read = 0;
+            while (read < pclen) {
+                int rd = Math.min(buf.length, pclen - read);
+                getUncheckedPiece(i, buf, read, rd);
+                digest.update(buf, 0, rd);
+                read += rd;
+            }
+            digest.digest(piece_hashes, 20 * i, 20);
+            bitfield.set(i);
+        }
+    } catch (DigestException de) {
+        throw new IOException(de);
+    } finally {
+        close();
+    }
+    if (ba != null)
+        _cache.release(ba, false);
     return piece_hashes;
   }
 
@@ -255,9 +309,15 @@ public class Storage implements Closeable
    *  @throws IOException if too many total files
    */
   private void addFiles(List<File> l, File f) throws IOException {
+    int max = _util.getMaxFilesPerTorrent();
     if (!f.isDirectory()) {
-        if (l.size() >= SnarkManager.MAX_FILES_PER_TORRENT)
-            throw new IOException("Too many files, limit is " + SnarkManager.MAX_FILES_PER_TORRENT + ", zip them?");
+        int sz = l.size() + 1;
+        if (sz > max)
+            throw new IOException(_util.getString("Too many files in \"{0}\" ({1})!",
+                                  (metainfo != null ? metainfo.getName() : _base.toString()), sz) +
+                                  " - limit is " + max + ", zip them or set " +
+                                  SnarkManager.PROP_MAX_FILES_PER_TORRENT + '=' + sz + " in " +
+                                  SnarkManager.CONFIG_FILE + " and restart");
         l.add(f);
     } else {
         File[] files = f.listFiles();
@@ -268,6 +328,13 @@ public class Storage implements Closeable
                         + "' not a normal file.");
             return;
           }
+        int sz = l.size() + files.length;
+        if (sz > max)
+            throw new IOException(_util.getString("Too many files in \"{0}\" ({1})!",
+                                  (metainfo != null ? metainfo.getName() : _base.toString()), sz) +
+                                  " - limit is " + max + ", zip them or set " +
+                                  SnarkManager.PROP_MAX_FILES_PER_TORRENT + '=' + sz + " in " +
+                                  SnarkManager.CONFIG_FILE + " and restart");
         for (int i = 0; i < files.length; i++)
           addFiles(l, files[i]);
       }
@@ -312,6 +379,28 @@ public class Storage implements Closeable
   void clearChanged() {
       changed = false;
   }
+
+    /**
+     *  @since 0.9.42
+     */
+    public long getActivity() {
+        return _activity.get();
+    }
+
+    /**
+     *  @since 0.9.42
+     */
+    private void setActivity() {
+        setActivity(I2PAppContext.getGlobalContext().clock().now());
+    }
+
+    /**
+     *  @since 0.9.42
+     */
+    public void setActivity(long time) {
+        _activity.set(time);
+        changed = true;
+    }
 
   /**
    *  File checking in progress.
@@ -402,9 +491,22 @@ public class Storage implements Closeable
    *  @since 0.9.23
    */
   public long[] remaining() {
+      return remaining2()[0];
+  }
+
+  /**
+   *  For efficiency, calculate remaining bytes for all files at once.
+   *  Remaining bytes is rv[0]. Preview bytes is rv[1].
+   *
+   *  @return number of bytes remaining and number of bytes available for a preview for each file, use indexOf() to get index for a file
+   *  @since 0.9.45
+   */
+  public long[][] remaining2() {
       long[] rv = new long[_torrentFiles.size()];
+      long[] pv = new long[_torrentFiles.size()];
+      long[][] rva = new long[][] { rv, pv };
       if (complete())
-          return rv;
+          return rva;
       long bytes = 0;
       for (int i = 0; i < _torrentFiles.size(); i++) {
           TorrentFile tf = _torrentFiles.get(i);
@@ -412,10 +514,23 @@ public class Storage implements Closeable
           long end = start + tf.length;
           int pc = (int) (bytes / piece_size);
           long rvi = 0;
-          if (!bitfield.get(pc))
-              rvi = Math.min(piece_size - (start % piece_size), tf.length);
+          long pvi = 0;
+          long first = Math.min(piece_size - (start % piece_size), tf.length);
+          if (bitfield.get(pc))
+              pvi = first;
+          else
+              rvi = first;
+          boolean preview = true;
           for (int j = pc + 1; (((long)j) * piece_size) < end && j < pieces; j++) {
-              if (!bitfield.get(j)) {
+              if (bitfield.get(j)) {
+                  if (preview) {
+                      if (((long)(j+1))*piece_size < end)
+                          pvi += piece_size;
+                      else
+                          pvi += end - (((long)j) * piece_size);
+                  }
+              } else {
+                  preview = false;
                   if (((long)(j+1))*piece_size < end)
                       rvi += piece_size;
                   else
@@ -423,9 +538,10 @@ public class Storage implements Closeable
               }
           }
           rv[i] = rvi;
+          pv[i] = pvi;
           bytes += tf.length;
       }
-      return rv;
+      return rva;
   }
 
   /**
@@ -434,9 +550,9 @@ public class Storage implements Closeable
    */
   public int getPriority(int fileIndex) {
       if (complete() || metainfo.getFiles() == null)
-          return 0;
+          return PRIORITY_NORMAL;
       if (fileIndex < 0 || fileIndex >= _torrentFiles.size())
-          return 0;
+          return PRIORITY_NORMAL;
       return _torrentFiles.get(fileIndex).priority;
   }
 
@@ -482,7 +598,7 @@ public class Storage implements Closeable
   void setFilePriorities(int[] p) {
       if (p == null) {
           for (TorrentFile tf : _torrentFiles) {
-              tf.priority = 0;
+              tf.priority = PRIORITY_NORMAL;
           }
       } else {
           int sz = _torrentFiles.size();
@@ -495,16 +611,70 @@ public class Storage implements Closeable
   }
 
   /**
+   *  @return as last set, default false
+   *  @since 0.9.36
+   */
+  public boolean getInOrder() {
+      return _inOrder;
+  }
+
+  /**
+   *  Call AFTER setFilePriorites() so we know what's skipped
+   *  @param yes enable or not
+   *  @since 0.9.36
+   */
+  public void setInOrder(boolean yes) {
+      if (yes == _inOrder)
+          return;
+      _inOrder = yes;
+      if (complete())
+          return;
+      if (yes) {
+          List<TorrentFile> sorted = _torrentFiles;
+          int sz = sorted.size();
+          if (sz > 1) {
+              sorted = new ArrayList<TorrentFile>(sorted);
+              Collections.sort(sorted, new FileNameComparator());
+          }
+          for (int i = 0; i < sz; i++) {
+              TorrentFile tf = sorted.get(i);
+              // higher number is higher priority
+              if (tf.priority >= PRIORITY_NORMAL)
+                  tf.priority = sz - i;
+          }
+      } else {
+          for (TorrentFile tf : _torrentFiles) {
+              if (tf.priority > PRIORITY_NORMAL)
+                  tf.priority = PRIORITY_NORMAL;
+          }
+      }
+  }
+
+  /**
+   *  Sort with locale comparator.
+   *  (not using TorrentFile.compareTo())
+   *  @since 0.9.36
+   */
+  private static class FileNameComparator implements Comparator<TorrentFile>, Serializable {
+
+     private final Collator c = Collator.getInstance();
+
+     public int compare(TorrentFile l, TorrentFile r) {
+         return c.compare(l.toString(), r.toString());
+     }
+  }
+
+  /**
    *  Call setPriority() for all changed files first,
    *  then call this.
    *  Set the piece priority to the highest priority
    *  of all files spanning the piece.
    *  Caller must pass array to the PeerCoordinator.
-   *  @return null on error, if complete, or if only one file
+   *  @return null on error, if complete, or if only one file and inOrder not set.
    *  @since 0.8.1
    */
   public int[] getPiecePriorities() {
-      if (complete() || metainfo.getFiles() == null)
+      if (complete() || (metainfo.getFiles() == null && !_inOrder))
           return null;
       int[] rv = new int[metainfo.getPieces()];
       int file = 0;
@@ -522,6 +692,25 @@ public class Storage implements Closeable
                   pri = tf.priority;
           }
           rv[i] = pri;
+      }
+      if (_inOrder) {
+          // Do a second pass to set the priority of the pieces within each file
+          // this only works because MAX_PIECES * MAX_FILES_PER_TORRENT < Integer.MAX_VALUE
+          // the base file priority
+          int pri = PRIORITY_SKIP;
+          for (int i = 0; i < rv.length; i++) {
+              int val = rv[i];
+              if (val <= PRIORITY_NORMAL)
+                  continue;
+              if (val != pri) {
+                  pri = val;
+                  // new file
+                  rv[i] *= MAX_PIECES;
+              } else {
+                  // same file, decrement priority from previous piece
+                  rv[i] = rv[i-1] - 1;
+              }
+          }
       }
       return rv;
   }
@@ -544,7 +733,7 @@ public class Storage implements Closeable
       long rv = 0;
       final int end = pri.length - 1;
       for (int i = 0; i <= end; i++) {
-          if (pri[i] <= -9 && !bitfield.get(i)) {
+          if (pri[i] <= PRIORITY_SKIP && !bitfield.get(i)) {
               rv += (i != end) ? piece_size : metainfo.getPieceLength(i);
           }
       }
@@ -709,9 +898,29 @@ public class Storage implements Closeable
   {
       if (_torrentFiles.isEmpty())
           throw new IOException("Storage not checked yet");
-      for (TorrentFile tf : _torrentFiles) {
-          if (!tf.RAFfile.exists())
-              throw new IOException("File does not exist: " + tf);
+      for (int i = 0; i < _torrentFiles.size(); i++) {
+          TorrentFile tf = _torrentFiles.get(i);
+          if (!tf.RAFfile.exists()) {
+              // File should exist when we get here, but could have vanished
+              List<List<String>> files = metainfo.getFiles();
+              if (files != null) {
+                  createFileFromNames(_base, files.get(i), _util.getFilesPublic());
+              } else {
+                  if (!_base.createNewFile())
+                      throw new IOException("File '" + tf.name + "' was deleted, unable to recreate");
+              }
+              synchronized(tf) {
+                  tf.allocateFile();
+                  // close as we go so we don't run out of file descriptors
+                  try {
+                      tf.closeRAF();
+                  } catch (IOException ioe) {}
+              }
+              String msg = "File '" + tf.name + "' was deleted, must be downloaded again";
+              if (listener != null)
+                  listener.addMessage(msg);
+              _log.error(msg);
+          }
       }
   }
 
@@ -725,7 +934,17 @@ public class Storage implements Closeable
         0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
         0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
         // unicode newlines
-        0x2028, 0x2029
+        0x2028, 0x2029,
+        // LTR/RTL
+        // https://security.stackexchange.com/questions/158802/how-can-this-executable-have-an-avi-extension
+        0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x200e, 0x200f
+     };
+
+  // https://docs.microsoft.com/en-us/windows/desktop/FileIO/naming-a-file
+  private static final String[] WIN_ILLEGAL = new String[] {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
      };
 
   /**
@@ -756,12 +975,22 @@ public class Storage implements Closeable
     String rv = _filterNameCache.get(name);
     if (rv != null)
         return rv;
-    if (name.equals(".") || name.equals(" ")) {
+    if (name.equals(".") || name.equals(" ") || name.length() == 0) {
         rv = "_";
     } else {
         rv = name;
-        if (rv.startsWith("."))
+        if (rv.startsWith(".")) {
             rv = '_' + rv.substring(1);
+        } else if (SystemVersion.isWindows()) {
+            // https://docs.microsoft.com/en-us/windows/desktop/FileIO/naming-a-file
+            String iname = name.toLowerCase(Locale.US);
+            for (int i = 0; i < WIN_ILLEGAL.length; i++) {
+                String w = WIN_ILLEGAL[i];
+                if (iname.equals(w) ||
+                    (iname.startsWith(w + '.') && w.indexOf('.', w.length() + 1) < 0))
+                    rv = '_' + rv;
+            }
+        }
         if (rv.endsWith(".") || rv.endsWith(" "))
             rv = rv.substring(0, rv.length() - 1) + '_';
         for (int i = 0; i < ILLEGAL.length; i++) {
@@ -892,9 +1121,7 @@ public class Storage implements Closeable
    *  @since 0.9.23
    */
   public boolean recheck() throws IOException {
-      int previousNeeded = needed;
-      checkCreateFiles(true);
-      boolean changed = previousNeeded != needed;
+      boolean changed = checkCreateFiles(true);
       if (listener != null && changed)
           listener.setWantedPieces(this);
       return changed;
@@ -910,19 +1137,24 @@ public class Storage implements Closeable
    * @param recheck if true, this is a check after we downloaded the
    *        last piece, and we don't modify the global bitfield unless
    *        the check fails.
+   * @return true if changed (only valid if recheck == true)
    */
-  private void checkCreateFiles(boolean recheck) throws IOException {
+  private boolean checkCreateFiles(boolean recheck) throws IOException {
       synchronized(this) {
           _isChecking = true;
           try {
-              locked_checkCreateFiles(recheck);
+              return locked_checkCreateFiles(recheck);
           } finally {
+              close();
               _isChecking = false;
           }
       }
   }
 
-  private void locked_checkCreateFiles(boolean recheck) throws IOException
+  /**
+   *  @return true if changed (only valid if recheck == true)
+   */
+  private boolean locked_checkCreateFiles(boolean recheck) throws IOException
   {
     _checkProgress.set(0);
     // Whether we are resuming or not,
@@ -942,18 +1174,32 @@ public class Storage implements Closeable
     // Make sure all files are available and of correct length
     // The files should all exist as they have been created with zero length by createFilesFromNames()
     long lengthProgress = 0;
-    for (TorrentFile tf : _torrentFiles)
-      {
+    for (int i = 0; i < _torrentFiles.size(); i++) {
+        TorrentFile tf = _torrentFiles.get(i);
         long length = tf.RAFfile.length();
         lengthProgress += tf.length;
-        if(tf.RAFfile.exists() && length == tf.length)
-          {
+        boolean exists = tf.RAFfile.exists();
+        if (exists && length == tf.length) {
             if (listener != null)
               listener.storageAllocated(this, length);
             _checkProgress.set(0);
             resume = true; // XXX Could dynamicly check
+        } else if (length == 0) {
+          if (!exists) {
+              // File should exist when we get here, but could have vanished
+              // and we're now doing a recheck
+              List<List<String>> files = metainfo.getFiles();
+              if (files != null) {
+                  createFileFromNames(_base, files.get(i), _util.getFilesPublic());
+              } else {
+                  if (!_base.createNewFile())
+                      throw new IOException("File '" + tf.name + "' was deleted, unable to recreate");
+              }
+              String msg = "File '" + tf.name + "' was deleted, must be downloaded again";
+              if (listener != null)
+                  listener.addMessage(msg);
+              _log.error(msg);
           }
-        else if (length == 0) {
           changed = true;
           synchronized(tf) {
               allocateFile(tf);
@@ -985,17 +1231,34 @@ public class Storage implements Closeable
       }
 
     // Check which pieces match and which don't
-    if (resume)
-      {
-        byte[] piece = new byte[piece_size];
+    if (resume) {
+      try {
+        MessageDigest digest = SHA1.getInstance();
+        ByteArray ba;
+        byte[] buf;
+        if (piece_size <= BUFSIZE) {
+            ba = _cache.acquire();
+            buf = ba.getData();
+        } else {
+            ba = null;
+            buf = new byte[Math.min(piece_size, 128*1024)];
+        }
         int file = 0;
         long fileEnd = _torrentFiles.get(0).length;
         long pieceEnd = 0;
-        for (int i = 0; i < pieces; i++)
-          {
+        byte[] hash = new byte[20];
+        for (int i = 0; i < pieces; i++) {
             _checkProgress.set(i);
-            int length = getUncheckedPiece(i, piece);
-            boolean correctHash = metainfo.checkPiece(i, piece, 0, length);
+            int length = getPieceLength(i);
+            int read = 0;
+            while (read < length) {
+                int rd = Math.min(buf.length, length - read);
+                getUncheckedPiece(i, buf, read, rd);
+                digest.update(buf, 0, rd);
+                read += rd;
+            }
+            digest.digest(hash, 0, 20);
+            boolean correctHash = metainfo.checkPiece(i, hash);
             // close as we go so we don't run out of file descriptors
             pieceEnd += length;
             while (fileEnd <= pieceEnd) {
@@ -1016,26 +1279,23 @@ public class Storage implements Closeable
             if (listener != null)
               listener.storageChecked(this, i, correctHash);
           }
+          if (ba != null)
+              _cache.release(ba, false);
+        } catch (DigestException de) {
+          throw new IOException(de);
+        }
       }
 
     _checkProgress.set(pieces);
     _probablyComplete = complete();
-    // close all the files so we don't end up with a zillion open ones;
-    // we will reopen as needed
-    // Now closed above to avoid running out of file descriptors
-    //for (int i = 0; i < rafs.length; i++) {
-    //  synchronized(RAFlock[i]) {
-    //    try {
-    //      closeRAF(i);
-    //    } catch (IOException ioe) {}
-    //  }
-    //}
 
     // do this here so we don't confuse the user during checking
     needed = need;
-    if (recheck && need > 0) {
-        // whoops, recheck failed
+    boolean rv = false;
+    if (recheck) {
+        // FIXME bogus synch
         synchronized(bitfield) {
+            rv = !bfield.equals(bitfield);
             bitfield = bfield;
         }
     }
@@ -1045,6 +1305,7 @@ public class Storage implements Closeable
       if (needed <= 0)
         listener.storageCompleted(this);
     }
+    return rv;
   }
 
   /**
@@ -1067,8 +1328,9 @@ public class Storage implements Closeable
 
 
   /**
-   * Closes the Storage and makes sure that all RandomAccessFiles are
-   * closed. The Storage is unusable after this.
+   * Make sure that all RandomAccessFiles are
+   * closed. The storage is still usable, files will be reopened
+   * as needed.
    */
   public void close() throws IOException
   {
@@ -1109,6 +1371,7 @@ public class Storage implements Closeable
     }
     bs = rv.getData();
     getUncheckedPiece(piece, bs, off, len);
+    setActivity();
     return rv;
   }
 
@@ -1176,6 +1439,7 @@ public class Storage implements Closeable
                       //rafs[i].write(bs, off + written, len);
                       pp.write(raf, written, len);
                   } catch (IOException ioe) {
+                      try { tf.closeRAF(); } catch (IOException ioe2) {}
                       // get the file name in the logs
                       IOException ioe2 = new IOException("Error writing " + tf.RAFfile.getAbsolutePath());
                       ioe2.initCause(ioe);
@@ -1193,7 +1457,7 @@ public class Storage implements Closeable
           pp.release();
       }
 
-    changed = true;
+    setActivity();
 
     // do this after the write, so we know it succeeded, and we don't set the
     // needed count to zero, which would cause checkRAF() to open the file readonly.
@@ -1247,12 +1511,6 @@ public class Storage implements Closeable
       throw new IndexOutOfBoundsException("no piece: " + piece);
   }
 
-  private int getUncheckedPiece(int piece, byte[] bs)
-    throws IOException
-  {
-      return getUncheckedPiece(piece, bs, 0, getPieceLength(piece));
-  }
-
   private int getUncheckedPiece(int piece, byte[] bs, int off, int length)
     throws IOException
   {
@@ -1282,6 +1540,7 @@ public class Storage implements Closeable
                 raf.seek(start);
                 raf.readFully(bs, read, len);
             } catch (IOException ioe) {
+                try { tf.closeRAF(); } catch (IOException ioe2) {}
                 // get the file name in the logs
                 IOException ioe2 = new IOException("Error reading " + tf.RAFfile.getAbsolutePath());
                 ioe2.initCause(ioe);
@@ -1422,6 +1681,8 @@ public class Storage implements Closeable
        *  Sets isSparse[nr] = true. balloonFile(nr) should be called later to
        *  defrag the file.
        *
+       *  File MUST exist or will throw IOE
+       *
        *  This calls openRAF(); caller must synchronize and call closeRAF().
        */
       public synchronized void allocateFile() throws IOException {
@@ -1447,8 +1708,7 @@ public class Storage implements Closeable
        *  Caller must synchronize and call checkRAF() or openRAF().
        *  @since 0.9.1
        */
-      public synchronized void balloonFile() throws IOException
-      {
+      private synchronized void balloonFile() throws IOException {
           long remaining = length;
           final int ZEROBLOCKSIZE = (int) Math.min(remaining, 32*1024);
           byte[] zeros = new byte[ZEROBLOCKSIZE];
@@ -1496,7 +1756,9 @@ public class Storage implements Closeable
       boolean error = false;
       String created_by = null;
       String announce = null;
-      Getopt g = new Getopt("Storage", args, "a:c:");
+      List<String> url_list = null;
+      String comment = null;
+      Getopt g = new Getopt("Storage", args, "a:c:m:w:");
       try {
           int c;
           while ((c = g.getopt()) != -1) {
@@ -1507,6 +1769,16 @@ public class Storage implements Closeable
 
               case 'c':
                   created_by = g.getOptarg();
+                  break;
+
+              case 'm':
+                  comment = g.getOptarg();
+                  break;
+
+              case 'w':
+                  if (url_list == null)
+                      url_list = new ArrayList<String>();
+                  url_list.add(g.getOptarg());
                   break;
 
               case '?':
@@ -1521,7 +1793,7 @@ public class Storage implements Closeable
           error = true;
       }
       if (error || args.length - g.getOptind() != 1) {
-          System.err.println("Usage: Storage [-a announceURL] [-c created-by] file-or-dir");
+          System.err.println("Usage: Storage [-a announceURL] [-c created-by] [-m comment] [-w webseed-url]* file-or-dir");
           System.exit(1);
       }
       File base = new File(args[g.getOptind()]);
@@ -1530,7 +1802,7 @@ public class Storage implements Closeable
       File file = null;
       FileOutputStream out = null;
       try {
-          Storage storage = new Storage(util, base, announce, null, created_by, false, null);
+          Storage storage = new Storage(util, base, announce, null, created_by, false, url_list, comment, null);
           MetaInfo meta = storage.getMetaInfo();
           file = new File(storage.getBaseName() + ".torrent");
           out = new FileOutputStream(file);
@@ -1538,11 +1810,8 @@ public class Storage implements Closeable
           String hex = DataHelper.toString(meta.getInfoHash());
           System.out.println("Created:     " + file);
           System.out.println("InfoHash:    " + hex);
-          String basename = base.getName().replace(" ", "%20");
-          String magnet = MagnetURI.MAGNET_FULL + hex + "&dn=" + basename;
-          if (announce != null)
-              magnet += "&tr=" + announce;
-          System.out.println("Magnet:      " + magnet);
+          String magnet = MagnetURI.toMagnetLink(meta.getInfoHash(), announce, base.getName());
+          System.out.println("Magnet:      " + magnet.replace("&amp;", "&"));
       } catch (IOException ioe) {
           if (file != null)
               file.delete();

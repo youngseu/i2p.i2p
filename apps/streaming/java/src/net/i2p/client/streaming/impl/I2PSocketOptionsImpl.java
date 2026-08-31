@@ -17,6 +17,7 @@ class I2PSocketOptionsImpl implements I2PSocketOptions {
     private int _remotePort;
     
     public static final int DEFAULT_BUFFER_SIZE = 1024*64;
+    public static final int DEFAULT_READ_TIMEOUT = -1;
     public static final int DEFAULT_WRITE_TIMEOUT = -1;
     public static final int DEFAULT_CONNECT_TIMEOUT = 60*1000;
     
@@ -71,7 +72,7 @@ class I2PSocketOptionsImpl implements I2PSocketOptions {
         if (opts.getProperty(PROP_CONNECT_TIMEOUT) != null)
             _connectTimeout = getInt(opts, PROP_CONNECT_TIMEOUT, DEFAULT_CONNECT_TIMEOUT);
         if (opts.getProperty(PROP_READ_TIMEOUT) != null)
-            _readTimeout = getInt(opts, PROP_READ_TIMEOUT, -1);
+            _readTimeout = getInt(opts, PROP_READ_TIMEOUT, DEFAULT_READ_TIMEOUT);
         if (opts.getProperty(PROP_WRITE_TIMEOUT) != null)
             _writeTimeout = getInt(opts, PROP_WRITE_TIMEOUT, DEFAULT_WRITE_TIMEOUT);
     }
@@ -144,7 +145,8 @@ class I2PSocketOptionsImpl implements I2PSocketOptions {
     /**
      * What is the longest we'll block on the input stream while waiting
      * for more data.  If this value is exceeded, the read() throws 
-     * InterruptedIOException - FIXME doesn't really, returns -1 or 0 instead.
+     * SocketTimeoutException as of 0.9.36.
+     * Prior to that, the read() returned -1 or 0.
      *
      * WARNING: Default -1 (unlimited), which is probably not what you want.
      *
@@ -157,7 +159,8 @@ class I2PSocketOptionsImpl implements I2PSocketOptions {
     /**
      * What is the longest we'll block on the input stream while waiting
      * for more data.  If this value is exceeded, the read() throws 
-     * InterruptedIOException - FIXME doesn't really, returns -1 or 0 instead.
+     * SocketTimeoutException as of 0.9.36.
+     * Prior to that, the read() returned -1 or 0.
      *
      * WARNING: Default -1 (unlimited), which is probably not what you want.
      *
@@ -230,9 +233,12 @@ class I2PSocketOptionsImpl implements I2PSocketOptions {
     /**
      *  The remote port.
      *  @param port 0 - 65535
+     *  @throws IllegalArgumentException
      *  @since 0.8.9
      */
     public void setPort(int port) {
+        if (port < 0 || port > 65535)
+            throw new IllegalArgumentException("bad port");
         _remotePort = port;
     }
 
@@ -251,9 +257,12 @@ class I2PSocketOptionsImpl implements I2PSocketOptions {
      *  Nonzero means you will get traffic ONLY for that port, use with care,
      *  as most applications do not specify a remote port.
      *  @param port 0 - 65535
+     *  @throws IllegalArgumentException
      *  @since 0.8.9
      */
     public void setLocalPort(int port) {
+        if (port < 0 || port > 65535)
+            throw new IllegalArgumentException("bad port");
         _localPort = port;
     }
 }

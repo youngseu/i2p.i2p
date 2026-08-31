@@ -36,7 +36,8 @@ public class LoadClientAppsJob extends JobImpl {
             if (_loaded) return;
             _loaded = true;
         }
-        List<ClientAppConfig> apps = ClientAppConfig.getClientApps(getContext());
+        RouterContext ctx = getContext();
+        List<ClientAppConfig> apps = ClientAppConfig.getClientApps(ctx);
         if (apps.isEmpty()) {
             _log.logAlways(Log.WARN, "Warning - No client apps or router console configured - we are just a router");
             System.err.println("Warning - No client apps or router console configured - we are just a router");
@@ -47,7 +48,7 @@ public class LoadClientAppsJob extends JobImpl {
             if (app.disabled) {
                 if ("net.i2p.router.web.RouterConsoleRunner".equals(app.className)) {
                     String s = "Warning - Router console is disabled. To enable,\n edit the file " +
-                               ClientAppConfig.configFile(getContext()) +
+                               (ClientAppConfig.isSplitConfig(ctx) ? app.configFile : ClientAppConfig.configFile(ctx)) +
                                ",\n change the line \"clientApp." + i + ".startOnLoad=false\"" +
                                " to \"clientApp." + i + ".startOnLoad=true\",\n and restart.";
                     _log.logAlways(Log.WARN, s);
@@ -56,14 +57,18 @@ public class LoadClientAppsJob extends JobImpl {
                 continue;
             }
             String argVal[] = parseArgs(app.args);
-            if (app.delay <= 0) {
+            if (app.delay == 0) {
                 // run this guy now
-                runClient(app.className, app.clientName, argVal, getContext(), _log);
-            } else {
+                runClient(app.className, app.clientName, argVal, ctx, _log);
+            } else if (app.delay > 0) {
                 // wait before firing it up
-                DelayedRunClient drc = new DelayedRunClient(getContext().simpleTimer2(), getContext(), app.className,
+                DelayedRunClient drc = new DelayedRunClient(ctx.simpleTimer2(), ctx, app.className,
                                                             app.clientName, argVal);
                 drc.schedule(app.delay);
+            } else {
+                WaitForRunningClient wfrc = new WaitForRunningClient(ctx.simpleTimer2(), ctx,
+                                                                app.className, app.clientName, argVal);
+                wfrc.schedule(1000);
             }
         }
     }
@@ -72,7 +77,7 @@ public class LoadClientAppsJob extends JobImpl {
      *  Public for router console only, not for use by others, subject to change
      */
     public static class DelayedRunClient extends SimpleTimer2.TimedEvent {
-        private final RouterContext _ctx;
+        protected final RouterContext _ctx;
         private final String _className;
         private final String _clientName;
         private final String _args[];
@@ -103,6 +108,21 @@ public class LoadClientAppsJob extends JobImpl {
             runClient(_className, _clientName, _args, _ctx, _log, _threadGroup, _cl);
         }
     }
+
+    private static class WaitForRunningClient extends DelayedRunClient {
+        WaitForRunningClient(SimpleTimer2 pool, RouterContext enclosingContext, String className, String clientName,
+                             String args[]) {
+            super(pool, enclosingContext, className, clientName, args, null, null);
+        }
+
+        public void timeReached() {
+            if (!_ctx.router().isRunning()) {
+                 reschedule(1000);
+                 return;
+            }
+            super.timeReached();
+        }
+    }
     
     /**
      *  Parse arg string into an array of args.
@@ -117,18 +137,18 @@ public class LoadClientAppsJob extends JobImpl {
     public static String[] parseArgs(String args) {
         List<String> argList = new ArrayList<String>(4);
         if (args != null) {
-            char data[] = args.toCharArray();
             StringBuilder buf = new StringBuilder(32);
             boolean isQuoted = false;
-            for (int i = 0; i < data.length; i++) {
-                switch (data[i]) {
+            for (int i = 0; i < args.length(); i++) {
+                char c = args.charAt(i);
+                switch (c) {
                     case '\'':
                     case '"':
                         if (isQuoted) {
                             String str = buf.toString().trim();
                             if (str.length() > 0)
                                 argList.add(str);
-                            buf = new StringBuilder(32);
+                            buf.setLength(0);
                         }
                         isQuoted = !isQuoted;
                         break;
@@ -137,16 +157,16 @@ public class LoadClientAppsJob extends JobImpl {
                         // whitespace - if we're in a quoted section, keep this as part of the quote,
                         // otherwise use it as a delim
                         if (isQuoted) {
-                            buf.append(data[i]);
+                            buf.append(c);
                         } else {
                             String str = buf.toString().trim();
                             if (str.length() > 0)
                                 argList.add(str);
-                            buf = new StringBuilder(32);
+                            buf.setLength(0);
                         }
                         break;
                     default:
-                        buf.append(data[i]);
+                        buf.append(c);
                         break;
                 }
             }
@@ -272,6 +292,7 @@ public class LoadClientAppsJob extends JobImpl {
         }
 
         public void run() {
+            boolean ok = false;
             try {
                 Class<?> cls = Class.forName(_className, true, _cl);
                 if (isRouterApp(cls)) {
@@ -279,22 +300,27 @@ public class LoadClientAppsJob extends JobImpl {
                     RouterAppManager mgr = _ctx.routerAppManager();
                     Object[] conArgs = new Object[] {_ctx, _ctx.clientAppManager(), _args};
                     RouterApp app = (RouterApp) con.newInstance(conArgs);
-                    mgr.addAndStart(app, _args);
+                    ok = mgr.addAndStart(app, _args);
                 } else if (isClientApp(cls)) {
                     Constructor<?> con = cls.getConstructor(I2PAppContext.class, ClientAppManager.class, String[].class);
                     RouterAppManager mgr = _ctx.routerAppManager();
                     Object[] conArgs = new Object[] {_ctx, _ctx.clientAppManager(), _args};
                     ClientApp app = (ClientApp) con.newInstance(conArgs);
-                    mgr.addAndStart(app, _args);
+                    ok = mgr.addAndStart(app, _args);
                 } else {
                     Method method = cls.getMethod("main", String[].class);
                     method.invoke(cls, new Object[] { _args });
+                    ok = true;
                 }
             } catch (Throwable t) {
                 _log.log(Log.CRIT, "Error starting up the client class " + _className, t);
             }
-            if (_log.shouldLog(Log.INFO))
-                _log.info("Done running client application " + _appName);
+            if (ok) {
+                if (_log.shouldInfo())
+                    _log.info("Done running client application " + _appName);
+            } else {
+                _log.log(Log.CRIT, "Error starting up the client class " + _className);
+            }
         }
 
         private static boolean isRouterApp(Class<?> cls) {
@@ -315,12 +341,6 @@ public class LoadClientAppsJob extends JobImpl {
             } catch (Throwable t) {}
             return false;
         }
-
-
-
-
-
-
     }
 
     public String getName() { return "Load up any client applications"; }

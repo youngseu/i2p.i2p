@@ -13,6 +13,18 @@ public interface I2PSocketOptions {
     public static final String PROP_READ_TIMEOUT = "i2p.streaming.readTimeout";
     /** How long to block on write/flush */
     public static final String PROP_WRITE_TIMEOUT = "i2p.streaming.writeTimeout";
+    /**
+     *  @since 0.9.66 promoted from ConnectionOptions
+     */
+    public static final String PROP_PROFILE = "i2p.streaming.profile";
+    /**
+     *  @since 0.9.66 promoted from ConnectionOptions
+     */
+    public static final int PROFILE_BULK = 1;
+    /**
+     *  @since 0.9.66 promoted from ConnectionOptions
+     */
+    public static final int PROFILE_INTERACTIVE = 2;
     
     /**
      * How long we will wait for the ACK from a SYN, in milliseconds.
@@ -37,7 +49,8 @@ public interface I2PSocketOptions {
     /**
      * What is the longest we'll block on the input stream while waiting
      * for more data.  If this value is exceeded, the read() throws 
-     * InterruptedIOException - FIXME doesn't really, returns -1 or 0 instead.
+     * SocketTimeoutException as of 0.9.36.
+     * Prior to that, the read() returned -1 or 0.
      *
      * WARNING: Default -1 (unlimited), which is probably not what you want.
      *
@@ -48,7 +61,8 @@ public interface I2PSocketOptions {
     /**
      * What is the longest we'll block on the input stream while waiting
      * for more data.  If this value is exceeded, the read() throws 
-     * InterruptedIOException - FIXME doesn't really, returns -1 or 0 instead.
+     * SocketTimeoutException as of 0.9.36.
+     * Prior to that, the read() returned -1 or 0.
      *
      * WARNING: Default -1 (unlimited), which is probably not what you want.
      *

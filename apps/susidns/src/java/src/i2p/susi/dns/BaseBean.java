@@ -3,12 +3,16 @@ package i2p.susi.dns;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 
 import net.i2p.I2PAppContext;
+import net.i2p.app.ClientAppManager;
 import net.i2p.data.DataHelper;
 import net.i2p.util.Log;
 import net.i2p.util.OrderedProperties;
+import net.i2p.util.PortMapper;
 
 /**
  * Holds methods common to several Beans.
@@ -18,16 +22,20 @@ public class BaseBean
 {
     protected final I2PAppContext _context;
     protected final Properties properties;
-    protected String action, lastSerial, serial;
+    protected String action, lastSerial, serial, method;
 
     private long configLastLoaded;
     private static final String PRIVATE_BOOK = "private_addressbook";
     private static final String DEFAULT_PRIVATE_BOOK = "../privatehosts.txt";
 
-    public static final String RC_PROP_THEME_NAME = "routerconsole.theme";
-    public static final String PROP_THEME_NAME = "theme";
-    public static final String DEFAULT_THEME = "light";
-    public static final String BASE_THEME_PATH = "/themes/susidns/";
+    private static final String RC_PROP_THEME_NAME = "routerconsole.theme";
+    private static final String PROP_THEME_NAME = "theme";
+    private static final String DEFAULT_THEME = "light";
+    private static final String BASE_THEME_PATH = "themes/";
+    private static final String[] THEMES = new String[] { "dark", "light"};
+    /** From CSSHelper */
+    private static final String PROP_DISABLE_OLD = "routerconsole.disableOldThemes";
+    private static final boolean DEFAULT_DISABLE_OLD = true;
     public static final String PROP_PW_ENABLE = "routerconsole.auth.enable";
     private static final String ADDRESSBOOK_DIR = "addressbook";
     private static final String CONFIG_FILE = "config.txt";
@@ -74,6 +82,12 @@ public class BaseBean
                 // added in 0.5, for compatibility with 0.4 config.txt
                 if( properties.getProperty(PRIVATE_BOOK) == null)
                     properties.setProperty(PRIVATE_BOOK, DEFAULT_PRIVATE_BOOK);
+                // migrate
+                String local = properties.getProperty("master_addressbook");
+                if (local != null) {
+                    properties.setProperty("local_addressbook", local);
+                    properties.remove("master_addressbook");
+                }
                 configLastLoaded = System.currentTimeMillis();
             }
         }
@@ -92,16 +106,31 @@ public class BaseBean
         // Fetch routerconsole theme (or use our default if it doesn't exist)
         String theme = _context.getProperty(RC_PROP_THEME_NAME, DEFAULT_THEME);
         // Apply any override
+        //debug("Theme test 1: " + theme);
         theme = properties.getProperty(PROP_THEME_NAME, theme);
+        // remap deprecated themes
+        //debug("Theme test 2: " + theme);
+        if (theme.equals("midnight")) {
+            if (_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD))
+                theme = "dark";
+        } else if (theme.equals("classic")) {
+            if (_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD))
+                theme = "light";
+        }
+        //debug("Theme test 3: " + theme);
         // Ensure that theme exists
         String[] themes = getThemes();
         boolean themeExists = false;
         for (int i = 0; i < themes.length; i++) {
-            if (themes[i].equals(theme))
+            if (themes[i].equals(theme)) {
                 themeExists = true;
+                break;
+            }
         }
-        if (!themeExists)
+        if (!themeExists) {
+            debug("Theme did not exist:" + theme);
             theme = DEFAULT_THEME;
+        }
         url += theme + "/";
         return url;
     }
@@ -112,20 +141,7 @@ public class BaseBean
      * @since 0.9.2
      */
     public String[] getThemes() {
-            String[] themes = null;
-            // "docs/themes/susidns/"
-            File dir = new File(_context.getBaseDir(), "docs/themes/susidns");
-            FileFilter fileFilter = new FileFilter() { public boolean accept(File file) { return file.isDirectory(); } };
-            // Walk the themes dir, collecting the theme names, and append them to the map
-            File[] dirnames = dir.listFiles(fileFilter);
-            if (dirnames != null) {
-                themes = new String[dirnames.length];
-                for(int i = 0; i < dirnames.length; i++) {
-                    themes[i] = dirnames[i].getName();
-                }
-            }
-            // return the map.
-            return themes;
+        return THEMES;
     }
 
     /**
@@ -156,6 +172,33 @@ public class BaseBean
      */
     public void setSerial(String serial) {
         this.serial = DataHelper.stripHTML(serial);
+    }
+
+    /**
+     * @since 0.9.65
+     */
+    public void storeMethod(String method) {
+        this.method = method;
+    }
+
+    /**
+     *  @since 0.9.66
+     */
+    public int getBubbleCount() {
+        ClientAppManager cmgr = _context.clientAppManager();
+        if (cmgr != null)
+            return cmgr.getBubbleCount(PortMapper.SVC_SUSIDNS);
+        return 0;
+    }
+
+    /**
+     *  @since 0.9.66
+     */
+    public String getBubbleText() {
+        ClientAppManager cmgr = _context.clientAppManager();
+        if (cmgr != null)
+            return cmgr.getBubbleText(PortMapper.SVC_SUSIDNS);
+        return null;
     }
 
     /**

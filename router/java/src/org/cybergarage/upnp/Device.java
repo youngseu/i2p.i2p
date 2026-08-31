@@ -98,6 +98,7 @@ package org.cybergarage.upnp;
 
 import java.io.File;
 import java.io.InputStream;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URL;
 import java.util.Calendar;
@@ -268,30 +269,17 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 
 		if ((baseURLStr == null) || (baseURLStr.length() <= 0)) {
 			if ((locationURLStr != null) && (0 < locationURLStr.length())) {
-				if (!locationURLStr.endsWith("/") || !urlString.startsWith("/")) {
+				if (!urlString.startsWith("/")) {
 					String absUrl;
-					// I2P - getAbsoluteURL("/WANIPCn.xml", "", "http://192.168.1.1:5555/rootDesc.xml")
-					// returns here as  "http://192.168.1.1:5555/rootDesc.xml/WANIPCn.xml" which is horribly wrong
-					// So back up to last slash
+					// Relative to location, so back up to last slash
 					if (!locationURLStr.endsWith("/")) {
-						if (urlString.startsWith("/"))
-						      absUrl = locationURLStr.substring(0, locationURLStr.lastIndexOf('/')) + urlString;
-						else
-						      absUrl = locationURLStr.substring(0, locationURLStr.lastIndexOf('/') + 1) + urlString;
+						absUrl = locationURLStr.substring(0, locationURLStr.lastIndexOf('/') + 1) + urlString;
 					} else {
 						absUrl = locationURLStr + urlString;
 					}
 					try {
 						URL url = new URL(absUrl);
 						//Debug.warning("Return 1: " + url);
-						return url.toString();
-					} catch (Exception e) {
-					}
-				} else {
-					String absUrl = locationURLStr + urlString.substring(1);
-					try {
-						URL url = new URL(absUrl);
-						//Debug.warning("Return 2: " + url);
 						return url.toString();
 					} catch (Exception e) {
 					}
@@ -318,19 +306,17 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 		}
 
 		if ((baseURLStr != null) && (0 < baseURLStr.length())) {
-			if (!baseURLStr.endsWith("/") || !urlString.startsWith("/")) {
-				String absUrl = baseURLStr + urlString;
+			if (!urlString.startsWith("/")) {
+				String absUrl;
+				// Relative to base, so back up to last slash
+				if (!baseURLStr.endsWith("/")) {
+					absUrl = baseURLStr.substring(0, baseURLStr.lastIndexOf('/') + 1) + urlString;
+				} else {
+					absUrl = baseURLStr + urlString;
+				}
 				try {
 					URL url = new URL(absUrl);
 					//Debug.warning("Return 4: " + url);
-					return url.toString();
-				} catch (Exception e) {
-				}
-			} else {
-				String absUrl = baseURLStr + urlString.substring(1);
-				try {
-					URL url = new URL(absUrl);
-					//Debug.warning("Return 5: " + url);
 					return url.toString();
 				} catch (Exception e) {
 				}
@@ -731,9 +717,18 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 	}
 
 	public SSDPPacket getSSDPPacket() {
+		return getSSDPPacket(false);
+	}
+
+	/**
+	 *  I2P for multiple location support
+	 *
+	 *  @since 0.9.50
+	 */
+	public SSDPPacket getSSDPPacket(boolean preferIPv6) {
 		if (isRootDevice() == false)
 			return null;
-		return getDeviceData().getSSDPPacket();
+		return getDeviceData().getSSDPPacket(preferIPv6);
 	}
 
 	// //////////////////////////////////////////////
@@ -745,10 +740,19 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 	}
 
 	public String getLocation() {
-		SSDPPacket packet = getSSDPPacket();
+		return getLocation(false);
+	}
+
+	/**
+	 *  I2P for multiple location support
+	 *
+	 *  @since 0.9.50
+	 */
+	public String getLocation(boolean preferIPv6) {
+		SSDPPacket packet = getSSDPPacket(preferIPv6);
 		if (packet != null)
 			return packet.getLocation();
-		return getDeviceData().getLocation();
+		return getDeviceData().getLocation(preferIPv6);
 	}
 
 	// //////////////////////////////////////////////
@@ -1280,7 +1284,7 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 			ActionList actionList = service.getActionList();
 			int actionCnt = actionList.size();
 			for (int i = 0; i < actionCnt; i++) {
-				Action action = (Action) actionList.getAction(i);
+				Action action = actionList.getAction(i);
 				String actionName = action.getName();
 				if (actionName == null)
 					continue;
@@ -1436,7 +1440,14 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 	public void announce(String bindAddr) {
 		String devLocation = getLocationURL(bindAddr);
 
-		SSDPNotifySocket ssdpSock = new SSDPNotifySocket(bindAddr);
+		SSDPNotifySocket ssdpSock;
+		// I2P
+		try {
+			ssdpSock = new SSDPNotifySocket(bindAddr);
+		} catch (IOException ioe) {
+			Debug.warning("Failed announce from " + bindAddr, ioe);
+			return;
+		}
 
 		SSDPNotifyRequest ssdpReq = new SSDPNotifyRequest();
 		ssdpReq.setServer(UPnP.getServerName());
@@ -1511,7 +1522,14 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 	}
 
 	public void byebye(String bindAddr) {
-		SSDPNotifySocket ssdpSock = new SSDPNotifySocket(bindAddr);
+		SSDPNotifySocket ssdpSock;
+		// I2P
+		try {
+			ssdpSock = new SSDPNotifySocket(bindAddr);
+		} catch (IOException ioe) {
+			Debug.warning("Failed byebye from " + bindAddr, ioe);
+			return;
+		}
 
 		SSDPNotifyRequest ssdpReq = new SSDPNotifyRequest();
 		ssdpReq.setNTS(NTS.BYEBYE);
@@ -2308,4 +2326,22 @@ public class Device implements org.cybergarage.http.HTTPRequestListener,
 	 * output(pr); pr.flush(); }
 	 */
 
+/*
+	public static void main(String[] args) {
+		test("/foo/x", "http://aa:123/");
+		test("/foo/x", "http://aa:123/bar/");
+		test("/foo/x", "http://aa:123/bar/baz");
+		test("foo/x", "http://aa:123/");
+		test("foo/x", "http://aa:123/bar/");
+		test("foo/x", "http://aa:123/bar/baz");
+	}
+
+	private static void test(String a, String b) {
+		Device d = new Device();
+		String c = d.getAbsoluteURL(a, "", b);
+		System.out.println(b + ' ' + a + ' ' + c);
+		c = d.getAbsoluteURL(a, b, "");
+		System.out.println(b + ' ' + a + ' ' + c);
+	}
+*/
 }

@@ -47,14 +47,49 @@ public abstract class DatabaseEntry extends DataStructureImpl {
     /** these are the same as in i2np's DatabaseStoreMessage */
     public final static int KEY_TYPE_ROUTERINFO = 0;
     public final static int KEY_TYPE_LEASESET = 1;
+    /** @since 0.9.38 */
+    public final static int KEY_TYPE_LS2 = 3;
+    /** @since 0.9.38 */
+    public final static int KEY_TYPE_ENCRYPTED_LS2 = 5;
+    /** @since 0.9.38 */
+    public final static int KEY_TYPE_META_LS2 = 7;
+    /** @since 0.9.38 */
+    public final static int KEY_TYPE_SERVICE_RECORD = 9;
+    /** @since 0.9.38 */
+    public final static int KEY_TYPE_SERVICE_LIST = 11;
 
     protected volatile Signature _signature;
-    protected volatile Hash _currentRoutingKey;
-    protected volatile long _routingKeyGenMod;
+    // synch: this
+    private Hash _currentRoutingKey;
+    private long _routingKeyGenMod;
+    private boolean _receivedAsPublished;
+    private boolean _receivedAsReply;
+
+    /**
+     * Hash of the client receiving the routerinfo, or null if it was sent directly.
+     */
+    private Hash _receivedBy;
+
+    /**
+     * The Hash of the local client that received this LS,
+     * null if the router or unknown.
+     *
+     * @since 0.9.61
+     */
+    public Hash getReceivedBy() {
+        return _receivedBy;
+    }
+
+    /**
+     * @since 0.9.61
+     */
+    public void setReceivedBy(Hash receivedBy) {
+        this._receivedBy = receivedBy;
+    }
 
     /**
      * A common interface to the timestamp of the two subclasses.
-     * Identical to getEarliestLeaseData() in LeaseSet,
+     * Identical to getEarliestLeaseDate() in LeaseSet,
      * and getPublished() in RouterInfo.
      * Note that for a LeaseSet this will be in the future,
      * and for a RouterInfo it will be in the past.
@@ -93,10 +128,33 @@ public abstract class DatabaseEntry extends DataStructureImpl {
      * Get the type of the data structure.
      * This should be faster than instanceof.
      *
-     * @return KEY_TYPE_ROUTERINFO or KEY_TYPE_LEASESET
+     * @return KEY_TYPE_ROUTERINFO or KEY_TYPE_LEASESET or LS2 types
      * @since 0.8.2
      */
     public abstract int getType();
+
+    /**
+     * Convenience method, is the type any variant of leaseset?
+     *
+     * @return true for any type of LeaseSet, false for RouterInfo, false for others
+     * @since 0.9.38
+     */
+    public boolean isLeaseSet() {
+        return isLeaseSet(getType());
+    }
+
+    /**
+     * Convenience method, is the type any variant of leaseset?
+     *
+     * @return true for any type of LeaseSet, false for RouterInfo, false for others
+     * @since 0.9.38
+     */
+    public static boolean isLeaseSet(int type) {
+        return type == KEY_TYPE_LEASESET ||
+               type == KEY_TYPE_LS2 ||
+               type == KEY_TYPE_ENCRYPTED_LS2 ||
+               type == KEY_TYPE_META_LS2;
+    }
 
     /**
      * Returns the raw payload data, excluding the signature, to be signed by sign().
@@ -120,11 +178,13 @@ public abstract class DatabaseEntry extends DataStructureImpl {
             throw new IllegalStateException("Not in router context");
         RoutingKeyGenerator gen = ctx.routingKeyGenerator();
         long mod = gen.getLastChanged();
-        if (mod != _routingKeyGenMod) {
-            _currentRoutingKey = gen.getRoutingKey(getHash());
-            _routingKeyGenMod = mod;
+        synchronized(this) {
+            if (mod != _routingKeyGenMod) {
+                _currentRoutingKey = gen.getRoutingKey(getHash());
+                _routingKeyGenMod = mod;
+            }
+            return _currentRoutingKey;
         }
-        return _currentRoutingKey;
     }
 
     /**
@@ -195,8 +255,9 @@ public abstract class DatabaseEntry extends DataStructureImpl {
      * This is the same as isValid() in RouterInfo
      * or verifySignature() in LeaseSet.
      * @return valid
+     * @since public since 0.9.47, was protected
      */
-    protected boolean verifySignature() {
+    public boolean verifySignature() {
         if (_signature == null)
             return false;
         byte data[];
@@ -215,5 +276,46 @@ public abstract class DatabaseEntry extends DataStructureImpl {
         if (type == null || type.getBaseAlgorithm() == SigAlgo.RSA)
             return false;
         return DSAEngine.getInstance().verifySignature(_signature, data, spk);
+    }
+    
+    /**
+     * If true, we received this LeaseSet by a remote peer publishing it to
+     * us, rather than by searching for it ourselves or locally creating it.
+     * Default false.
+     *
+     * @since 0.9.58 moved up from LeaseSet
+     */
+    public boolean getReceivedAsPublished() { 
+        return _receivedAsPublished;
+    }
+
+    /**
+     * @since 0.9.58 moved up from LeaseSet
+     * 
+     * use this carefully, when updating the flags make sure the old and new
+     * leaseSet are actually equivalent, or simply copy over the reply value,
+     * see KademliaNetworkDatabaseFacade.java line 997 for more information.
+     */
+    public void setReceivedAsPublished() {
+        _receivedAsPublished = true; 
+    }
+
+    /**
+     * If true, we received this LeaseSet by searching for it
+     * Default false.
+     *
+     * @since 0.7.14, moved up from LeaseSet in 0.9.58
+     */
+    public boolean getReceivedAsReply() {
+        return _receivedAsReply; 
+    }
+
+    /**
+     * set to true
+     *
+     * @since 0.7.14, moved up from LeaseSet in 0.9.58
+     */
+    public void setReceivedAsReply() {
+        _receivedAsReply = true;
     }
 }

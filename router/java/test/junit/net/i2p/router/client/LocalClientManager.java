@@ -8,6 +8,10 @@ package net.i2p.router.client;
  *
  */
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+
 import gnu.getopt.Getopt;
 
 import net.i2p.data.Destination;
@@ -17,6 +21,7 @@ import net.i2p.data.i2cp.MessageStatusMessage;
 import net.i2p.router.RouterContext;
 import net.i2p.util.I2PThread;
 import net.i2p.util.SimpleTimer2;
+import net.i2p.util.SyntheticREDQueue;
 
 /**
  * For testing clients without a full router.
@@ -28,7 +33,9 @@ import net.i2p.util.SimpleTimer2;
  * @since 0.9.8
  */
 class LocalClientManager extends ClientManager {
-    private static int dropX1000 = 0, jitter = 0, latency = 0;
+    private static int dropX1000 = 0, jitter = 0, latency = 0, ratelimit = 0;
+
+    private final Map<Destination, SyntheticREDQueue> limiters = new HashMap<Destination, SyntheticREDQueue>();
 
     /**
      *  @param context stub, may be constructed with new RouterContext(null),
@@ -54,18 +61,32 @@ class LocalClientManager extends ClientManager {
      * @param flags ignored for local
      */
     @Override
-    void distributeMessage(Destination fromDest, Destination toDest, Payload payload,
+    void distributeMessage(ClientConnectionRunner sender, Destination fromDest, Destination toDest, Payload payload,
                            MessageId msgId, long messageNonce, long expiration, int flags) { 
         // check if there is a runner for it
-        ClientConnectionRunner sender = getRunner(fromDest);
         ClientConnectionRunner runner = getRunner(toDest);
         if (runner != null) {
             if (dropX1000 > 0) {
                 if (100 * 1000 * _ctx.random().nextFloat() < dropX1000) {
                     System.out.println("Message " + msgId + " DROPPED randomly");
-                    if (sender != null) {
+                    // pretend success
+                    sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, MessageStatusMessage.STATUS_SEND_GUARANTEED_SUCCESS);
+                    return;
+                }
+            }
+            if (ratelimit > 0) {
+                SyntheticREDQueue srq;
+                synchronized(limiters) {
+                    srq = limiters.get(fromDest);
+                    if (srq == null) {
+                        srq = new SyntheticREDQueue(_ctx, ratelimit * 1024);
+                        limiters.put(fromDest, srq);
+                    }
+                    if (!srq.offer(payload.getSize(), 1)) {
+                        System.out.println("Message " + msgId + " length " + payload.getSize() + " DROPPED by " + srq);
                         // pretend success
                         sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, MessageStatusMessage.STATUS_SEND_GUARANTEED_SUCCESS);
+                        return;
                     }
                 }
             }
@@ -74,22 +95,19 @@ class LocalClientManager extends ClientManager {
                 if (jitter > 0)
                     delay += (int) (jitter * _ctx.random().nextGaussian());
                 if (delay > 0) {
-                    System.out.println("Message " + msgId + " DELAYED " + delay + " ms");
+                    //System.out.println("Message " + msgId + " DELAYED " + delay + " ms");
                     DelayedSend ds = new DelayedSend(_ctx, sender, runner, fromDest, toDest, payload, msgId, messageNonce);
                     ds.schedule(delay);
                     return;
                 }
             }
             boolean ok = runner.receiveMessage(toDest, fromDest, payload);
-            if (sender != null) {
-                int rc = ok ? MessageStatusMessage.STATUS_SEND_SUCCESS_LOCAL : MessageStatusMessage.STATUS_SEND_FAILURE_LOCAL;
-                sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, rc);
-            }
+            int rc = ok ? MessageStatusMessage.STATUS_SEND_SUCCESS_LOCAL : MessageStatusMessage.STATUS_SEND_FAILURE_LOCAL;
+            sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, rc);
         } else {
             // remote.  ignore.
             System.out.println("Message " + msgId + " is targeting a REMOTE destination - DROPPED");
-            if (sender != null)
-                sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, MessageStatusMessage.STATUS_SEND_GUARANTEED_FAILURE);
+            sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, MessageStatusMessage.STATUS_SEND_GUARANTEED_FAILURE);
         }
     }
 
@@ -111,17 +129,17 @@ class LocalClientManager extends ClientManager {
 
         public void timeReached() {
             boolean ok = r.receiveMessage(td, fd, pl);
-            if (s != null) {
-                int rc = ok ? MessageStatusMessage.STATUS_SEND_SUCCESS_LOCAL : MessageStatusMessage.STATUS_SEND_FAILURE_LOCAL;
-                s.updateMessageDeliveryStatus(fd, id, nonce, rc);
-            }
+            int rc = ok ? MessageStatusMessage.STATUS_SEND_SUCCESS_LOCAL : MessageStatusMessage.STATUS_SEND_FAILURE_LOCAL;
+            s.updateMessageDeliveryStatus(fd, id, nonce, rc);
         }
     }
 
     public static void main(String args[]) {
         int dropX1000 = 0, jitter = 0, latency = 0;
+        int port = ClientManagerFacadeImpl.DEFAULT_PORT;
+        int rate = 0;
         boolean error = false;
-        Getopt g = new Getopt("router", args, "d:j:l:");
+        Getopt g = new Getopt("LocalClientManager", args, "d:j:l:p:r:");
         try {
             int c;
             while ((c = g.getopt()) != -1) {
@@ -145,6 +163,18 @@ class LocalClientManager extends ClientManager {
                             error = true;
                         break;
 
+                    case 'p':
+                        port = Integer.parseInt(g.getOptarg());
+                        if (port < 1024 || port > 65535)
+                            error = true;
+                        break;
+
+                    case 'r':
+                        rate = Integer.parseInt(g.getOptarg());
+                        if (rate < 0)
+                            error = true;
+                        break;
+
                     default:
                         error = true;
                 }
@@ -158,12 +188,15 @@ class LocalClientManager extends ClientManager {
             System.exit(1);
         }
 
-        RouterContext ctx = new RouterContext(null);
-        int port = ClientManagerFacadeImpl.DEFAULT_PORT;
+        Properties props = new Properties();
+        // prevent NTP queries
+        props.setProperty("time.disabled", "true");
+        RouterContext ctx = new RouterContext(null, props);
         LocalClientManager mgr = new LocalClientManager(ctx, port);
         mgr.dropX1000 = dropX1000;
         mgr.jitter = jitter;
         mgr.latency = latency;
+        mgr.ratelimit = rate;
         mgr.start();
         System.out.println("Listening on port " + port);
         try { Thread.sleep(60*60*1000); } catch (InterruptedException ie) {}
@@ -174,6 +207,8 @@ class LocalClientManager extends ClientManager {
         System.err.println("usage: LocalClientManager\n" +
                            "         [-d droppercent] // 0.0 - 99.99999 (default 0)\n" +
                            "         [-j jitter]      // (integer ms for 1 std. deviation, default 0)\n" +
-                           "         [-l latency]     // (integer ms, default 0)");
+                           "         [-l latency]     // (integer ms, default 0)\n" +
+                           "         [-p port]        // (I2CP port, default 7654)\n" +
+                           "         [-r ratelimit]   // (rate limit in KBps, default none)");
     }
 }

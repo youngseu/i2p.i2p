@@ -13,12 +13,14 @@ import java.io.Writer;
 import java.util.Collections;
 import java.util.Set;
 
+import net.i2p.client.I2PSessionException;
 import net.i2p.crypto.SessionKeyManager;
 import net.i2p.data.Destination;
 import net.i2p.data.Hash;
 import net.i2p.data.LeaseSet;
 import net.i2p.data.i2cp.MessageId;
 import net.i2p.data.i2cp.SessionConfig;
+import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
 
 /**
  * Manage all interactions with clients 
@@ -104,4 +106,38 @@ public abstract class ClientManagerFacade implements Service {
 
     /** @since 0.8.8 */
     public abstract void shutdown(String msg);
+
+    /**
+     *  Declare that we're going to publish a meta LS for this destination.
+     *  Must be called before publishing the leaseset.
+     *
+     *  @throws I2PSessionException on duplicate dest
+     *  @since 0.9.41
+     */
+    public void registerMetaDest(Destination dest) throws I2PSessionException {}
+
+    /**
+     *  Declare that we're no longer going to publish a meta LS for this destination.
+     *
+     *  @since 0.9.41
+     */
+    public void unregisterMetaDest(Destination dest) {}
+
+    /**
+     * get the FloodfillNetworkDatabaseFacade associated with a particular client destination.
+     * This is inside the runner, so it won't be there if the runner isn't ready.
+     * 
+     * @param destHash destination hash associated with the client who's subDb we're looking for
+     * @return non-null FloodfillNetworkDatabaseFacade
+     * @since 0.9.61
+     */
+    public abstract FloodfillNetworkDatabaseFacade getClientFloodfillNetworkDatabaseFacade(Hash destHash);
+
+    /**
+     * get a set of all primary hashes
+     * 
+     * @return non-null set of Hashes
+     * @since 0.9.61
+     */
+    public abstract Set<Hash> getPrimaryHashes();
 }

@@ -1,26 +1,32 @@
 <%@page contentType="text/html"%>
 <%@page trimDirectiveWhitespaces="true"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("config update")%>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
-
+<%
+    if ("POST".equals(request.getMethod())) {
+        // refresh the sidebar after page loads
+%>
+<script src="/js/configupdate.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<%
+    }
+%>
+</head><body>
 <%@include file="summary.jsi" %>
-<h1><%=intl._t("I2P Update Configuration")%></h1>
+<h1><%=intl._t("Configuration")%></h1>
 <div class="main" id="config_update">
  <%@include file="confignav.jsi" %>
 
  <jsp:useBean class="net.i2p.router.web.ConfigUpdateHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
- <jsp:useBean class="net.i2p.router.web.ConfigUpdateHelper" id="updatehelper" scope="request" />
- <jsp:setProperty name="updatehelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
+ <jsp:useBean class="net.i2p.router.web.ConfigUpdateHelper" id="updatehelper" scope="request" /><%
+    updatehelper.storeSession(session);
+%><jsp:setProperty name="updatehelper" property="contextId" value="<%=i2pcontextId%>" />
 <div class="messages">
- <jsp:getProperty name="updatehelper" property="newsStatus" /></div>
+ <jsp:getProperty name="updatehelper" property="newsStatusBrief" /></div>
  <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>" >
  <% /* set hidden default */ %>
@@ -45,27 +51,29 @@
         <tr><td align="right"><b><%=formhandler._t("Update policy")%>:</b></td>
           <td><jsp:getProperty name="updatehelper" property="updatePolicySelectBox" /></td></tr>
     <% }   // if canInstall %>
-        <tr><td align="right"><label for="newsThroughProxy"><b><%=intl._t("Fetch news through the eepProxy?")%></b></label></td>
+    <% if (updatehelper.isAdvanced()) { %>
+        <tr><td align="right"><label for="newsThroughProxy"><b><%=intl._t("Fetch news through the proxy?")%></b></label></td>
           <td><jsp:getProperty name="updatehelper" property="newsThroughProxy" /></td></tr>
-        <tr><td align="right"><b><label for="updateThroughProxy"><%=intl._t("Update through the eepProxy?")%></b></label></td>
+      <% if (updatehelper.canInstall()) { %>
+        <tr><td align="right"><label for="updateThroughProxy"><b><%=intl._t("Update through the proxy?")%></b></label></td>
           <td><jsp:getProperty name="updatehelper" property="updateThroughProxy" /></td></tr>
-      <% if (updatehelper.isAdvanced()) { %>
-        <tr><td align="right"><b><%=intl._t("eepProxy host")%>:</b></td>
+      <% }   // if canInstall %>
+        <tr><td align="right"><b><%=intl._t("Proxy host")%>:</b></td>
           <td><input type="text" size="10" name="proxyHost" value="<jsp:getProperty name="updatehelper" property="proxyHost" />" /></td>
-        </tr><tr><td align="right"><b><%=intl._t("eepProxy port")%>:</b></td>
+        </tr><tr><td align="right"><b><%=intl._t("Proxy port")%>:</b></td>
           <td><input type="text" size="10" name="proxyPort" value="<jsp:getProperty name="updatehelper" property="proxyPort" />" /></td></tr>
-      <% }   // if isAdvanced %>
+    <% }   // if isAdvanced %>
     <% if (updatehelper.canInstall()) { %>
       <% if (updatehelper.isAdvanced()) { %>
         <tr><td align="right"><b><%=intl._t("Update URLs")%>:</b></td>
           <td><textarea cols="60" rows="6" name="updateURL" wrap="off" spellcheck="false"><jsp:getProperty name="updatehelper" property="updateURL" /></textarea></td>
         </tr><tr><td align="right"><b><%=intl._t("Trusted keys")%>:</b></td>
           <td><textarea cols="60" rows="6" name="trustedKeys" wrap="off" spellcheck="false"><jsp:getProperty name="updatehelper" property="trustedKeys" /></textarea></td></tr>
-        <tr><td id="devSU3build" align="right"><b><label for="updateDevSU3"><%=intl._t("Update with signed development builds?")%></b></label></td>
+        <tr><td id="devSU3build" align="right"><label for="updateDevSU3"><b><%=intl._t("Update with signed development builds?")%></b></label></td>
           <td><jsp:getProperty name="updatehelper" property="updateDevSU3" /></td>
         </tr><tr><td align="right"><b><%=intl._t("Signed Build URL")%>:</b></td>
           <td><input type="text" size="60" name="devSU3URL" value="<jsp:getProperty name="updatehelper" property="devSU3URL" />"></td></tr>
-        <tr><td id="unsignedbuild" align="right"><b><label for="updateUnsigned"><%=intl._t("Update with unsigned development builds?")%></b></label></td>
+        <tr><td id="unsignedbuild" align="right"><label for="updateUnsigned"><b><%=intl._t("Update with unsigned development builds?")%></b></label></td>
           <td><jsp:getProperty name="updatehelper" property="updateUnsigned" /></td>
         </tr><tr><td align="right"><b><%=intl._t("Unsigned Build URL")%>:</b></td>
           <td><input type="text" size="60" name="zipURL" value="<jsp:getProperty name="updatehelper" property="zipURL" />"></td></tr>

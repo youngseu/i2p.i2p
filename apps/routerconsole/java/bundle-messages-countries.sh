@@ -10,6 +10,7 @@
 #
 # zzz - public domain
 #
+cd `dirname $0`
 CLASS=net.i2p.router.countries.messages
 TMPFILE=build/javafiles-countries.txt
 export TZ=UTC
@@ -33,9 +34,9 @@ fi
 # set LG2 to the language you need in environment variables to enable this
 
 #
-# generate strings/Countries.java from ../../../installer/resources/countries.txt
+# generate strings/Countries.java from ../../../core/resources/countries.txt
 #
-CFILE=../../../installer/resources/countries.txt
+CFILE=../../../core/resources/countries.txt
 # add ../java/ so the refs will work in the po file
 JFILE=../java/build/Countries.java
 if [ $CFILE -nt $JFILE -o ! -s $JFILE ]
@@ -112,12 +113,12 @@ do
         # only generate for non-source language
         echo "Generating ${CLASS}_$LG ResourceBundle..."
 
-        msgfmt -V | grep -q '0\.19'
+        msgfmt -V | grep -q -E ' 0\.((19)|[2-9])| [1-9]\.'
         if [ $? -ne 0 ]
         then
             # slow way
             # convert to class files in build/obj
-            msgfmt --java --statistics -r $CLASS -l $LG -d build/obj $i
+            msgfmt --java2 --statistics -r $CLASS -l $LG -d build/obj $i
             if [ $? -ne 0 ]
             then
                 echo "ERROR - msgfmt failed on ${i}, not updating translations"
@@ -135,7 +136,7 @@ do
             TDY=$TD2/net/i2p/router/countries
             rm -rf $TD
             mkdir -p $TD $TDY
-            msgfmt --java --statistics --source -r $CLASS -l $LG -d $TD $i
+            msgfmt --java2 --statistics --source -r $CLASS -l $LG -d $TD $i
             if [ $? -ne 0 ]
             then
                 echo "ERROR - msgfmt failed on ${i}, not updating translations"
@@ -144,7 +145,12 @@ do
                 RC=1
                 break
             fi
-            mv $TDX/messages_$LG.java $TDY
+            # fixup Enumeration code for generics
+            sed -e 's/Enumeration/Enumeration<String>/g' \
+                -e 's/Object nextElement/String nextElement/g' \
+                -e 's/return key/return (String) key/g' \
+                $TDX/messages_$LG.java > $TDY/messages_$LG.java
+            rm -f $TDX/messages_$LG.java
             rm -rf $TD
         fi
     fi

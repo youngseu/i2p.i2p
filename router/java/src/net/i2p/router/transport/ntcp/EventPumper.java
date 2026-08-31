@@ -5,6 +5,8 @@ import java.net.InetAddress;
 import java.net.Inet6Address;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.Buffer;
+import java.nio.BufferOverflowException;
 import java.nio.channels.CancelledKeyException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ClosedSelectorException;
@@ -15,6 +17,7 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.UnresolvedAddressException;
+import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.Queue;
 import java.util.Set;
@@ -22,12 +25,15 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
 import net.i2p.I2PAppContext;
-import net.i2p.data.ByteArray;
 import net.i2p.data.router.RouterAddress;
 import net.i2p.data.router.RouterIdentity;
 import net.i2p.router.CommSystemFacade.Status;
 import net.i2p.router.RouterContext;
 import net.i2p.router.transport.FIFOBandwidthLimiter;
+import net.i2p.stat.Rate;
+import net.i2p.stat.RateAverages;
+import net.i2p.stat.RateStat;
+import net.i2p.util.TryCache;
 import net.i2p.util.Addresses;
 import net.i2p.util.ConcurrentHashSet;
 import net.i2p.util.I2PThread;
@@ -51,9 +57,10 @@ class EventPumper implements Runnable {
     private final Queue<ServerSocketChannel> _wantsRegister = new ConcurrentLinkedQueue<ServerSocketChannel>();
     private final Queue<NTCPConnection> _wantsConRegister = new ConcurrentLinkedQueue<NTCPConnection>();
     private final NTCPTransport _transport;
-    private final ObjectCounter<ByteArray> _blockedIPs;
+    private final ObjectCounter<String> _blockedIPs;
     private long _expireIdleWriteTime;
-    private boolean _useDirect;
+    private static final boolean _useDirect = false;
+    private final boolean _nodelay;
     
     /**
      *  This probably doesn't need to be bigger than the largest typical
@@ -63,13 +70,15 @@ class EventPumper implements Runnable {
     private static final int BUF_SIZE = 8*1024;
     private static final int MAX_CACHE_SIZE = 64;
 
-    /**
-     *  Read buffers. (write buffers use wrap())
-     *  Shared if there are multiple routers in the JVM
-     *  Note that if the routers have different PROP_DIRECT settings this will have a mix,
-     *  so don't do that.
-     */
-    private static final LinkedBlockingQueue<ByteBuffer> _bufCache = new LinkedBlockingQueue<ByteBuffer>(MAX_CACHE_SIZE);
+    private static class BufferFactory implements TryCache.ObjectFactory<ByteBuffer> {
+        public ByteBuffer newInstance() {
+            if (_useDirect) 
+                return ByteBuffer.allocateDirect(BUF_SIZE);
+            else
+                return ByteBuffer.allocate(BUF_SIZE);
+        }
+    }
+    
 
     /** 
      * every few seconds, iterate across all ntcp connections just to make sure
@@ -79,20 +88,26 @@ class EventPumper implements Runnable {
      * the time to iterate across them to check a few flags shouldn't be a problem.
      */
     private static final long FAILSAFE_ITERATION_FREQ = 2*1000l;
+    private static final int FAILSAFE_LOOP_COUNT = 512;
     private static final long SELECTOR_LOOP_DELAY = 200;
-    private static final long BLOCKED_IP_FREQ = 3*60*1000;
+    private static final long BLOCKED_IP_FREQ = 43*60*1000;
 
     /** tunnel test now disabled, but this should be long enough to allow an active tunnel to get started */
     private static final long MIN_EXPIRE_IDLE_TIME = 120*1000l;
     private static final long MAX_EXPIRE_IDLE_TIME = 11*60*1000l;
     private static final long MAY_DISCON_TIMEOUT = 10*1000;
+    private static final long RI_STORE_INTERVAL = 29*60*1000;
 
     /**
      *  Do we use direct buffers for reading? Default false.
      *  NOT recommended as we don't keep good track of them so they will leak.
+     *
+     *  Unsupported, set _useDirect above.
+     *
      *  @see java.nio.ByteBuffer
      */
-    private static final String PROP_DIRECT = "i2np.ntcp.useDirectBuffers";
+    //private static final String PROP_DIRECT = "i2np.ntcp.useDirectBuffers";
+    private static final String PROP_NODELAY = "i2np.ntcp.nodelay";
 
     private static final int MIN_MINB = 4;
     private static final int MAX_MINB = 12;
@@ -101,19 +116,26 @@ class EventPumper implements Runnable {
         long maxMemory = SystemVersion.getMaxMemory();
         MIN_BUFS = (int) Math.max(MIN_MINB, Math.min(MAX_MINB, 1 + (maxMemory / (16*1024*1024))));
     }
+    
+    private static final TryCache<ByteBuffer> _bufferCache = new TryCache<>(new BufferFactory(), MIN_BUFS);
+
+    private static final Set<Status> STATUS_OK =
+        EnumSet.of(Status.OK, Status.IPV4_OK_IPV6_UNKNOWN, Status.IPV4_OK_IPV6_FIREWALLED);
 
     public EventPumper(RouterContext ctx, NTCPTransport transport) {
         _context = ctx;
         _log = ctx.logManager().getLog(getClass());
         _transport = transport;
         _expireIdleWriteTime = MAX_EXPIRE_IDLE_TIME;
-        _blockedIPs = new ObjectCounter<ByteArray>();
+        _blockedIPs = new ObjectCounter<String>();
         _context.statManager().createRateStat("ntcp.pumperKeySetSize", "", "ntcp", new long[] {10*60*1000} );
         //_context.statManager().createRateStat("ntcp.pumperKeysPerLoop", "", "ntcp", new long[] {10*60*1000} );
         _context.statManager().createRateStat("ntcp.pumperLoopsPerSecond", "", "ntcp", new long[] {10*60*1000} );
         _context.statManager().createRateStat("ntcp.zeroRead", "", "ntcp", new long[] {10*60*1000} );
         _context.statManager().createRateStat("ntcp.zeroReadDrop", "", "ntcp", new long[] {10*60*1000} );
         _context.statManager().createRateStat("ntcp.dropInboundNoMessage", "", "ntcp", new long[] {10*60*1000} );
+        _context.statManager().createRequiredRateStat("ntcp.inboundConn", "Inbound NTCP Connection", "ntcp", new long[] { 60*1000L } );
+        _nodelay = ctx.getBooleanPropertyDefaultTrue(PROP_NODELAY);
     }
     
     public synchronized void startPumping() {
@@ -173,26 +195,23 @@ class EventPumper implements Runnable {
      */
     public void run() {
         int loopCount = 0;
+        int failsafeLoopCount = FAILSAFE_LOOP_COUNT;
         long lastFailsafeIteration = System.currentTimeMillis();
         long lastBlockedIPClear = lastFailsafeIteration;
         while (_alive && _selector.isOpen()) {
             try {
                 loopCount++;
-                runDelayedEvents();
 
                 try {
-                    //if (_log.shouldLog(Log.DEBUG))
-                    //    _log.debug("before select...");
                     int count = _selector.select(SELECTOR_LOOP_DELAY);
                     if (count > 0) {
-                        //if (_log.shouldLog(Log.DEBUG))
-                        //    _log.debug("select returned " + count);
                         Set<SelectionKey> selected = _selector.selectedKeys();
                         //_context.statManager().addRateData("ntcp.pumperKeysPerLoop", selected.size());
                         processKeys(selected);
                         // does clear() do anything useful?
                         selected.clear();
                     }
+                    runDelayedEvents();
                 } catch (ClosedSelectorException cse) {
                     continue;
                 } catch (IOException ioe) {
@@ -213,9 +232,13 @@ class EventPumper implements Runnable {
                     lastFailsafeIteration = now;
                     try {
                         Set<SelectionKey> all = _selector.keys();
-                        _context.statManager().addRateData("ntcp.pumperKeySetSize", all.size());
+                        int lastKeySetSize = all.size();
+                        _context.statManager().addRateData("ntcp.pumperKeySetSize", lastKeySetSize);
                         _context.statManager().addRateData("ntcp.pumperLoopsPerSecond", loopCount / (FAILSAFE_ITERATION_FREQ / 1000));
+                        // reset the failsafe loop counter,
+                        // and recalculate the max loops before failsafe sleep, based on number of keys
                         loopCount = 0;
+                        failsafeLoopCount = Math.max(FAILSAFE_LOOP_COUNT, 2 * lastKeySetSize);
                         
                         int failsafeWrites = 0;
                         int failsafeCloses = 0;
@@ -252,24 +275,27 @@ class EventPumper implements Runnable {
                                  */
                                 if ((!key.isValid()) &&
                                     (!((SocketChannel)key.channel()).isConnectionPending()) &&
-                                    con.getTimeSinceCreated() > 2 * NTCPTransport.ESTABLISH_TIMEOUT) {
+                                    con.getTimeSinceCreated(now) > 2 * NTCPTransport.ESTABLISH_TIMEOUT) {
                                     if (_log.shouldLog(Log.INFO))
                                         _log.info("Removing invalid key for " + con);
                                     // this will cancel the key, and it will then be removed from the keyset
                                     con.close();
+                                    key.cancel();
                                     failsafeInvalid++;
                                     continue;
                                 }
 
-                                if ( (!con.isWriteBufEmpty()) &&
-                                     ((key.interestOps() & SelectionKey.OP_WRITE) == 0) ) {
-                                    // the data queued to be sent has already passed through
-                                    // the bw limiter and really just wants to get shoved
-                                    // out the door asap.
-                                    if (_log.shouldLog(Log.INFO))
-                                        _log.info("Failsafe write for " + con);
-                                    key.interestOps(SelectionKey.OP_WRITE | key.interestOps());
-                                    failsafeWrites++;
+                                synchronized(con.getWriteLock()) {
+                                    if ( (!con.isWriteBufEmpty()) &&
+                                         ((key.interestOps() & SelectionKey.OP_WRITE) == 0) ) {
+                                        // the data queued to be sent has already passed through
+                                        // the bw limiter and really just wants to get shoved
+                                        // out the door asap.
+                                        if (_log.shouldLog(Log.INFO))
+                                            _log.info("Failsafe write for " + con);
+                                        setInterest(key, SelectionKey.OP_WRITE);
+                                        failsafeWrites++;
+                                    }
                                 }
                                 
                                 final long expire;
@@ -283,11 +309,26 @@ class EventPumper implements Runnable {
                                     expire = _expireIdleWriteTime;
                                 }
 
-                                if ( con.getTimeSinceSend() > expire &&
-                                     con.getTimeSinceReceive() > expire) {
+                                if ( con.getTimeSinceSend(now) > expire &&
+                                     con.getTimeSinceReceive(now) > expire) {
                                     // we haven't sent or received anything in a really long time, so lets just close 'er up
-                                    con.close();
+                                    // con will cancel the key
+                                    con.sendTerminationAndClose();
+                                    if (_log.shouldInfo())
+                                        _log.info("Failsafe or expire close for " + con);
                                     failsafeCloses++;
+                                } else {
+                                    // periodically send our RI
+                                    long estab = con.getEstablishedOn();
+                                    if (estab > 0) {
+                                        long uptime = now - estab;
+                                        if (uptime >= RI_STORE_INTERVAL) {
+                                            long mod = uptime % RI_STORE_INTERVAL;
+                                            if (mod < FAILSAFE_ITERATION_FREQ) {
+                                                con.sendOurRouterInfo(false);
+                                            }
+                                        }
+                                    }
                                 }
                             } catch (CancelledKeyException cke) {
                                 // cancelled while updating the interest ops.  ah well
@@ -304,7 +345,8 @@ class EventPumper implements Runnable {
                     }
                 } else {
                     // another 100% CPU workaround 
-                    if ((loopCount % 512) == 511) {
+                    // TODO remove or only if we appear to be looping with no interest ops
+                    if ((loopCount % failsafeLoopCount) == failsafeLoopCount - 1) {
                         if (_log.shouldLog(Log.INFO))
                             _log.info("EventPumper throttle " + loopCount + " loops in " +
                                       (now - lastFailsafeIteration) + " ms");
@@ -317,15 +359,6 @@ class EventPumper implements Runnable {
                 if (lastBlockedIPClear + BLOCKED_IP_FREQ < now) {
                     _blockedIPs.clear();
                     lastBlockedIPClear = now;
-                }
-
-
-                // Clear the cache if the user changes the setting,
-                // so we can test the effect.
-                boolean newUseDirect = _context.getBooleanProperty(PROP_DIRECT);
-                if (_useDirect != newUseDirect) {
-                    _useDirect = newUseDirect;
-                    _bufCache.clear();
                 }
             } catch (RuntimeException re) {
                 _log.error("Error in the event pumper", re);
@@ -364,7 +397,6 @@ class EventPumper implements Runnable {
         _wantsRead.clear();
         _wantsRegister.clear();
         _wantsWrite.clear();
-        _bufCache.clear();
     }
     
     /**
@@ -393,15 +425,13 @@ class EventPumper implements Runnable {
                     processAccept(key);
                 }
                 if (connect) {
-                    key.interestOps(key.interestOps() & ~SelectionKey.OP_CONNECT);
+                    clearInterest(key, SelectionKey.OP_CONNECT);
                     processConnect(key);
                 }
                 if (read) {
-                    //_context.statManager().addRateData("ntcp.read", 1, 0);
                     processRead(key);
                 }
                 if (write) {
-                    //_context.statManager().addRateData("ntcp.write", 1, 0);
                     processWrite(key);
                 }
                 //if (!(accept || connect || read || write)) {
@@ -412,27 +442,6 @@ class EventPumper implements Runnable {
                 if (_log.shouldLog(Log.DEBUG))
                     _log.debug("key cancelled");
             }
-        }
-    }
-    
-    /**
-     *  Called by the connection when it has data ready to write.
-     *  If we have bandwidth, calls con.Write() which calls wantsWrite(con).
-     *  If no bandwidth, calls con.queuedWrite().
-     */
-    public void wantsWrite(NTCPConnection con, byte data[]) {
-        ByteBuffer buf = ByteBuffer.wrap(data);
-        FIFOBandwidthLimiter.Request req = _context.bandwidthLimiter().requestOutbound(data.length, 0, "NTCP write");//con, buf);
-        if (req.getPendingRequested() > 0) {
-            if (_log.shouldLog(Log.INFO))
-                _log.info("queued write on " + con + " for " + data.length);
-            _context.statManager().addRateData("ntcp.wantsQueuedWrite", 1);
-            con.queuedWrite(buf, req);
-        } else {
-            // fully allocated
-            //if (_log.shouldLog(Log.INFO))
-            //    _log.info("fully allocated write on " + con + " for " + data.length);
-            con.write(buf);
         }
     }
 
@@ -457,32 +466,10 @@ class EventPumper implements Runnable {
     }
 
     /**
-     *  How many to keep in reserve.
-     *  Shared if there are multiple routers in the JVM
-     */
-    private static int _numBufs = MIN_BUFS;
-    private static int __consecutiveExtra;
-
-    /**
      *  High-frequency path in thread.
      */
     private ByteBuffer acquireBuf() {
-        ByteBuffer rv = _bufCache.poll();
-        // discard buffer if _useDirect setting changes
-        if (rv == null || rv.isDirect() != _useDirect) {
-            if (_useDirect)
-                rv = ByteBuffer.allocateDirect(BUF_SIZE);
-            else
-                rv = ByteBuffer.allocate(BUF_SIZE);
-            _numBufs++;
-            //if (_log.shouldLog(Log.DEBUG))
-            //    _log.debug("creating a new read buffer " + System.identityHashCode(rv) + " with " + __liveBufs + " live: " + rv);            
-            //_context.statManager().addRateData("ntcp.liveReadBufs", NUM_BUFS, 0);
-        } else {
-            //if (_log.shouldLog(Log.DEBUG))
-            //    _log.debug("acquiring existing read buffer " + System.identityHashCode(rv) + " with " + __liveBufs + " live: " + rv);
-        }
-        return rv;
+        return _bufferCache.acquire();
     }
     
     /**
@@ -491,38 +478,16 @@ class EventPumper implements Runnable {
      *  High-frequency path in thread.
      */
     public static void releaseBuf(ByteBuffer buf) {
-        //if (false) return;
-        //if (_log.shouldLog(Log.DEBUG))
-        //    _log.debug("releasing read buffer " + System.identityHashCode(buf) + " with " + __liveBufs + " live: " + buf);
-
         // double check
         if (buf.capacity() < BUF_SIZE) {
             I2PAppContext.getGlobalContext().logManager().getLog(EventPumper.class).error("Bad size " + buf.capacity(), new Exception());
             return;
         }
         buf.clear();
-        int extra = _bufCache.size();
-        boolean cached = extra < _numBufs;
-
-        // TODO always offer if direct?
-        if (cached) {
-            _bufCache.offer(buf);
-            if (extra > MIN_BUFS) {
-                __consecutiveExtra++;
-                if (__consecutiveExtra >= 20) {
-                    if (_numBufs > MIN_BUFS)
-                        _numBufs--;
-                    __consecutiveExtra = 0;
-                }
-            }
-        }
-        //if (cached && _log.shouldLog(Log.DEBUG))
-        //    _log.debug("read buffer " + System.identityHashCode(buf) + " cached with " + __liveBufs + " live");
+        _bufferCache.release(buf);
     }
     
     private void processAccept(SelectionKey key) {
-        //if (_log.shouldLog(Log.DEBUG))
-        //    _log.debug("processing accept");
         ServerSocketChannel servChan = (ServerSocketChannel)key.attachment();
         try {
             SocketChannel chan = servChan.accept();
@@ -531,58 +496,121 @@ class EventPumper implements Runnable {
                 return;
             chan.configureBlocking(false);
 
-            if (!_transport.allowConnection()) {
-                if (_log.shouldLog(Log.WARN))
-                    _log.warn("Receive session request but at connection limit: " + chan.socket().getInetAddress());
-                try { chan.close(); } catch (IOException ioe) { }
-                return;
-            }
-
             byte[] ip = chan.socket().getInetAddress().getAddress();
+            String ba = Addresses.toString(ip);
             if (_context.blocklist().isBlocklisted(ip)) {
                 if (_log.shouldLog(Log.WARN))
-                    _log.warn("Receive session request from blocklisted IP: " + chan.socket().getInetAddress());
-                // need to add this stat first
-                // _context.statManager().addRateData("ntcp.connectBlocklisted", 1, 0);
+                    _log.warn("Receive session request from blocklisted IP: " + ba);
                 try { chan.close(); } catch (IOException ioe) { }
                 return;
             }
+            if (!_context.commSystem().isExemptIncoming(Addresses.toCanonicalString(ba))) {
+                if (!_transport.haveCapacity(95)) {
+                    if (_log.shouldLog(Log.WARN))
+                        _log.warn("Receive session request but near connection limit: " + ba);
+                    try { chan.close(); } catch (IOException ioe) { }
+                    return;
+                }
 
-            ByteArray ba = new ByteArray(ip);
-            int count = _blockedIPs.count(ba);
-            if (count > 0) {
-                count = _blockedIPs.increment(ba);
-                if (_log.shouldLog(Log.WARN))
-                   _log.warn("Blocking accept of IP with count " + count + ": " + Addresses.toString(ip));
-                _context.statManager().addRateData("ntcp.dropInboundNoMessage", count);
-                try { chan.close(); } catch (IOException ioe) { }
-                return;
+                int count = _blockedIPs.count(ba);
+                if (count > 0) {
+                    count = _blockedIPs.increment(ba);
+                    if (_log.shouldLog(Log.WARN))
+                       _log.warn("Blocking accept of IP with count " + count + ": " + ba);
+                    _context.statManager().addRateData("ntcp.dropInboundNoMessage", count);
+                    try { chan.close(); } catch (IOException ioe) { }
+                    return;
+                }
+
+                if (!shouldAllowInboundEstablishment()) {
+                    try { chan.close(); } catch (IOException ioe) { }
+                    return;
+                }
             }
 
-            // BUGFIX for firewalls. --Sponge
+            _context.statManager().addRateData("ntcp.inboundConn", 1);
+
             if (shouldSetKeepAlive(chan))
                 chan.socket().setKeepAlive(true);
+            if (_nodelay)
+                chan.socket().setTcpNoDelay(true);
 
             SelectionKey ckey = chan.register(_selector, SelectionKey.OP_READ);
-            new NTCPConnection(_context, _transport, chan, ckey);
-            //if (_log.shouldLog(Log.DEBUG))
-            //    _log.debug("new NTCP connection established: " +con);
+            NTCPConnection con = new NTCPConnection(_context, _transport, chan, ckey);
+            ckey.attach(con);
+            _transport.establishing(con);
         } catch (IOException ioe) {
             _log.error("Error accepting", ioe);
         }
     }
+
+    /**
+     * Should we allow another inbound establishment?
+     * Used to throttle outbound hole punches.
+     * @since 0.9.2
+     */
+    private boolean shouldAllowInboundEstablishment() {
+        RateStat rs = _context.statManager().getRate("ntcp.inboundConn");
+        if (rs == null)
+            return true;
+        Rate r = rs.getRate(60*1000);
+        if (r == null)
+            return true;
+        int last;
+        long periodStart;
+        RateAverages ra = RateAverages.getTemp();
+        synchronized(r) {
+            last = (int) r.getLastEventCount();
+            periodStart = r.getLastCoalesceDate();
+            r.computeAverages(ra, true);
+        }
+        // compare incoming conns per ms, min of 1 per second or 60/minute
+        if (last < 15)
+            last = 15;
+        int total = (int) ra.getTotalEventCount();
+        int current = total - last;
+        if (current <= 0)
+            return true;
+        // getLastEventCount() is normalized to the rate, so we use the canonical period
+        int lastPeriod = 60*1000;
+        double avg = ra.getAverage();
+        int currentTime = (int) (_context.clock().now() - periodStart);
+        if (currentTime <= 5*1000)
+            return true;
+        // compare incoming conns per ms
+        // both of these are scaled by actual period in coalesce
+        float lastRate = last / (float) lastPeriod;
+        float currentRate = (float) (current / (double) currentTime);
+        float factor = 1.05f;
+        float minThresh = factor * lastRate;
+        if (currentRate > minThresh) {
+            // chance in 128
+            // max out at about 25% over the last rate
+            int probAccept = Math.max(1, ((int) (4 * 128 * currentRate / minThresh)) - 512);
+            if (probAccept >= 128 || _context.random().nextInt(128) < probAccept) {
+                if (_log.shouldWarn())
+                    _log.warn("Probabalistic drop incoming (p=" + probAccept  +
+                              "/128) last rate " + last + "/min current rate " +
+                              (int) (currentRate * 60*1000));
+                return false;
+            }
+        }
+        return true; 
+    }
     
     private void processConnect(SelectionKey key) {
-        NTCPConnection con = (NTCPConnection)key.attachment();
+        final NTCPConnection con = (NTCPConnection)key.attachment();
+        final SocketChannel chan = con.getChannel();
         try {
-            SocketChannel chan = con.getChannel();
             boolean connected = chan.finishConnect();
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("processing connect for " + con + ": connected? " + connected);
             if (connected) {
-                // BUGFIX for firewalls. --Sponge
                 if (shouldSetKeepAlive(chan))
                     chan.socket().setKeepAlive(true);
+                if (_nodelay)
+                    chan.socket().setTcpNoDelay(true);
+                // key was already set when the channel was created, why do it again here?
                 con.setKey(key);
                 con.outboundConnected();
                 _context.statManager().addRateData("ntcp.connectSuccessful", 1);
@@ -595,7 +623,6 @@ class EventPumper implements Runnable {
             if (_log.shouldLog(Log.INFO))
                 _log.info("Failed outbound " + con, ioe);
             con.closeOnTimeout("connect failed", ioe);
-            //_context.banlist().banlistRouter(con.getRemotePeer().calculateHash(), "Error connecting", NTCPTransport.STYLE);
             _transport.markUnreachable(con.getRemotePeer().calculateHash());
             _context.statManager().addRateData("ntcp.connectFailedTimeoutIOE", 1);
         } catch (NoConnectionPendingException ncpe) {
@@ -612,11 +639,7 @@ class EventPumper implements Runnable {
         if (chan.socket().getInetAddress() instanceof Inet6Address)
             return false;
         Status status = _context.commSystem().getStatus();
-        if (status == Status.OK ||
-            status == Status.IPV4_OK_IPV6_UNKNOWN ||
-            status == Status.IPV4_OK_IPV6_FIREWALLED)
-            return false;
-        return true;
+        return !STATUS_OK.contains(status);
     }
 
     /**
@@ -625,95 +648,116 @@ class EventPumper implements Runnable {
      *  High-frequency path in thread.
      */
     private void processRead(SelectionKey key) {
-        NTCPConnection con = (NTCPConnection)key.attachment();
-        ByteBuffer buf = acquireBuf();
+        final NTCPConnection con = (NTCPConnection)key.attachment();
+        final SocketChannel chan = con.getChannel();
+        ByteBuffer buf = null;
         try {
-            int read = con.getChannel().read(buf);
-            if (read < 0) {
-                //_context.statManager().addRateData("ntcp.readEOF", 1);
-                if (con.isInbound() && con.getMessagesReceived() <= 0) {
-                    InetAddress addr = con.getChannel().socket().getInetAddress();
-                    int count;
-                    if (addr != null) {
-                        byte[] ip = addr.getAddress();
-                        ByteArray ba = new ByteArray(ip);
-                        count = _blockedIPs.increment(ba);
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("Blocking IP " + Addresses.toString(ip) + " with count " + count + ": " + con);
+            while (true) {
+                buf = acquireBuf();
+                int read = 0;
+                int readThisTime;
+                int readCount = 0;
+                while ((readThisTime = chan.read(buf)) > 0)  {
+                    read += readThisTime;
+                    readCount++;
+                }
+                if (readThisTime < 0 && read == 0)
+                    read = readThisTime;
+                if (_log.shouldDebug())
+                    _log.debug("Read " + read + " bytes total in " + readCount + " times from " + con);
+                if (read < 0) {
+                    if (con.isInbound() && con.getMessagesReceived() <= 0) {
+                        InetAddress addr = chan.socket().getInetAddress();
+                        int count;
+                        if (addr != null) {
+                            byte[] ip = addr.getAddress();
+                            String ba = Addresses.toString(ip);
+                            count = _blockedIPs.increment(ba);
+                            if (_log.shouldLog(Log.WARN))
+                                _log.warn("EOF on inbound before receiving any, blocking IP " + ba + " with count " + count + ": " + con);
+                        } else {
+                            count = 1;
+                            if (_log.shouldLog(Log.WARN))
+                                _log.warn("EOF on inbound before receiving any: " + con);
+                        }
+                        _context.statManager().addRateData("ntcp.dropInboundNoMessage", count);
                     } else {
-                        count = 1;
-                        if (_log.shouldLog(Log.WARN))
-                            _log.warn("EOF on inbound before receiving any: " + con);
+                        if (_log.shouldLog(Log.DEBUG))
+                            _log.debug("EOF on " + con);
                     }
-                    _context.statManager().addRateData("ntcp.dropInboundNoMessage", count);
-                } else {
-                    if (_log.shouldLog(Log.DEBUG))
-                        _log.debug("EOF on " + con);
-                }
-                con.close();
-                releaseBuf(buf);
-            } else if (read == 0) {
-                //if (_log.shouldLog(Log.DEBUG))
-                //    _log.debug("nothing to read for " + con + ", but stay interested");
-                // stay interested
-                //key.interestOps(key.interestOps() | SelectionKey.OP_READ);
-                releaseBuf(buf);
-                // workaround for channel stuck returning 0 all the time, causing 100% CPU
-                int consec = con.gotZeroRead();
-                if (consec >= 5) {
-                    _context.statManager().addRateData("ntcp.zeroReadDrop", 1);
-                    if (_log.shouldLog(Log.WARN))
-                        _log.warn("Fail safe zero read close " + con);
                     con.close();
-                } else {
-                    _context.statManager().addRateData("ntcp.zeroRead", consec);
-                    if (_log.shouldLog(Log.INFO))
-                        _log.info("nothing to read for " + con + ", but stay interested");
+                    releaseBuf(buf);
+                    break;
                 }
-            } else {
+                if (read == 0) {
+                    // stay interested
+                    //key.interestOps(key.interestOps() | SelectionKey.OP_READ);
+                    releaseBuf(buf);
+                    // workaround for channel stuck returning 0 all the time, causing 100% CPU
+                    int consec = con.gotZeroRead();
+                    if (consec >= 5) {
+                        _context.statManager().addRateData("ntcp.zeroReadDrop", 1);
+                        if (_log.shouldLog(Log.WARN))
+                            _log.warn("Fail safe zero read close " + con);
+                        con.close();
+                    } else {
+                        _context.statManager().addRateData("ntcp.zeroRead", consec);
+                        if (_log.shouldLog(Log.INFO))
+                            _log.info("nothing to read for " + con + ", but stay interested");
+                    }
+                    break;
+                }
+                // Process the data received
                 // clear counter for workaround above
                 con.clearZeroRead();
+                // go around again if we filled the buffer (so we can read more)
+                boolean keepReading = !buf.hasRemaining();
                 // ZERO COPY. The buffer will be returned in Reader.processRead()
-                buf.flip();
+                // not ByteBuffer to avoid Java 8/9 issues with flip()
+                ((Buffer)buf).flip();
                 FIFOBandwidthLimiter.Request req = _context.bandwidthLimiter().requestInbound(read, "NTCP read"); //con, buf);
                 if (req.getPendingRequested() > 0) {
                     // rare since we generally don't throttle inbound
-                    key.interestOps(key.interestOps() & ~SelectionKey.OP_READ);
-                    //if (_log.shouldLog(Log.DEBUG))
-                    //    _log.debug("bw throttled reading for " + con + ", so we don't want to read anymore");
+                    clearInterest(key, SelectionKey.OP_READ);
                     _context.statManager().addRateData("ntcp.queuedRecv", read);
                     con.queuedRecv(buf, req);
+                    break;
                 } else {
-                    // fully allocated
-                    //if (_log.shouldLog(Log.DEBUG))
-                    //    _log.debug("not bw throttled reading for " + con);
                     // stay interested
                     //key.interestOps(key.interestOps() | SelectionKey.OP_READ);
                     con.recv(buf);
                     _context.statManager().addRateData("ntcp.read", read);
+                    if (readThisTime < 0) {
+                        // EOF, we're done
+                        con.close();
+                        break;
+                    }
+                    if (!keepReading)
+                        break;
                 }
-            }
+            }  // while true
         } catch (CancelledKeyException cke) {
-            releaseBuf(buf);
+            if (buf != null)
+                releaseBuf(buf);
             if (_log.shouldLog(Log.WARN)) _log.warn("error reading on " + con, cke);
             con.close();
             _context.statManager().addRateData("ntcp.readError", 1);
         } catch (IOException ioe) {
             // common, esp. at outbound connect time
-            releaseBuf(buf);
+            if (buf != null)
+                releaseBuf(buf);
             if (con.isInbound() && con.getMessagesReceived() <= 0) {
-                InetAddress addr = con.getChannel().socket().getInetAddress();
+                byte[] ip = con.getRemoteIP();
                 int count;
-                if (addr != null) {
-                    byte[] ip = addr.getAddress();
-                    ByteArray ba = new ByteArray(ip);
+                if (ip != null) {
+                    String ba = Addresses.toString(ip);
                     count = _blockedIPs.increment(ba);
                     if (_log.shouldLog(Log.WARN))
-                        _log.warn("Blocking IP " + Addresses.toString(ip) + " with count " + count + ": " + con);
+                        _log.warn("Blocking IP " + ba + " with count " + count + ": " + con, ioe);
                 } else {
                     count = 1;
                     if (_log.shouldLog(Log.WARN))
-                        _log.warn("IOE on inbound before receiving any: " + con);
+                        _log.warn("IOE on inbound before receiving any: " + con, ioe);
                 }
                 _context.statManager().addRateData("ntcp.dropInboundNoMessage", count);
             } else {
@@ -733,11 +777,22 @@ class EventPumper implements Runnable {
             }
             con.close();
         } catch (NotYetConnectedException nyce) {
-            releaseBuf(buf);
+            if (buf != null)
+                releaseBuf(buf);
             // ???
-            key.interestOps(key.interestOps() & ~SelectionKey.OP_READ);
+            clearInterest(key, SelectionKey.OP_READ);
             if (_log.shouldLog(Log.WARN))
                 _log.warn("error reading on " + con, nyce);
+        } catch (BufferOverflowException boe) {
+            // Rare unchecked exception on read() call, unknown cause
+            // Not even listed on SocketChannel.read() javadoc
+            // Do not release the buf, maybe it was in the pool twice?
+            // We assume this is fatal for the con so we close it.
+            clearInterest(key, SelectionKey.OP_READ);
+            con.close();
+            _context.statManager().addRateData("ntcp.readError", 1);
+            if (_log.shouldWarn())
+                _log.warn("error reading on " + con, boe);
         }
     }
     
@@ -747,74 +802,76 @@ class EventPumper implements Runnable {
      *  High-frequency path in thread.
      */
     private void processWrite(SelectionKey key) {
-        //int totalWritten = 0;
-        //int buffers = 0;
-        //long before = System.currentTimeMillis();
-        NTCPConnection con = (NTCPConnection)key.attachment();
+        final NTCPConnection con = (NTCPConnection)key.attachment();
+        processWrite(con, key);
+    }
+
+    /**
+     *  Asynchronous write all buffers to the channel.
+     *  This method will disable the interest if no more writes remain.
+     *  If this returns false, caller MUST call wantsWrite(con)
+     *
+     *  @param key non-null
+     *  @return true if all buffers were completely written, false if buffers remain
+     *  @since 0.9.53
+     */
+    public boolean processWrite(final NTCPConnection con, final SelectionKey key) {
+        boolean rv = false;
+        final SocketChannel chan = con.getChannel();
         try {
-            while (true) {
-                ByteBuffer buf = con.getNextWriteBuf();
-                if (buf != null) {
-                    //if (_log.shouldLog(Log.DEBUG))
-                    //    _log.debug("writing " + buf.remaining()+"...");
-                    if (buf.remaining() <= 0) {
-                        //long beforeRem = System.currentTimeMillis();
-                        con.removeWriteBuf(buf);
-                        //long afterRem = System.currentTimeMillis();
-                        //if (_log.shouldLog(Log.DEBUG))
-                        //    _log.debug("buffer was already fully written and removed after " + (afterRem-beforeRem) + "...");
-                        //buffers++;
-                        continue;                    
-                    }
-                    int written = con.getChannel().write(buf);
-                    //totalWritten += written;
-                    if (written == 0) {
-                        if ( (buf.remaining() > 0) || (!con.isWriteBufEmpty()) ) {
-                            //if (_log.shouldLog(Log.DEBUG)) _log.debug("done writing, but data remains...");
+            synchronized(con.getWriteLock()) {
+                while (true) {
+                    ByteBuffer buf = con.getNextWriteBuf();
+                    if (buf != null) {
+                        if (buf.remaining() <= 0) {
+                            con.removeWriteBuf(buf);
+                            continue;
+                        }
+                        int written = chan.write(buf);
+                        //totalWritten += written;
+                        if (written == 0) {
+                            if ( (buf.remaining() > 0) || (!con.isWriteBufEmpty()) ) {
+                                // stay interested
+                                //key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                            } else {
+                                rv = true;
+                            }
+                            break;
+                        } else if (buf.remaining() > 0) {
                             // stay interested
                             //key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                            break;
                         } else {
-                            //if (_log.shouldLog(Log.DEBUG)) _log.debug("done writing, no data remains...");
-                            key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
+                            con.removeWriteBuf(buf);
+                            //if (buffer time is too much, add OP_WRITE to the interest ops and break?)
+                            // LOOP
+                        }
+                    } else {
+                        // Nothing more to write
+                        if (key.isValid()) {
+                            rv = true;
                         }
                         break;
-                    } else if (buf.remaining() > 0) {
-                        //if (_log.shouldLog(Log.DEBUG)) _log.debug("buffer data remaining...");
-                        // stay interested
-                        //key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
-                        break;
-                    } else {
-                        //long beforeRem = System.currentTimeMillis();
-                        con.removeWriteBuf(buf);
-                        //long afterRem = System.currentTimeMillis();
-                        //if (_log.shouldLog(Log.DEBUG))
-                        //    _log.debug("buffer "+ buffers+"/"+written+"/"+totalWritten+" fully written after " +
-                        //               (beforeRem-before) + ", then removed after " + (afterRem-beforeRem) + "...");
-                        //releaseBuf(buf);
-                        //buffers++;
-                        //if (buffer time is too much, add OP_WRITe to the interest ops and break?)
-                        // LOOP
                     }
-                } else {
-                    // Nothing more to write
-		    if (key.isValid())
-                    	key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
-                    break;
                 }
+                if (rv)
+                    clearInterest(key, SelectionKey.OP_WRITE);
+                else
+                    setInterest(key, SelectionKey.OP_WRITE);
             }
+        // catch and close outside the write lock to avoid deadlocks in NTCPCon.locked_close()
         } catch (CancelledKeyException cke) {
             if (_log.shouldLog(Log.WARN)) _log.warn("error writing on " + con, cke);
             _context.statManager().addRateData("ntcp.writeError", 1);
             con.close();
+            rv = true;
         } catch (IOException ioe) {
             if (_log.shouldLog(Log.WARN)) _log.warn("error writing on " + con, ioe);
             _context.statManager().addRateData("ntcp.writeError", 1);
             con.close();
+            rv = true;
         }
-        //long after = System.currentTimeMillis();
-        //if (_log.shouldLog(Log.INFO))
-        //    _log.info("Wrote " + totalWritten + " in " + buffers + " buffers on " + con 
-        //              + " after " + (after-before));
+        return rv;
     }
     
     /**
@@ -827,7 +884,7 @@ class EventPumper implements Runnable {
         while ((con = _wantsRead.poll()) != null) {
             SelectionKey key = con.getKey();
             try {
-                key.interestOps(key.interestOps() | SelectionKey.OP_READ);
+                setInterest(key, SelectionKey.OP_READ);
             } catch (CancelledKeyException cke) {
                 // ignore, we remove/etc elsewhere
                 if (_log.shouldLog(Log.WARN))
@@ -855,12 +912,14 @@ class EventPumper implements Runnable {
         if (!_wantsWrite.isEmpty()) {
             for (Iterator<NTCPConnection> iter = _wantsWrite.iterator(); iter.hasNext(); ) {
                 con = iter.next();
+                iter.remove();
+                if (con.isClosed())
+                    continue;
                 SelectionKey key = con.getKey();
                 if (key == null)
                     continue;
-                iter.remove();
                 try {
-                    key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                    setInterest(key, SelectionKey.OP_WRITE);
                 } catch (CancelledKeyException cke) {
                    if (_log.shouldLog(Log.WARN))
                        _log.warn("RDE CKE 2", cke);
@@ -885,23 +944,23 @@ class EventPumper implements Runnable {
         }
         
         while ((con = _wantsConRegister.poll()) != null) {
+            final SocketChannel schan = con.getChannel();
             try {
-                SelectionKey key = con.getChannel().register(_selector, SelectionKey.OP_CONNECT);
+                SelectionKey key = schan.register(_selector, SelectionKey.OP_CONNECT);
                 key.attach(con);
                 con.setKey(key);
                 RouterAddress naddr = con.getRemoteAddress();
                 try {
-                    // no DNS lookups, do not use host names
+                    // no DNS lookups, do not use hostnames
                     int port = naddr.getPort();
                     byte[] ip = naddr.getIP();
                     if (port <= 0 || ip == null)
                         throw new IOException("Invalid NTCP address: " + naddr);
                     InetSocketAddress saddr = new InetSocketAddress(InetAddress.getByAddress(ip), port);
-                    boolean connected = con.getChannel().connect(saddr);
+                    boolean connected = schan.connect(saddr);
                     if (connected) {
                         // Never happens, we use nonblocking
-                        //_context.statManager().addRateData("ntcp.connectImmediate", 1);
-                        key.interestOps(SelectionKey.OP_READ);
+                        setInterest(key, SelectionKey.OP_READ);
                         processConnect(key);
                     }
                 } catch (IOException ioe) {
@@ -909,24 +968,12 @@ class EventPumper implements Runnable {
                         _log.warn("error connecting to " + Addresses.toString(naddr.getIP(), naddr.getPort()), ioe);
                     _context.statManager().addRateData("ntcp.connectFailedIOE", 1);
                     _transport.markUnreachable(con.getRemotePeer().calculateHash());
-                    //if (ntcpOnly(con)) {
-                    //    _context.banlist().banlistRouter(con.getRemotePeer().calculateHash(), "unable to connect: " + ioe.getMessage());
-                    //    con.close(false);
-                    //} else {
-                    //    _context.banlist().banlistRouter(con.getRemotePeer().calculateHash(), "unable to connect: " + ioe.getMessage(), NTCPTransport.STYLE);
-                        con.close(true);
-                    //}
+                    con.close(true);
                 } catch (UnresolvedAddressException uae) {                    
                     if (_log.shouldLog(Log.WARN)) _log.warn("unresolved address connecting", uae);
-                    _context.statManager().addRateData("ntcp.connectFailedUnresolved", 1);
+                    //_context.statManager().addRateData("ntcp.connectFailedUnresolved", 1);
                     _transport.markUnreachable(con.getRemotePeer().calculateHash());
-                    //if (ntcpOnly(con)) {
-                    //    _context.banlist().banlistRouter(con.getRemotePeer().calculateHash(), "unable to connect/resolve: " + uae.getMessage());
-                    //    con.close(false);
-                    //} else {
-                    //    _context.banlist().banlistRouter(con.getRemotePeer().calculateHash(), "unable to connect/resolve: " + uae.getMessage(), NTCPTransport.STYLE);
-                        con.close(true);
-                    //}
+                    con.close(true);
                 } catch (CancelledKeyException cke) {
                     con.close(false);
                 }
@@ -941,22 +988,19 @@ class EventPumper implements Runnable {
             _lastExpired = now;
         }
     }
-    
+
     /**
-     * If the other peer only supports ntcp, we should banlist them when we can't reach 'em,
-     * but if they support other transports (eg ssu) we should allow those transports to be
-     * tried as well.
+     *  Temp. block inbound from this IP
+     *
+     *  @since 0.9.58
      */
-/****
-    private boolean ntcpOnly(NTCPConnection con) {
-        RouterIdentity ident = con.getRemotePeer();
-        if (ident == null) return true;
-        RouterInfo info = _context.netDb().lookupRouterInfoLocally(ident.calculateHash());
-        if (info == null) return true;
-        return info.getAddresses().size() == 1;
+    public void blockIP(byte[] ip) {
+        if (ip == null)
+            return;
+        String ba = Addresses.toString(ip);
+        _blockedIPs.increment(ba);
     }
-****/
-    
+
     private long _lastExpired;
 
     private void expireTimedOut() {
@@ -964,4 +1008,32 @@ class EventPumper implements Runnable {
     }
 
     public long getIdleTimeout() { return _expireIdleWriteTime; }
+
+    /**
+     *  Warning - caller should catch unchecked CancelledKeyException
+     *
+     *  @throws CancelledKeyException which is unchecked
+     *  @since 0.9.53
+     */
+    public static void setInterest(SelectionKey key, int op) throws CancelledKeyException {
+        synchronized(key) {
+            int old = key.interestOps();
+            if ((old & op) == 0)
+                key.interestOps(old | op);
+        }
+    }
+
+    /**
+     *  Warning - caller should catch unchecked CancelledKeyException
+     *
+     *  @throws CancelledKeyException which is unchecked
+     *  @since 0.9.53
+     */
+    public static void clearInterest(SelectionKey key, int op) throws CancelledKeyException {
+        synchronized(key) {
+            int old = key.interestOps();
+            if ((old & op) != 0)
+                key.interestOps(old & ~op);
+        }
+    }
 }

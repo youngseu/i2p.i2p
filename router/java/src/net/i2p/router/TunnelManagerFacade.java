@@ -149,6 +149,12 @@ public interface TunnelManagerFacade extends Service {
     public void buildTunnels(Destination client, ClientTunnelSettings settings);
 
     /**
+     *  Must be called AFTER deregistration by the client manager.
+     *  @since 0.9.48
+     */
+    public void removeTunnels(Destination client);
+
+    /**
      *  Add another destination to the same tunnels.
      *  Must have same encryption key and a different signing key.
      *  @throws IllegalArgumentException if not
@@ -181,6 +187,18 @@ public interface TunnelManagerFacade extends Service {
     public TunnelPool getInboundExploratoryPool();
     /** for TunnelRenderer in router console */
     public TunnelPool getOutboundExploratoryPool();
+
+    /**
+     *  @return pool or null
+     *  @since 0.9.34
+     */
+    public TunnelPool getInboundPool(Hash client);
+
+    /**
+     *  @return pool or null
+     *  @since 0.9.34
+     */
+    public TunnelPool getOutboundPool(Hash client);
 
     /** @since 0.8.13 */
     public void fail(Hash peer);

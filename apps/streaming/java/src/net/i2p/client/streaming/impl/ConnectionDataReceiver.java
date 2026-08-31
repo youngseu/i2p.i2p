@@ -2,6 +2,7 @@ package net.i2p.client.streaming.impl;
 
 import net.i2p.I2PAppContext;
 import net.i2p.data.ByteArray;
+import net.i2p.data.DataHelper;
 import net.i2p.util.Log;
 
 /**
@@ -146,12 +147,11 @@ class ConnectionDataReceiver implements MessageOutputStream.DataReceiver {
         return packet;
     }
     
-    private static boolean isAckOnly(Connection con, int size) {
-        boolean ackOnly = ( (size <= 0) && // no data
-                            (con.getLastSendId() >= 0) && // not a SYN
-                            ( (!con.getOutputStream().getClosed()) || // not a CLOSE
-                            (con.getOutputStream().getClosed() && 
-                             con.getCloseSentOn() > 0) )); // or it is a dup CLOSE
+    private boolean isAckOnly(int size) {
+        boolean ackOnly = size <= 0 && // no data
+                          _connection.getLastSendId() >= 0 && // not a SYN
+                          (!_connection.getOutputStream().getClosed() || // not a CLOSE
+                           _connection.getCloseSentOn() > 0); // or it is a dup CLOSE
         return ackOnly;
     }
     
@@ -170,7 +170,7 @@ class ConnectionDataReceiver implements MessageOutputStream.DataReceiver {
      */
     private PacketLocal buildPacket(byte buf[], int off, int size, boolean forceIncrement) {
         if (size > Packet.MAX_PAYLOAD_SIZE) throw new IllegalArgumentException("size is too large (" + size + ")");
-        boolean ackOnly = isAckOnly(_connection, size);
+        boolean ackOnly = isAckOnly(size);
         boolean isFirst = (_connection.getAckedPackets() <= 0) && (_connection.getUnackedPacketsSent() <= 0);
         
         PacketLocal packet = new PacketLocal(_context, _connection.getRemotePeer(), _connection);
@@ -196,16 +196,26 @@ class ConnectionDataReceiver implements MessageOutputStream.DataReceiver {
         // bugfix release 0.7.8, we weren't dividing by 1000
         packet.setResendDelay(_connection.getOptions().getResendDelay() / 1000);
         
+/*
         if (_connection.getOptions().getProfile() == ConnectionOptions.PROFILE_INTERACTIVE)
             packet.setFlag(Packet.FLAG_PROFILE_INTERACTIVE, true);
         else
             packet.setFlag(Packet.FLAG_PROFILE_INTERACTIVE, false);
-        
+*/
+       
         //if ( (!ackOnly) && (packet.getSequenceNum() <= 0) ) {
         if (isFirst) {
             packet.setFlag(Packet.FLAG_SYNCHRONIZE);
             packet.setOptionalFrom();
             packet.setOptionalMaxSize(_connection.getOptions().getMaxMessageSize());
+            if (!_connection.isInbound()) {
+                byte[] h = _connection.getRemotePeer().calculateHash().getData();
+                long[] fakeNacks = new long[8];
+                for (int i = 0; i < 8; i++) {
+                    fakeNacks[i] = DataHelper.fromLong(h, i << 2, 4);
+                }
+                packet.setNacks(fakeNacks);
+            }
         }
         packet.setLocalPort(_connection.getLocalPort());
         packet.setRemotePort(_connection.getPort());
@@ -235,8 +245,8 @@ class ConnectionDataReceiver implements MessageOutputStream.DataReceiver {
      * Used if no new packet was sent.
      */
     private static final class DummyStatus implements MessageOutputStream.WriteStatus {
-        public final void waitForAccept(int maxWaitMs) { return; }
-        public final void waitForCompletion(int maxWaitMs) { return; }
+        public final void waitForAccept(int maxWaitMs) {}
+        public final void waitForCompletion(int maxWaitMs) {}
         public final boolean writeAccepted() { return true; }
         public final boolean writeFailed() { return false; }
         public final boolean writeSuccessful() { return true; }

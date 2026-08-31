@@ -2,6 +2,7 @@ package net.i2p.crypto;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -37,9 +38,13 @@ import java.util.Set;
 import javax.security.auth.x500.X500Principal;
 
 import net.i2p.I2PAppContext;
+import net.i2p.crypto.provider.I2PProvider;
 import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
+import net.i2p.data.SigningPrivateKey;
+import net.i2p.data.SigningPublicKey;
 import net.i2p.util.Log;
+import net.i2p.util.FileSuffixFilter;
 import net.i2p.util.SecureFileOutputStream;
 import net.i2p.util.SystemVersion;
 
@@ -54,6 +59,10 @@ public final class CertUtil {
     private static final String REVOCATION_DIR = "revocations";
     private static final int LINE_LENGTH = 64;
 
+    static {
+        I2PProvider.addProvider();
+    }
+
     /**
      *  Write a certificate to a file in base64 format.
      *
@@ -63,7 +72,9 @@ public final class CertUtil {
     public static boolean saveCert(Certificate cert, File file) {
         OutputStream os = null;
         try {
-           os = new SecureFileOutputStream(file);
+           // The point is probably to share this, so don't make it 600
+           //os = new SecureFileOutputStream(file);
+           os = new FileOutputStream(file);
            exportCert(cert, os);
            return true;
         } catch (CertificateEncodingException cee) {
@@ -153,6 +164,30 @@ public final class CertUtil {
         wr.flush();
         if (wr.checkError())
             throw new IOException("Failed write to " + out);
+    }
+
+    /**
+     *  Get the set of Subject Alternative Names, including
+     *  DNSNames, RFC822Names, IPv4 and v6 addresses as strings.
+     *
+     *  see X509Certificate.getSubjectAlternativeNames()
+     *
+     *  @return non-null, empty on error or none found
+     *  @since 0.9.34
+     */
+    public static Set<String> getSubjectAlternativeNames(X509Certificate cert) {
+        Set<String> rv = new HashSet<String>(8);
+        try {
+            Collection<List<?>> c = cert.getSubjectAlternativeNames();
+            if (c != null) {
+                for (List<?> list : c) {
+                    try {
+                        rv.add((String) list.get(1));
+                    } catch (ClassCastException cce) {}
+                }
+            }
+        } catch(GeneralSecurityException gse) {}
+        return rv;
     }
 
     /**
@@ -255,6 +290,10 @@ public final class CertUtil {
      *  Throws if the certificate is invalid (e.g. expired).
      *
      *  This does NOT check for revocation.
+     *  This verifies the signature, assuming it is self-signed,
+     *  but will not throw an exception,
+     *  will log a warning only, as of 0.9.54.
+     *  We do NOT fetch additional certs or attempt to validate a cert up the chain.
      *
      *  @return non-null, throws on all errors including certificate invalid
      *  @since 0.9.24 adapted from SU3File private method
@@ -266,6 +305,11 @@ public final class CertUtil {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
             X509Certificate cert = (X509Certificate)cf.generateCertificate(fis);
             cert.checkValidity();
+            try {
+                cert.verify(cert.getPublicKey());
+            } catch (Exception e) {
+                System.out.println("Warning: Cert is not self-signed or has a bad signature: " + kd + " - " + e);
+            }
             return cert;
         } catch (IllegalArgumentException iae) {
             // java 1.8.0_40-b10, openSUSE
@@ -306,9 +350,9 @@ public final class CertUtil {
                 throw new CertificateEncodingException("bad base64 cert");
             PrivateKey rv = null;
             // try all the types
+            KeySpec ks = new PKCS8EncodedKeySpec(data);
             for (SigAlgo algo : EnumSet.allOf(SigAlgo.class)) {
                 try {
-                    KeySpec ks = new PKCS8EncodedKeySpec(data);
                     String alg = algo.getName();
                     KeyFactory kf = KeyFactory.getInstance(alg);
                     rv = kf.generatePrivate(ks);
@@ -486,21 +530,17 @@ public final class CertUtil {
      */
     private static void loadCRLs(Set<X509CRL> crls, File dir) {
         if (dir.exists() && dir.isDirectory()) {
-            File[] files = dir.listFiles();
+            File[] files = dir.listFiles(new FileSuffixFilter(".crl"));
             if (files != null) {
                 for (int i = 0; i < files.length; i++) {
                     File f = files[i];
-                    if (!f.isFile())
-                        continue;
-                    if (f.getName().endsWith(".crl")) {
-                        try {
-                            X509CRL crl = loadCRL(f);
-                            crls.add(crl);
-                        } catch (IOException ioe) {
-                            error("Cannot load CRL from " + f, ioe);
-                        } catch (GeneralSecurityException crle) {
-                            error("Cannot load CRL from " + f, crle);
-                        }
+                    try {
+                        X509CRL crl = loadCRL(f);
+                        crls.add(crl);
+                    } catch (IOException ioe) {
+                        error("Cannot load CRL from " + f, ioe);
+                    } catch (GeneralSecurityException crle) {
+                        error("Cannot load CRL from " + f, crle);
                     }
                 }
             }
@@ -537,14 +577,16 @@ public final class CertUtil {
 
     public static final void main(String[] args) {
         if (args.length < 2) {
-            System.out.println("Usage: [loadcert | loadcrl | loadcrldir | loadcrldirs | isrevoked | loadprivatekey] file");
+            System.out.println("Usage: [loadcert | loadcrl | loadcrldir | loadcrldirs | isrevoked | loadprivatekey | checkall] file");
             System.exit(1);
         }
         try {
             File f = new File(args[1]);
             if (args[0].equals("loadcert")) {
                 X509Certificate cert = loadCert(f);
-                System.out.println(net.i2p.util.HexDump.dump(cert.getEncoded()));
+                PublicKey pub = cert.getPublicKey();
+                SigningPublicKey spk = SigUtil.fromJavaKey(pub);
+                System.out.println("Loaded " + spk + ' ' + spk.toBase64());
             } else if (args[0].equals("loadcrl")) {
                 loadCRL(f);
             } else if (args[0].equals("loadcrldir")) {
@@ -559,13 +601,91 @@ public final class CertUtil {
                 Certificate cert = loadCert(f);
                 boolean rv = isRevoked(I2PAppContext.getGlobalContext(), cert);
                 System.out.println("Revoked? " + rv);
+            } else if (args[0].equals("loadprivatekey")) {
+                PrivateKey priv = loadPrivateKey(new FileInputStream(f));
+                SigningPrivateKey spk = SigUtil.fromJavaKey(priv);
+                System.out.println("Found private key: " + spk);
+            } else if (args[0].equals("checkall")) {
+                int rv = checkAll(f);
+                //System.exit(rv);
             } else {
-                System.out.println("Usage: [loadcert | loadcrl | loadprivatekey] file");
+                System.out.println("Usage: [loadcert | loadcrl | loadcrldir | loadcrldirs | isrevoked | loadprivatekey | checkall] file");
             }
 
         } catch (Exception e) {
             e.printStackTrace();
             System.exit(1);
         }
+    }
+
+    // threshold for warning
+    private static final long CHECK = 180*24*60*60*1000L;
+
+    /**
+     *  For use in the build process.
+     *
+     *  @return 0 for success, nonzero for failure
+     *  @since 0.9.38
+     */
+    private static int checkAll(File dir) {
+        int good = 0;
+        int soon = 0;
+        int bad = 0;
+        Set<X509CRL> crls = new HashSet<X509CRL>(8);
+        File rdir = new File(dir, REVOCATION_DIR);
+        loadCRLs(crls, rdir);
+        //System.out.println("Loaded " + crls.size() + " CRLs");
+        CollectionCertStoreParameters ccsp = new CollectionCertStoreParameters(crls);
+        CertStore store;
+        try {
+            store = CertStore.getInstance("Collection", ccsp);
+        } catch (GeneralSecurityException gse) {
+            // shouldn't happen
+            error("CertStore", gse);
+            throw new UnsupportedOperationException(gse);
+        }
+        long now = System.currentTimeMillis();
+        File[] dirs = dir.listFiles();
+        if (dirs != null) {
+            for (int i = 0; i < dirs.length; i++) {
+                File d = dirs[i];
+                if (!d.isDirectory())
+                    continue;
+                if (d.getName().equals(REVOCATION_DIR))
+                    continue;
+                File[] files = d.listFiles(new FileSuffixFilter(".crt"));
+                if (files != null) {
+                    for (int j = 0; j < files.length; j++) {
+                        File f = files[j];
+                        try {
+                            X509Certificate cert = loadCert(f);
+                            if (isRevoked(store, cert)) {
+                                System.out.println("ERROR: Revoked cert " + f);
+                                bad++;
+                                continue;
+                            }
+                            long exp = cert.getNotAfter().getTime() - now;
+                            if (exp < CHECK) {                            
+                                System.out.println("**** WARNING: Cert " + f + " expires in " + DataHelper.formatDuration(exp));
+                                soon++;
+                            } else {
+                                good++;
+                            }
+                        } catch (IOException ioe) {
+                            System.out.println("**** ERROR: Cannot load cert from " + f + ": " + ioe);
+                            bad++;
+                        } catch (java.security.cert.CertificateExpiredException cee) {
+                            System.out.println("**** WARNING: Cert expired " + f + ": " + cee);
+                            bad++;
+                        } catch (GeneralSecurityException gse) {
+                            System.out.println("**** ERROR: Cannot load cert from " + f + ": " + gse);
+                            bad++;
+                        }
+                    }
+                }
+            }
+        }
+        System.out.println("Found " + good + " valid certs, " + bad + " bad certs, " + soon + " about to expire certs");
+        return (bad > 0) ? 1 : 0;
     }
 }

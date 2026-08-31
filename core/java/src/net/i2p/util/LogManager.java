@@ -38,6 +38,8 @@ import net.i2p.data.DataHelper;
  * This also fires off a LogWriter thread that pulls pending records off and 
  * writes them where appropriate.
  * 
+ * As of 0.9.41, this class may be overridden via I2PAppContext.setLogManager()
+ * 
  */
 public class LogManager implements Flushable {
     public final static String CONFIG_LOCATION_PROP = "loggerConfigLocation";
@@ -65,6 +67,10 @@ public class LogManager implements Flushable {
     private static final String PROP_DUP = "logger.dropDuplicates";
     /** @since 0.9.18 */
     private static final String PROP_FLUSH = "logger.flushInterval";
+    /** @since 0.9.56 */
+    private static final String PROP_GZIP = "logger.gzip";
+    /** @since 0.9.56 */
+    private static final String PROP_MIN_GZIP_SIZE = "logger.minGzipSize";
     public final static String PROP_RECORD_PREFIX = "logger.record.";
 
     public final static String DEFAULT_FORMAT = DATE + " " + PRIORITY + " [" + THREAD + "] " + CLASS + ": " + MESSAGE;
@@ -78,6 +84,10 @@ public class LogManager implements Flushable {
     public final static String DEFAULT_ROTATIONLIMIT = "2";
     public final static String DEFAULT_DEFAULTLEVEL = Log.STR_ERROR;
     public final static String DEFAULT_ONSCREENLEVEL = Log.STR_CRIT;
+    private static final int MIN_FILESIZE_LIMIT = 16*1024;
+    private final static boolean DEFAULT_GZIP = false;
+    private static final int DEFAULT_MIN_GZIP_SIZE = 64*1024;
+
 
     private final I2PAppContext _context;
     private final Log _log;
@@ -98,6 +108,7 @@ public class LogManager implements Flushable {
     private final ConcurrentHashMap<Object, Log> _logs;
     /** who clears and writes our records */
     private LogWriter _writer;
+    private volatile boolean _shutdown;
 
     /** 
      * default log level for logs that aren't explicitly controlled 
@@ -131,6 +142,8 @@ public class LogManager implements Flushable {
     private final AtomicLong _droppedRecords = new AtomicLong();
     // in seconds
     private int _flushInterval = (int) (LogWriter.FLUSH_INTERVAL / 1000);
+    private boolean _gzip;
+    private long _minGzipSize;
     
     private boolean _alreadyNoticedMissingConfig;
 
@@ -150,14 +163,22 @@ public class LogManager implements Flushable {
         // so it doesn't create a log directory and log files unless there is output.
         // In the router context, we have to rotate to a new log file at startup or the logs.jsp
         // page will display the old log.
-        if (context.isRouterContext())
+        if (context.isRouterContext()) {
+            // FIXME don't start thread in constructor
             startLogWriter();
-        try {
-            Runtime.getRuntime().addShutdownHook(new ShutdownHook());
-        } catch (IllegalStateException ise) {
-            // shutdown in progress, fsck it
+            // for bubbles, host/port may be wrong
+            PortMapper pm = context.portMapper();
+            pm.register(PortMapper.SVC_LOGS, "127.0.0.1", 7657);
+        } else {
+            // Only in App Context.
+            // In Router Context, the router has its own shutdown hook,
+            // and will call our shutdown() from Router.finalShutdown()
+            try {
+                Runtime.getRuntime().addShutdownHook(new ShutdownHook());
+            } catch (IllegalStateException ise) {
+                // shutdown in progress
+            }
         }
-        //System.out.println("Created logManager " + this + " with context: " + context);
     }
 
     /** @since 0.8.2 */
@@ -280,6 +301,18 @@ public class LogManager implements Flushable {
      * massive logging load as a way of throttling logging threads.
      */
     void addRecord(LogRecord record) {
+        if (_shutdown && !SystemVersion.isAndroid()) {
+            // Log to wrapper log, for those very-hard-to-debug problems
+            // that happen after LogManager shutdown
+            if (_context.isRouterContext() ||
+                (_displayOnScreen && _onScreenLimit <= record.getPriority())) {
+                // wrapper logs already do time stamps
+                boolean showDate = !SystemVersion.hasWrapper();
+                System.out.print("(shutdown) " + LogRecordFormatter.formatRecord(this, record, showDate));
+            }
+            return;
+        }
+
         if ((!_context.isRouterContext()) && _writer == null)
             startLogWriter();
 
@@ -327,7 +360,7 @@ public class LogManager implements Flushable {
     /**
      * Do not log here, deadlock of LogWriter via rereadConfig().
      */
-    private void loadConfig() {
+    private synchronized void loadConfig() {
         File cfgFile = _locationFile;
         if (!cfgFile.exists()) {
             if (!_alreadyNoticedMissingConfig) {
@@ -392,7 +425,7 @@ public class LogManager implements Flushable {
         else
             setBaseLogfilename(filename);
 
-        _fileSize = getFileSize(config.getProperty(PROP_FILESIZE, DEFAULT_FILESIZE));
+        _fileSize = Math.max(MIN_FILESIZE_LIMIT, getFileSize(config.getProperty(PROP_FILESIZE, DEFAULT_FILESIZE)));
 
         _rotationLimit = -1;
         try {
@@ -432,6 +465,17 @@ public class LogManager implements Flushable {
         _dropOnOverflow = Boolean.parseBoolean(config.getProperty(PROP_DROP));
         String str = config.getProperty(PROP_DUP);
         _dropDuplicates = str == null || Boolean.parseBoolean(str);
+
+        str = config.getProperty(PROP_GZIP);
+        _gzip = str != null ? Boolean.parseBoolean(str) : DEFAULT_GZIP;
+        if (_gzip) {
+            _minGzipSize = DEFAULT_MIN_GZIP_SIZE;
+            try {
+                str = config.getProperty(PROP_MIN_GZIP_SIZE);
+                if (str != null)
+                    _minGzipSize = Long.parseLong(str);
+            } catch (NumberFormatException nfe) {}
+        }
 
         //if (_log.shouldLog(Log.DEBUG))
         //    _log.debug("Log set to use the base log file as " + _baseLogfilename);
@@ -499,7 +543,7 @@ public class LogManager implements Flushable {
             return true;
         
         try {
-            SimpleDateFormat fmt = (SimpleDateFormat) DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM);
+            SimpleDateFormat fmt = (SimpleDateFormat) DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM);
             if (!format.equals(""))
                 fmt.applyPattern(format);
             // the router sets the JVM time zone to UTC but saves the original here so we can get it
@@ -518,7 +562,7 @@ public class LogManager implements Flushable {
      */
     public void setFileSize(int numBytes) {
         if (numBytes > 0)
-            _fileSize = numBytes;
+            _fileSize = Math.max(MIN_FILESIZE_LIMIT, numBytes);
     }
     
     public String getDefaultLimit() { return Log.toLevelString(_defaultLimit); }
@@ -545,14 +589,16 @@ public class LogManager implements Flushable {
      * Size may be k, m, or g; a trailing b is ignored. Upper-case is allowed.
      * Spaces between the number and letter is are allowed.
      * The number may be in floating point.
-     * 4096 min, 2 GB max (returns int)
+     * 16K min, 2 GB max (returns int)
      */
     public static int getFileSize(String size) {
         try {
             String v = size.trim().toUpperCase(Locale.US);
             if (v.length() < 2)
                 return -1;
-            if (v.endsWith("B"))
+            if (v.endsWith("IB"))
+                v = v.substring(0, v.length() - 2);
+            else if (v.endsWith("B"))
                 v = v.substring(0, v.length() - 1);
             char mod = v.charAt(v.length() - 1);
             if (!Character.isDigit(mod)) v = v.substring(0, v.length() - 1);
@@ -572,7 +618,7 @@ public class LogManager implements Flushable {
                     // blah, noop
                     break;
             }
-            if (val < 4096 || val > Integer.MAX_VALUE)
+            if (val < MIN_FILESIZE_LIMIT || val > Integer.MAX_VALUE)
                 return -1;
             return (int) val;
         } catch (Throwable t) {
@@ -652,8 +698,29 @@ public class LogManager implements Flushable {
         return _rotationLimit;
     }
 
+    /**
+     *  @since 0.9.56, public since 0.9.57, was pkg private
+     */
+    public boolean shouldGzip() {
+        return _gzip;
+    }
+
+    /**
+     *  @since 0.9.57
+     */
+    public void setGzip(boolean yes) {
+        _gzip = yes;
+    }
+
+    /**
+     *  @since 0.9.56
+     */
+    long getMinGzipSize() {
+        return _gzip ? _minGzipSize : Long.MAX_VALUE;
+    }
+
     /** @return success */
-    public boolean saveConfig() {
+    public synchronized boolean saveConfig() {
         Properties props = createConfig();
         try {
             DataHelper.storeProps(props, _locationFile);
@@ -691,6 +758,8 @@ public class LogManager implements Flushable {
         rv.setProperty(PROP_DISPLAYONSCREENLEVEL, Log.toLevelString(_onScreenLimit));
         rv.setProperty(PROP_CONSOLEBUFFERSIZE, Integer.toString(_consoleBufferSize));
         rv.setProperty(PROP_FLUSH, Integer.toString(_flushInterval));
+        rv.setProperty(PROP_GZIP, Boolean.toString(_gzip));
+        rv.setProperty(PROP_MIN_GZIP_SIZE, Long.toString(_minGzipSize));
 
         for (LogLimit lim : _limits) {
             rv.setProperty(PROP_RECORD_PREFIX + lim.getRootName(), Log.toLevelString(lim.getLimit()));
@@ -716,9 +785,13 @@ public class LogManager implements Flushable {
         _format = fmt;
     }
 
+    /**
+     *  Any usage of returned formatter must be synchronized!
+     */
     public SimpleDateFormat getDateFormat() {
         return _dateFormat;
     }
+
     public String getDateFormatPattern() {
         return _dateFormatPattern;
     }
@@ -765,13 +838,17 @@ public class LogManager implements Flushable {
         }
     }
 
-    public void shutdown() {
+    public synchronized void shutdown() {
+        _shutdown = true;
         if (_writer != null) {
             //_log.log(Log.WARN, "Shutting down logger");
             // try to prevent out-of-order logging at shutdown
             flush();
             // this could generate out-of-order messages
-            _writer.flushRecords(false);
+            // Gitlab #363 Mac hangs in DTG displaying the popup
+            // after right-clicking the dock icon and selecting Quit
+            if (!SystemVersion.isMac())
+                _writer.flushRecords(false);
             _writer.stopWriting();
             synchronized (_writer) {
                 _writer.notifyAll();
@@ -783,16 +860,10 @@ public class LogManager implements Flushable {
         _consoleBuffer.clear();
     }
 
-    private static final AtomicInteger __id = new AtomicInteger();
-
     private class ShutdownHook extends I2PAppThread {
-        private final int _id;
-        public ShutdownHook() {
-            _id = __id.incrementAndGet();
-        }
         @Override
         public void run() {
-            setName("Log " + _id + " shutdown ");
+            setName("Log shutdown");
             shutdown();
         }
     }

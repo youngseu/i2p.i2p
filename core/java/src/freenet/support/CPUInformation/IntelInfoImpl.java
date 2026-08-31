@@ -4,7 +4,8 @@ package freenet.support.CPUInformation;
  *  Moved out of CPUID.java
  *
  *  Ref: https://software.intel.com/en-us/articles/intel-architecture-and-processor-identification-with-cpuid-model-and-family-numbers
- *  Ref: http://en.wikipedia.org/wiki/List_of_Intel_CPU_microarchitectures
+ *  Ref: https://en.wikipedia.org/wiki/List_of_Intel_CPU_microarchitectures
+ *  Ref: https://gmplib.org/repo/gmp/file/tip/config.guess
  *
  *  @since 0.8.7
  */
@@ -23,6 +24,7 @@ class IntelInfoImpl extends CPUIDCPUInfo implements IntelCPUInfo
     private static boolean isIvyCompatible;
     private static boolean isHaswellCompatible;
     private static boolean isBroadwellCompatible;
+    private static boolean isSkylakeCompatible;
     
     // If modelString != null, the cpu is considered correctly identified.
     private static final String smodel = identifyCPU();
@@ -39,6 +41,11 @@ class IntelInfoImpl extends CPUIDCPUInfo implements IntelCPUInfo
     public boolean IsIvyCompatible(){ return isIvyCompatible; }
     public boolean IsHaswellCompatible(){ return isHaswellCompatible; }
     public boolean IsBroadwellCompatible(){ return isBroadwellCompatible; }
+    /**
+     * Supports the AVX-512 instrutions.
+     * @since 0.9.41
+     */
+    public boolean IsSkylakeCompatible() { return isSkylakeCompatible; }
 
     public String getCPUModelString() throws UnknownCPUException
     {
@@ -61,6 +68,10 @@ class IntelInfoImpl extends CPUIDCPUInfo implements IntelCPUInfo
         if (family == 15 || family == 6) {
             // Intel uses extended model for family = 15 or family = 6,
             // which is not what wikipedia says
+            // we construct the model from EAX as follows:
+            // ext. model is 5th byte, base model is 2nd byte
+            // So e.g. for a published CPUID value of "306C1"
+            // the model here would be 0x3c, it's a Haswell.
             model += CPUID.getCPUExtendedModel() << 4;
         }
         if (family == 15) {
@@ -343,6 +354,7 @@ class IntelInfoImpl extends CPUIDCPUInfo implements IntelCPUInfo
 
                     // Broadwell 14 nm
                     // See Haswell notes below
+                    case 0x47:
                     case 0x3d: {
                         CPUIDCPUInfo c = new CPUIDCPUInfo();
                         if (c.hasAVX2() && c.hasBMI1()  && c.hasBMI2() &&
@@ -439,15 +451,23 @@ class IntelInfoImpl extends CPUIDCPUInfo implements IntelCPUInfo
                     // See Haswell notes above
                     case 0x4e:
                     case 0x55:
-                    case 0x5e: {
+                    case 0x5c: // Apollo Lake
+                    case 0x5e:
+                    case 0x66: // Cannon Lake
+                    case 0x67: // Cannon Lake
+                    case 0x6c: // Apollo Lake
+                               {
                         CPUIDCPUInfo c = new CPUIDCPUInfo();
                         if (c.hasAVX2() && c.hasBMI1()  && c.hasBMI2() &&
                             c.hasFMA3() && c.hasMOVBE() && c.hasABM()) {
                             isSandyCompatible = true;
                             isIvyCompatible = true;
                             isHaswellCompatible = true;
-                            if (c.hasADX())
+                            if (c.hasADX()) {
                                 isBroadwellCompatible = true;
+                                if (c.hasAVX512())
+                                    isSkylakeCompatible = true;
+                            }
                             modelString = "Skylake Core i3/i5/i7";
                         } else {
                             // This processor is "corei" compatible, as we define it,
@@ -463,23 +483,59 @@ class IntelInfoImpl extends CPUIDCPUInfo implements IntelCPUInfo
                         break;
                     }
 
-                // following are for extended model == 8 or 9
+
+                    case 0x5f: // Goldmont / Atom
+                    case 0x7a: // Gemini Lake (Goldmont Plus)
+                    case 0x9c: // Jasper Lake (Tremont)
+                               {
+                        // This processor is "corei" compatible, as we define it,
+                        // i.e. SSE4.2 but not necessarily AVX.
+                        CPUIDCPUInfo c = new CPUIDCPUInfo();
+                        if (c.hasAVX()) {
+                            isSandyCompatible = true;
+                            isIvyCompatible = true;
+                            modelString = "Goldmont w/ AVX";
+                        } else {
+                            modelString = "Goldmont";
+                        }
+                        break;
+                    }
+
+
+                // following are for extended model == 8 or higher
                 // most flags are set above
                 // isCoreiCompatible = true is the default
 
                     // Kaby Lake
                     // ref: https://github.com/InstLatx64/InstLatx64/commit/9d2ea1a9eb727868dc514900da9e2f175710f9bf
+                    // ref: https://github.com/InstLatx64/InstLatx64/blob/master/ChangeLog.htm
+                    // ref: https://github.com/coreboot/coreboot/blob/master/src/soc/intel/common/block/include/intelblocks/mp_init.h
+                    // ref: https://github.com/intel/thermal_daemon/blob/master/src/thd_engine.cpp
                     // See Haswell notes above
-                    case 0x8e:
-                    case 0x9e: {
+                    case 0x8e: // also Whiskey Lake, Coffee Lake
+                    case 0x9e: // also Whiskey Lake, Coffee Lake
+                    case 0xa5: // Comet Lake
+                    case 0xa6: // Comet Lake
+                    case 0x7e: // Ice Lake
+                    case 0x8c: // Tiger Lake
+                    case 0x8d: // Tiger Lake
+                    case 0xa7: // Rocket Lake
+                    case 0x97: // Alder Lake
+                    case 0x9a: // Alder Lake
+                    case 0xba: // Raptor Lake
+                    case 0xb7: // Raptor Lake
+                               {
                         CPUIDCPUInfo c = new CPUIDCPUInfo();
                         if (c.hasAVX2() && c.hasBMI1()  && c.hasBMI2() &&
                             c.hasFMA3() && c.hasMOVBE() && c.hasABM()) {
                             isSandyCompatible = true;
                             isIvyCompatible = true;
                             isHaswellCompatible = true;
-                            if (c.hasADX())
+                            if (c.hasADX()) {
                                 isBroadwellCompatible = true;
+                                if (c.hasAVX512())
+                                    isSkylakeCompatible = true;
+                            }
                             modelString = "Kaby Lake Core i3/i5/i7";
                         } else {
                             // This processor is "corei" compatible, as we define it,

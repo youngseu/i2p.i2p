@@ -1,9 +1,9 @@
 <%
 /*
  * Created on Sep 02, 2005
- * 
+ *
  *  This file is part of susidns project, see http://susi.i2p/
- *  
+ *
  *  Copyright (C) 2005 <susi23@mail.i2p>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -19,47 +19,38 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *  
+ *
  * $Revision: 1.2 $
  */
-
-    // http://www.crazysquirrel.com/computing/general/form-encoding.jspx
-    if (request.getCharacterEncoding() == null)
-        request.setCharacterEncoding("UTF-8");
-
-    response.setHeader("X-Frame-Options", "SAMEORIGIN");
-    response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'");
-    response.setHeader("X-XSS-Protection", "1; mode=block");
-    response.setHeader("X-Content-Type-Options", "nosniff");
-    response.setHeader("Referrer-Policy", "no-referrer");
-
 %>
+<%@include file="headers.jsi" %>
 <%@page pageEncoding="UTF-8"%>
 <%@ page contentType="text/html"%>
-<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core"%>
 <jsp:useBean id="version" class="i2p.susi.dns.VersionBean" scope="application" />
 <jsp:useBean id="subs" class="i2p.susi.dns.SubscriptionsBean" scope="session" />
 <jsp:useBean id="intl" class="i2p.susi.dns.Messages" scope="application" />
 <jsp:setProperty name="subs" property="*" />
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<% subs.storeMethod(request.getMethod()); %>
+<!DOCTYPE html>
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <title><%=intl._t("subscriptions")%> - susidns</title>
 <link rel="stylesheet" type="text/css" href="<%=subs.getTheme()%>susidns.css?<%=net.i2p.CoreVersion.VERSION%>">
+<script src="/js/iframeResizer.contentWindow.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<script src="js/messages.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
 </head>
 <body>
 <div class="page">
-<div id="logo">
-<a href="index"><img src="<%=subs.getTheme()%>images/logo.png" alt="" title="<%=intl._t("Overview")%>" border="0"/></a>
-</div><hr>
+<hr>
 <div id="navi">
 <a id="overview" href="index"><%=intl._t("Overview")%></a>&nbsp;
-<a class="abook" href="addressbook?book=private"><%=intl._t("Private")%></a>&nbsp;
-<a class="abook" href="addressbook?book=master"><%=intl._t("Master")%></a>&nbsp;
-<a class="abook" href="addressbook?book=router"><%=intl._t("Router")%></a>&nbsp;
-<a class="abook" href="addressbook?book=published"><%=intl._t("Published")%></a>&nbsp;
-<a id="subs" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
+<a class="abook" href="addressbook?book=private&amp;filter=none"><%=intl._t("Private")%></a>&nbsp;
+<a class="abook" href="addressbook?book=local&amp;filter=none"><%=intl._t("Local")%></a>&nbsp;
+<a class="abook" href="addressbook?book=router&amp;filter=none"><%=intl._t("Router")%></a>&nbsp;
+<a class="abook" href="addressbook?book=conflicts&amp;filter=none"><%=intl._t("Conflicts")%></a>&nbsp;
+<a class="abook" href="addressbook?book=published&amp;filter=none"><%=intl._t("Published")%></a>&nbsp;
+<a id="subs" class="active" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
 <a id="config" href="config"><%=intl._t("Configuration")%></a>
 </div>
 <hr>
@@ -81,7 +72,7 @@
 <div class="help" id="helpsubs">
 <p class="help">
 <%=intl._t("The subscription file contains a list of i2p URLs.")%>
-<%=intl._t("The addressbook application regularly checks this list for new eepsites.")%>
+<%=intl._t("The address book application regularly checks this list for new I2P Sites.")%>
 <%=intl._t("Those URLs refer to published hosts.txt files.")%>
 <%=intl._t("The default subscription is the hosts.txt from {0}, which is updated infrequently.", "i2p-projekt.i2p")%>
 <%=intl._t("So it is a good idea to add additional subscriptions to sites that have the latest addresses.")%>

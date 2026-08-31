@@ -8,6 +8,7 @@ package net.i2p.router.message;
  *
  */
 
+import net.i2p.crypto.EncType;
 import net.i2p.crypto.SessionKeyManager;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Hash;
@@ -21,7 +22,7 @@ import net.i2p.router.RouterContext;
 import net.i2p.util.Log;
 
 /**
- * Unencrypt a garlic message and pass off any valid cloves to the configured
+ * Decrypt a garlic message and pass off any valid cloves to the configured
  * receiver to dispatch as they choose.
  *
  */
@@ -56,15 +57,36 @@ public class GarlicMessageReceiver {
     
     public void receive(GarlicMessage message) {
         PrivateKey decryptionKey;
+        PrivateKey decryptionKey2 = null;
         SessionKeyManager skm;
         if (_clientDestination != null) {
             LeaseSetKeys keys = _context.keyManager().getKeys(_clientDestination);
             skm = _context.clientManager().getClientSessionKeyManager(_clientDestination);
             if (keys != null && skm != null) {
                 decryptionKey = keys.getDecryptionKey();
+                decryptionKey2 = keys.getDecryptionKey(EncType.ECIES_X25519);
+                // this will return any of the PQ types
+                PrivateKey decryptionKey3 = keys.getPQDecryptionKey();
+                if (decryptionKey == null && decryptionKey2 == null && decryptionKey3 == null) {
+                    if (_log.shouldWarn())
+                        _log.warn("No key to decrypt for " + _clientDestination.toBase32());
+                    return;
+                }
+                // ElG + PQ disallowed
+                if (decryptionKey == null) {
+                    // swap
+                    if (decryptionKey3 != null) {
+                        // PQ first if present
+                        decryptionKey = decryptionKey3;
+                    } else {
+                        // EC only
+                        decryptionKey = decryptionKey2;
+                        decryptionKey2 = null;
+                    }
+                }
             } else {
                 if (_log.shouldLog(Log.WARN))
-                    _log.warn("Not trying to decrypt a garlic routed message to a disconnected client");
+                    _log.warn("Not decrypting " + message + " for disconnected " + _clientDestination.toBase32());
                 return;
             }
         } else {
@@ -72,16 +94,23 @@ public class GarlicMessageReceiver {
             skm = _context.sessionKeyManager();
         }
         
-        CloveSet set = _context.garlicMessageParser().getGarlicCloves(message, decryptionKey, skm);
+        // Pass both keys if available for muxed decrypt
+        CloveSet set;
+        if (decryptionKey2 != null)
+            set = _context.garlicMessageParser().getGarlicCloves(message, decryptionKey, decryptionKey2, skm);
+        else
+            set = _context.garlicMessageParser().getGarlicCloves(message, decryptionKey, skm);
         if (set != null) {
             for (int i = 0; i < set.getCloveCount(); i++) {
                 GarlicClove clove = set.getClove(i);
                 handleClove(clove);
             }
         } else {
-            if (_log.shouldLog(Log.WARN))
-                _log.warn("CloveMessageParser failed to decrypt the message [" + message.getUniqueId() 
-                           + "]", new Exception("Decrypt garlic failed"));
+            if (_log.shouldLog(Log.WARN)) {
+                String d = (_clientDestination != null) ? _clientDestination.toBase32() : "the router";
+                String keys = (decryptionKey2 != null) ? "both ElGamal and ECIES keys" : decryptionKey.getType().toString();
+                _log.warn("Failed to decrypt " + message + " for " + d + " with " + keys);
+            }
             _context.statManager().addRateData("crypto.garlic.decryptFail", 1);
             _context.messageHistory().messageProcessingError(message.getUniqueId(), 
                                                              message.getClass().getName(), 
@@ -105,15 +134,24 @@ public class GarlicMessageReceiver {
     }
     
     private boolean isValid(GarlicClove clove) {
-        String invalidReason = _context.messageValidator().validateMessage(clove.getCloveId(), 
-                                                                          clove.getExpiration().getTime());
+        // As of 0.9.44, no longer check the clove ID in the Bloom filter, just check the expiration.
+        // The Clove ID is just another random number, and the message ID in the clove
+        // will be checked in the Bloom filter; that is sufficient.
+        // Checking the clove ID as well just doubles the number of entries in the Bloom filter,
+        // doubling the number of false positives over what is expected.
+        // For ECIES-Ratchet, the clove ID is set to the message ID after decryption, as there
+        // is no longer a separate field for the clove ID in the transmission format.
+        //String invalidReason = _context.messageValidator().validateMessage(clove.getCloveId(), 
+        //                                                                   clove.getExpiration().getTime());
+        String invalidReason = _context.messageValidator().validateMessage(clove.getExpiration());
+
         boolean rv = invalidReason == null;
         if (!rv) {
-            String howLongAgo = DataHelper.formatDuration(_context.clock().now()-clove.getExpiration().getTime());
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Clove is NOT valid: id=" + clove.getCloveId() 
+            String howLongAgo = DataHelper.formatDuration(_context.clock().now()-clove.getExpiration());
+            if (_log.shouldInfo())
+                _log.info("Clove is NOT valid: id=" + clove.getCloveId() 
                            + " expiration " + howLongAgo + " ago", new Exception("Invalid within..."));
-            else if (_log.shouldLog(Log.WARN))
+            else if (_log.shouldWarn())
                 _log.warn("Clove is NOT valid: id=" + clove.getCloveId() 
                            + " expiration " + howLongAgo + " ago: " + invalidReason + ": " + clove);
             _context.messageHistory().messageProcessingError(clove.getCloveId(), 

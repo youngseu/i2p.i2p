@@ -1,7 +1,7 @@
-<?xml version="1.0" encoding="UTF-8" ?> 
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure.dtd">
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure_10_0.dtd">
 
-<!-- This configuration supports Jetty 9. Do not remove this line. -->
+<!-- This configuration supports Jetty 12. Do not remove this line. -->
 
 <!-- ========================================================================= -->
 <!-- This file configures the Jetty server.                                    -->
@@ -32,7 +32,7 @@
 <!-- Note that the XML encoding for this file is UTF-8.                        -->
 <!--                                                                           -->
 <!-- If you have a 'split' directory installation, with configuration          -->
-<!-- files in ~/.i2p (Linux), %APPDATA%\I2P (Windows),                         -->
+<!-- files in ~/.i2p (Linux), %LOCALAPPDATA%\I2P (Windows),                         -->
 <!-- or /Users/(user)/Library/Application Support/i2p (Mac), be sure to        -->
 <!-- edit the file in the configuration directory, NOT the install directory.  -->
 <!-- When running as a Linux daemon, the configuration directory is            -->
@@ -103,11 +103,11 @@
          SocketConnector below.
          Do not use for gij or JamVM - comment this out, and uncomment the
          SocketConnector below.
-    -->    
+    -->
     <Call name="addConnector">
       <Arg>
           <New class="org.eclipse.jetty.server.ServerConnector">
-            <Arg><Ref id="Server" /></Arg>
+            <Arg><Ref refid="Server" /></Arg>
             <Arg type="int">1</Arg>     <!-- number of acceptors -->
             <Arg type="int">0</Arg>     <!-- default number of selectors -->
             <Arg>
@@ -117,7 +117,8 @@
                     <Arg>
                       <New class="org.eclipse.jetty.server.HttpConfiguration">
                         <Set name="sendServerVersion">false</Set>
-                        <Set name="sendDateHeader">true</Set>
+                        <Set name="sendDateHeader">false</Set>
+                        <Set name="sendXPoweredBy">false</Set>
                       </New>
                     </Arg>
                   </New>
@@ -151,24 +152,15 @@
     -->
 
     <!-- =========================================================== -->
-    <!-- Set handler Collection Structure                            --> 
+    <!-- Set handler Collection Structure                            -->
     <!-- =========================================================== -->
-    <Set name="handler">
-      <New id="Handlers" class="org.eclipse.jetty.server.handler.HandlerCollection">
-        <Set name="handlers">
-         <Array type="org.eclipse.jetty.server.Handler">
-           <Item>
-             <New id="Contexts" class="org.eclipse.jetty.server.handler.ContextHandlerCollection"/>
-           </Item>
-           <Item>
-             <New id="DefaultHandler" class="org.eclipse.jetty.server.handler.DefaultHandler"/>
-           </Item>
-           <Item>
-             <New id="RequestLog" class="org.eclipse.jetty.server.handler.RequestLogHandler"/>
-           </Item>
-         </Array>
-        </Set>
+    <Set name="defaultHandler">
+      <New id="DefaultHandler" class="org.eclipse.jetty.server.handler.DefaultHandler">
+        <Set name="showContexts">false</Set>
       </New>
+    </Set>
+    <Set name="handler">
+      <New id="Contexts" class="org.eclipse.jetty.server.handler.ContextHandlerCollection"/>
     </Set>
 
     <!-- =============================================================== -->
@@ -186,13 +178,32 @@
       <Arg>
         <New id="DeploymentManager" class="org.eclipse.jetty.deploy.DeploymentManager">
           <Set name="contexts">
-            <Ref id="Contexts" />
+            <Ref refid="Contexts" />
           </Set>
-          <Call name="setContextAttribute">
-            <Arg>org.eclipse.jetty.server.webapp.ContainerIncludeJarPattern</Arg>
-            <Arg>.*/.*jsp-api-[^/]*\.jar$|.*/.*jsp-[^/]*\.jar$|.*/.*taglibs[^/]*\.jar$</Arg>
-          </Call>
         </New>
+      </Arg>
+    </Call>
+
+    <!-- Setup ee8 environment -->
+    <!-- First call needed to initialize the class and prevent NPE -->
+    <Call class="org.eclipse.jetty.util.component.Environment" name="get" >
+        <Arg>foo</Arg>
+    </Call>
+    <New id="EBuilder" class="org.eclipse.jetty.xml.EnvironmentBuilder" >
+      <Arg>ee8</Arg>
+    </New>
+    <Ref refid="EBuilder">
+      <Call id="Environment" name="build" />
+    </Ref>
+    <Ref refid="Environment">
+      <Call class="org.eclipse.jetty.util.Attributes" name="setAttribute">
+        <Arg>contextHandlerClass</Arg>
+        <Arg>org.eclipse.jetty.ee8.webapp.WebAppContext</Arg>
+      </Call>
+    </Ref>
+    <Call class="org.eclipse.jetty.util.component.Environment" name="set" >
+      <Arg>
+        <Ref refid="Environment"/>
       </Arg>
     </Call>
 
@@ -207,10 +218,13 @@
     <!-- in the $JETTY_HOME/contexts directory                       -->
     <!--                                                             -->
     <!-- =========================================================== -->
-    <Ref id="DeploymentManager">
+    <Ref refid="DeploymentManager">
       <Call name="addAppProvider">
         <Arg>
-          <New class="org.eclipse.jetty.deploy.providers.WebAppProvider">
+          <New class="org.eclipse.jetty.deploy.providers.ContextProvider">
+            <Set name="EnvironmentName">ee8</Set>
+            <Set name="parentLoaderPriority">true</Set>
+            <Set name="configurationClasses" property="jetty.deploy.configurationClasses" />
             <Set name="monitoredDirName">./eepsite/contexts</Set>
             <Set name="scanInterval">120</Set>
           </New>
@@ -231,24 +245,44 @@
     <!-- Normally only one type of deployer need be used.            -->
     <!--                                                             -->
     <!-- =========================================================== -->
-    <Ref id="DeploymentManager">
+    <Ref refid="DeploymentManager">
       <Call id="webappprovider" name="addAppProvider">
         <Arg>
-          <New class="org.eclipse.jetty.deploy.providers.WebAppProvider">
+          <New id="WebAppProvider" class="org.eclipse.jetty.deploy.providers.ContextProvider">
+            <Set name="EnvironmentName">ee8</Set>
+            <Set name="parentLoaderPriority">true</Set>
+            <Set name="configurationClasses" property="jetty.deploy.configurationClasses" />
             <Set name="monitoredDirName">./eepsite/webapps</Set>
-	    <Set name="parentLoaderPriority">false</Set>
-	    <Set name="extractWars">false</Set>
+            <!-- this is required because Jetty can't handle jars inside wars,
+                 for example in php-java-bridge's JavaBridgeTemplate.war
+                 See https://bugs.eclipse.org/bugs/show_bug.cgi?id=433708
+                 See our ticket 2477
+              -->
+            <Set name="extractWars">true</Set>
             <Set name="defaultsDescriptor">./eepsite/etc/webdefault.xml</Set>
           </New>
         </Arg>
       </Call>
     </Ref>
 
+    <!-- Fixup for webapps to work, see our ticket 2477
+         Note that for webapps with uncompiled jsps, you will also
+         need a java compiler in the classpath;
+         The easiest way (Debian/Ubuntu) is to put a symlink in $I2P/lib:
+         sudo apt install libecj-java
+         cd $I2P/lib
+         ln -s /usr/share/java/ecj.jar
+         stop and then start i2p (restart alone will not pick up the new jar in the classpath)
+      -->
+    <Call class="net.i2p.servlet.WebAppProviderConfiguration" name="configure">
+      <Arg><Ref refid="WebAppProvider"/></Arg>
+    </Call>
+
     <!-- ===================== -->
     <!-- DefaultHandler config -->
     <!-- http://stackoverflow.com/questions/4202275/how-to-prevent-jetty-from-showing-context-related-information -->
     <!-- ===================== -->
-    <Ref id="DefaultHandler">
+    <Ref refid="DefaultHandler">
       <Set name="showContexts">false</Set>
     </Ref>
 
@@ -280,7 +314,6 @@
     <!-- contexts configuration (see $(jetty.home)/contexts/test.xml -->
     <!-- for an example).                                            -->
     <!-- =========================================================== -->
-    <Ref id="RequestLog">
       <Set name="requestLog">
         <New id="RequestLogImpl" class="net.i2p.jetty.I2PRequestLog">
           <Set name="filename">./eepsite/logs/yyyy_mm_dd.request.log</Set>
@@ -292,9 +325,13 @@
           <Set name="LogTimeZone">GMT</Set>
           <!-- False for b32 logging. True for b64 logging. Default false -->
           <Set name="b64">false</Set>
+          <!-- Uncomment to gzip files when rolled over -->
+        <!--
+          <Set name="gzip">true</Set>
+          <Set name="minGzipSize">65536</Set>
+         -->
         </New>
       </Set>
-    </Ref>
 
     <!-- =========================================================== -->
     <!-- extra options                                               -->

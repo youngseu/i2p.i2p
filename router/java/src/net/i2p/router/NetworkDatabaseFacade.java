@@ -11,12 +11,15 @@ package net.i2p.router;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
+import net.i2p.data.BlindData;
 import net.i2p.data.DatabaseEntry;
 import net.i2p.data.Destination;
 import net.i2p.data.Hash;
 import net.i2p.data.LeaseSet;
+import net.i2p.data.SigningPublicKey;
 import net.i2p.data.router.RouterInfo;
 import net.i2p.router.networkdb.reseed.ReseedChecker;
 
@@ -40,6 +43,14 @@ public abstract class NetworkDatabaseFacade implements Service {
      *  @since 0.8.3
      */
     public abstract DatabaseEntry lookupLocally(Hash key);
+    
+    /**
+     *  Not for use without validation
+     *  @return RouterInfo, LeaseSet, or null, NOT validated
+     *  @since 0.9.38
+     */
+    public abstract DatabaseEntry lookupLocallyWithoutValidation(Hash key);
+
     public abstract void lookupLeaseSet(Hash key, Job onFindJob, Job onFailedLookupJob, long timeoutMs);
     
     /**
@@ -62,6 +73,17 @@ public abstract class NetworkDatabaseFacade implements Service {
      *  @since 0.9.25
      */
     public abstract void lookupLeaseSetRemotely(Hash key, Hash fromLocalDest);
+
+    /**
+     *  Unconditionally lookup using the client's tunnels.
+     *
+     *  @param fromLocalDest use these tunnels for the lookup, or null for exploratory
+     *  @param onFindJob may be null
+     *  @param onFailedLookupJob may be null
+     *  @since 0.9.47
+     */
+    public abstract void lookupLeaseSetRemotely(Hash key, Job onFindJob, Job onFailedLookupJob,
+                                       long timeoutMs, Hash fromLocalDest);
 
     /**
      *  Lookup using the client's tunnels
@@ -98,13 +120,14 @@ public abstract class NetworkDatabaseFacade implements Service {
      *  @return the old entry if it already existed at that key 
      *  @throws IllegalArgumentException if the data is not valid
      *  @since 0.9.16
+     *  @deprecated unused
      */
+    @Deprecated
     public DatabaseEntry store(Hash key, DatabaseEntry entry) throws IllegalArgumentException {
-        if (entry.getType() == DatabaseEntry.KEY_TYPE_ROUTERINFO)
+        if (!entry.isLeaseSet())
             return store(key, (RouterInfo) entry);
-        if (entry.getType() == DatabaseEntry.KEY_TYPE_LEASESET)
+        else
             return store(key, (LeaseSet) entry);
-        throw new IllegalArgumentException("unknown type");
     }
 
     /**
@@ -153,4 +176,43 @@ public abstract class NetworkDatabaseFacade implements Service {
      *  @since 0.9.16
      */
     public boolean isNegativeCachedForever(Hash key) { return false; }
+    
+    /**
+     *  @param spk unblinded key
+     *  @return BlindData or null
+     *  @since 0.9.40
+     */
+    public BlindData getBlindData(SigningPublicKey spk) {
+        return null;
+    }
+    
+    /**
+     *  @param bd new BlindData to put in the cache
+     *  @since 0.9.40
+     */
+    public void setBlindData(BlindData bd) {}
+
+    /**
+     *  For console ConfigKeyringHelper
+     *  @since 0.9.41
+     */
+    public List<BlindData> getBlindData() {
+        return null;
+    }
+
+    /**
+     *  For console ConfigKeyringHelper
+     *  @return true if removed
+     *  @since 0.9.41
+     */
+    public boolean removeBlindData(SigningPublicKey spk) {
+        return false;
+    }
+
+    /**
+     *  Notify the netDB that the routing key changed at midnight UTC
+     *
+     *  @since 0.9.50
+     */
+    public void routingKeyChanged() {}
 }

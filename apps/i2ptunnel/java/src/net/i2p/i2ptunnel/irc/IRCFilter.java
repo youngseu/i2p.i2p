@@ -24,18 +24,8 @@ abstract class IRCFilter {
     /** does not override DCC handling */
     private static final boolean ALLOW_ALL_CTCP_OUT = false;
 
-    /*************************************************************************
-     *
-     *  Modify or filter a single inbound line.
-     *
-     *  @param helper may be null
-     *  @return the original or modified line, or null if it should be dropped.
-     */
-    public static String inboundFilter(String s, StringBuffer expectedPong, DCCHelper helper) {
-        
-        String field[] = DataHelper.split(s, " ", 4);
-        String command;
-        int idx=0;
+    private static final Set<String> _allowedInbound;
+    static {
         final String[] allowedCommands =
         {
                 // "NOTICE", // can contain CTCP
@@ -55,12 +45,33 @@ abstract class IRCFilter {
                 // http://tools.ietf.org/html/draft-mitchell-irc-capabilities-01
                 "CAP",
                 "PROTOCTL",
-                "AWAY"
+                "AWAY",
+                "ACCOUNT",  // https://ircv3.net/specs/extensions/account-notify
+                "CHGHOST"   // https://ircv3.net/specs/extensions/chghost
         };
+        _allowedInbound = new HashSet<String>(Arrays.asList(allowedCommands));
+    }
+
+    /*************************************************************************
+     *
+     *  Modify or filter a single inbound line.
+     *
+     *  @param helper may be null
+     *  @return the original or modified line, or null if it should be dropped.
+     */
+    public static String inboundFilter(String s, StringBuffer expectedPong, DCCHelper helper) {
+        
+        String field[] = DataHelper.split(s, " ", 5);
+        String command;
+        int idx=0;
         
 
         try {
-            if (field[0].charAt(0) == ':')
+            // https://www.unrealircd.org/docs/Message_tags
+            // https://ircv3.net/specs/extensions/message-tags.html
+            if (field[0].charAt(0) == '@')
+                idx++;
+            if (field[idx].charAt(0) == ':')
                 idx++;
             command = field[idx++].toUpperCase(Locale.US);
         } catch (IndexOutOfBoundsException ioobe) {
@@ -94,8 +105,7 @@ abstract class IRCFilter {
         }
         
         // Allow all allowedCommands
-        for(int i=0;i<allowedCommands.length;i++) {
-            if(allowedCommands[i].equals(command))
+        if (_allowedInbound.contains(command)) {
                 return s;
         }
         
@@ -104,6 +114,8 @@ abstract class IRCFilter {
         {
             String msg;
             msg = field[idx++];
+            if (idx < field.length)
+                msg += ' ' + field[idx];
 
             if(msg.indexOf(0x01) >= 0) // CTCP marker ^A can be anywhere, not just immediately after the ':'
             {
@@ -275,7 +287,7 @@ abstract class IRCFilter {
      */
     public static String outboundFilter(String s, StringBuffer expectedPong, DCCHelper helper) {
 
-        String field[] = DataHelper.split(s, " ",3);
+        String field[] = DataHelper.split(s, " ", 4);
 
         if(field[0].length()==0)
             return null; // W T F?
@@ -284,7 +296,12 @@ abstract class IRCFilter {
         if(field[0].charAt(0)==':')
             return null; // ???
         
-        String command = field[0].toUpperCase(Locale.US);
+        int idx = 0;
+        // https://www.unrealircd.org/docs/Message_tags
+        // https://ircv3.net/specs/extensions/message-tags.html
+        if (field[0].charAt(0) == '@')
+            idx++;
+        String command = field[idx++].toUpperCase(Locale.US);
 
         if ("PING".equals(command)) {
             // Most clients just send a PING and are happy with any old PONG.  Others,
@@ -300,17 +317,17 @@ abstract class IRCFilter {
 
             String rv = null;
             expectedPong.setLength(0);
-            if (field.length == 1) { // PING
+            if (field.length == idx) { // PING
                 rv = "PING";
                 // If we aren't rewriting the PING don't rewrite the PONG
                 // expectedPong.append("PONG 127.0.0.1");
-            } else if (field.length == 2) { // PING nonce
-                rv = "PING " + field[1];
+            } else if (field.length == idx + 1) { // PING nonce
+                rv = "PING " + field[idx];
                 // If we aren't rewriting the PING don't rewrite the PONG
                 // expectedPong.append("PONG ").append(field[1]);
-            } else if (field.length == 3) { // PING nonce serverLocation
-                rv = "PING " + field[1];
-                expectedPong.append("PONG ").append(field[2]).append(" :").append(field[1]); // PONG serverLocation nonce
+            } else if (field.length == idx + 2) { // PING nonce serverLocation
+                rv = "PING " + field[idx];
+                expectedPong.append("PONG ").append(field[idx + 1]).append(" :").append(field[idx]); // PONG serverLocation nonce
             } else {
                 //if (_log.shouldLog(Log.ERROR))
                 //    _log.error("IRC client sent a PING we don't understand, filtering it (\"" + s + "\")");
@@ -331,20 +348,22 @@ abstract class IRCFilter {
         // in addition to the CTCP version
         if("NOTICE".equals(command))
         {
-            if (field.length < 3)
+            if (field.length < idx + 2)
                 return s;  // invalid, allow server response
-            String msg = field[2];
+            String msg = field[idx + 1];
             if(msg.startsWith(":DCC "))
-                return filterDCCOut(field[0] + ' ' + field[1] + " :DCC ", msg.substring(5), helper);
+                return filterDCCOut(field[idx - 1] + ' ' + field[idx] + " :DCC ", msg.substring(5), helper);
             // fall through
         }
         
         // Allow PRIVMSG, but block CTCP (except ACTION).
         if("PRIVMSG".equals(command) || "NOTICE".equals(command))
         {
-            if (field.length < 3)
+            if (field.length < idx + 2)
                 return s;  // invalid, allow server response
-            String msg = field[2];
+            String msg = field[idx + 1];
+            if (idx + 2 < field.length)
+                msg += ' ' + field[idx + 2];
         
             if(msg.indexOf(0x01) >= 0) // CTCP marker ^A can be anywhere, not just immediately after the ':'
             {
@@ -365,7 +384,7 @@ abstract class IRCFilter {
                     return s;
                 }
                 if (msg.startsWith("DCC "))
-                    return filterDCCOut(field[0] + ' ' + field[1] + " :\001DCC ", msg.substring(4), helper);
+                    return filterDCCOut(field[idx - 1] + ' ' + field[idx] + " :\001DCC ", msg.substring(4), helper);
                 // XDCC looks safe, ip/port happens over regular DCC
                 // http://en.wikipedia.org/wiki/XDCC
                 if (msg.toUpperCase(Locale.US).startsWith("XDCC ") && helper != null && helper.isEnabled())
@@ -376,21 +395,41 @@ abstract class IRCFilter {
             }
             return s;
         }
-        
+
         if("USER".equals(command)) {
-            if (field.length < 3)
+            // USER <username> <hostname> <servername> <realname> (RFC 1459)
+            // USER <user> <mode> <unused> <realname> (RFC 2812)
+            // <realname> may contain spaces, and thus must be prefixed with a colon.
+            if (field.length < idx + 3)
                 return s;  // invalid, allow server response
-            int idx = field[2].lastIndexOf(':');
-            if(idx<0)
-                return "USER user hostname localhost :realname";
-            String realname = field[2].substring(idx+1);
-            String ret = "USER "+field[1]+" hostname localhost :"+realname;
+            // Replace hostname/servername; pass numeric mode and unused '*' through unchanged
+            String hostname = field[idx + 1];
+            try {
+                Integer.parseInt(hostname);
+                // mode
+            } catch (NumberFormatException nfe) {
+                hostname = "hostname";
+            }
+            // Warning: max field size is 4, so servername or unused is combined with realname
+            // in field[idx + 2]
+            String servername;
+            if (field[idx + 2].startsWith("* "))
+                servername = "*";
+            else
+                servername = "localhost";
+            String realname;
+            int cidx = field[idx + 2].lastIndexOf(':');
+            if (cidx < 0)
+                realname = "realname";
+            else
+                realname = field[idx + 2].substring(cidx + 1);
+            String ret = "USER " + field[idx] + ' ' + hostname + ' ' + servername + " :" + realname;
             return ret;
         }
 
         if ("PART".equals(command)) {
             // hide client message
-            return "PART " + field[1] + " :leaving";
+            return "PART " + field[idx] + " :leaving";
         }
         
         if ("QUIT".equals(command)) {

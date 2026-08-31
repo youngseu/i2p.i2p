@@ -9,12 +9,13 @@ package net.i2p.data.i2cp;
  *
  */
 
-import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
+import net.i2p.util.ByteArrayStream;
 
 /**
  * Defines the message a router sends to a client indicating the
@@ -33,6 +34,11 @@ public class SessionStatusMessage extends I2CPMessageImpl {
     public final static int STATUS_INVALID = 3;
     /** @since 0.9.12 */
     public final static int STATUS_REFUSED = 4;
+    /**
+     *  Used internally, not in spec, will be remapped to STATUS_INVALID before being sent.
+     *  @since 0.9.44
+     */
+    public final static int STATUS_DUP_DEST = 5;
 
     public SessionStatusMessage() {
         setStatus(STATUS_INVALID);
@@ -69,7 +75,9 @@ public class SessionStatusMessage extends I2CPMessageImpl {
         try {
             _sessionId = new SessionId();
             _sessionId.readBytes(in);
-            _status = (int) DataHelper.readLong(in, 1);
+            _status = in.read();
+            if (_status < 0)
+                throw new EOFException();
         } catch (DataFormatException dfe) {
             throw new I2CPMessageException("Unable to load the message data", dfe);
         }
@@ -79,10 +87,10 @@ public class SessionStatusMessage extends I2CPMessageImpl {
     protected byte[] doWriteMessage() throws I2CPMessageException, IOException {
         if (_sessionId == null)
             throw new I2CPMessageException("Unable to write out the message as there is not enough data");
-        ByteArrayOutputStream os = new ByteArrayOutputStream(64);
+        ByteArrayStream os = new ByteArrayStream(3);
         try {
             _sessionId.writeBytes(os);
-            DataHelper.writeLong(os, 1, _status);
+            os.write((byte) _status);
         } catch (DataFormatException dfe) {
             throw new I2CPMessageException("Error writing out the message data", dfe);
         }

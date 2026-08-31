@@ -6,12 +6,14 @@ import java.util.Arrays;
 import java.util.Queue;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import net.i2p.crypto.HMACGenerator;
 import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.data.SessionKey;
 import net.i2p.router.RouterContext;
 import net.i2p.router.transport.FIFOBandwidthLimiter;
-import net.i2p.router.util.CDQEntry;
+import net.i2p.router.util.CDPQEntry;
+import net.i2p.util.TryCache;
 import net.i2p.util.Addresses;
 import net.i2p.util.Log;
 import net.i2p.util.SystemVersion;
@@ -21,15 +23,13 @@ import net.i2p.util.SystemVersion;
  * of object instances to allow rapid reuse.
  *
  */
-class UDPPacket implements CDQEntry {
+class UDPPacket implements CDPQEntry {
     private RouterContext _context;
     private final DatagramPacket _packet;
-    private volatile short _priority;
+    private int _priority;
     private volatile long _initializeTime;
     //private volatile long _expiration;
     private final byte[] _data;
-    private final byte[] _validateBuf;
-    private final byte[] _ivBuf;
     private volatile int _markedType;
     private RemoteHostId _remoteHost;
     private boolean _released;
@@ -44,9 +44,18 @@ class UDPPacket implements CDQEntry {
     private int _validateCount;
     // private boolean _isInbound;
     private FIFOBandwidthLimiter.Request _bandwidthRequest;
+    private long _seqNum;
   
+    private static class PacketFactory implements TryCache.ObjectFactory<UDPPacket> {
+        static RouterContext context;
+        public UDPPacket newInstance() {
+            return new UDPPacket(context);
+        }
+    }
+    
     //  Warning - this mixes contexts in a multi-router JVM
-    private static final Queue<UDPPacket> _packetCache;
+    private static final TryCache<UDPPacket> _packetCache;
+    private static final TryCache.ObjectFactory<UDPPacket> _packetFactory;
     private static final boolean CACHE = true;
     private static final int MIN_CACHE_SIZE = 64;
     private static final int MAX_CACHE_SIZE = 256;
@@ -54,9 +63,11 @@ class UDPPacket implements CDQEntry {
         if (CACHE) {
             long maxMemory = SystemVersion.getMaxMemory();
             int csize = (int) Math.max(MIN_CACHE_SIZE, Math.min(MAX_CACHE_SIZE, maxMemory / (1024*1024)));
-            _packetCache = new LinkedBlockingQueue<UDPPacket>(csize);
+            _packetFactory = new PacketFactory();
+            _packetCache = new TryCache<>(_packetFactory, csize);
         } else {
             _packetCache = null;
+            _packetFactory = null;
         }
     }
     
@@ -89,47 +100,11 @@ class UDPPacket implements CDQEntry {
     public static final int PAYLOAD_TYPE_SESSION_DESTROY = 8;
     public static final int MAX_PAYLOAD_TYPE = PAYLOAD_TYPE_SESSION_DESTROY;
     
-    // various flag fields for use in the header
-    /**
-     *  Defined in the spec from the beginning, Unused
-     *  @since 0.9.24
-     */
-    public static final byte HEADER_FLAG_REKEY = (1 << 3);
-    /**
-     *  Defined in the spec from the beginning, Used starting in 0.9.24
-     *  @since 0.9.24
-     */
-    public static final byte HEADER_FLAG_EXTENDED_OPTIONS = (1 << 2);
-
-    // Extended options for session request
-    public static final int SESS_REQ_MIN_EXT_OPTIONS_LENGTH = 2;
-    // bytes 0-1 are flags
-    /**
-     * set to 1 to request a session tag, i.e. we want him to be an introducer for us
-     */
-    public static final int SESS_REQ_EXT_FLAG_REQUEST_RELAY_TAG = 0x01;
-
-    // various flag fields for use in the data packets
-    public static final byte DATA_FLAG_EXPLICIT_ACK = (byte)(1 << 7);
-    public static final byte DATA_FLAG_ACK_BITFIELDS = (1 << 6);
-    /** unused */
-    public static final byte DATA_FLAG_ECN = (1 << 4);
-    public static final byte DATA_FLAG_WANT_ACKS = (1 << 3);
-    public static final byte DATA_FLAG_WANT_REPLY = (1 << 2);
-    /** unused */
-    public static final byte DATA_FLAG_EXTENDED = (1 << 1);
-    
-    public static final byte BITFIELD_CONTINUATION = (byte)(1 << 7);
-    
-    private static final int MAX_VALIDATE_SIZE = MAX_PACKET_SIZE;
-
     private UDPPacket(RouterContext ctx) {
         //ctx.statManager().createRateStat("udp.fetchRemoteSlow", "How long it takes to grab the remote ip info", "udp", UDPTransport.RATES);
         // the data buffer is clobbered on init(..), but we need it to bootstrap
         _data = new byte[MAX_PACKET_SIZE];
         _packet = new DatagramPacket(_data, MAX_PACKET_SIZE);
-        _validateBuf = new byte[MAX_VALIDATE_SIZE];
-        _ivBuf = new byte[IV_SIZE];
         init(ctx);
     }
 
@@ -156,6 +131,20 @@ class UDPPacket implements CDQEntry {
         _receivedTime = 0;
         _fragmentCount = 0;
     }
+
+    /**
+     *  CDPQEntry
+     *  @since 0.9.53
+     */
+    public void setSeqNum(long num) { _seqNum = num; }
+
+    /**
+     *  CDPQEntry
+     *  @since 0.9.53
+     */
+    public long getSeqNum() { return _seqNum; }
+
+
     
   /****
     public void writeData(byte src[], int offset, int len) { 
@@ -168,7 +157,13 @@ class UDPPacket implements CDQEntry {
 
     /** */
     public synchronized DatagramPacket getPacket() { verifyNotReleased(); return _packet; }
-    public synchronized short getPriority() { verifyNotReleased(); return _priority; }
+    public int getPriority() { return _priority; }
+
+    /**
+     *  @since 0.9.53
+     */
+    public void setPriority(int pri) { _priority = pri; }
+
     //public long getExpiration() { verifyNotReleased(); return _expiration; }
     public synchronized long getBegin() { verifyNotReleased(); return _initializeTime; }
     public long getLifetime() { /** verifyNotReleased(); */ return _context.clock().now() - _initializeTime; }
@@ -207,90 +202,6 @@ class UDPPacket implements CDQEntry {
             //    _context.statManager().addRateData("udp.fetchRemoteSlow", timeToFetch, getLifetime());
         }
         return _remoteHost;
-    }
-    
-    /**
-     * Validate the packet against the MAC specified, returning true if the
-     * MAC matches, false otherwise.
-     *
-     */
-    public synchronized boolean validate(SessionKey macKey) {
-        verifyNotReleased(); 
-        //_beforeValidate = _context.clock().now();
-        boolean eq = false;
-        Arrays.fill(_validateBuf, (byte)0);
-        
-        // validate by comparing _data[0:15] and
-        // HMAC(payload + IV + (payloadLength ^ protocolVersion), macKey)
-        
-        int payloadLength = _packet.getLength() - MAC_SIZE - IV_SIZE;
-        if (payloadLength > 0) {
-            int off = 0;
-            System.arraycopy(_data, _packet.getOffset() + MAC_SIZE + IV_SIZE, _validateBuf, off, payloadLength);
-            off += payloadLength;
-            System.arraycopy(_data, _packet.getOffset() + MAC_SIZE, _validateBuf, off, IV_SIZE);
-            off += IV_SIZE;
-            DataHelper.toLong(_validateBuf, off, 2, payloadLength /* ^ PacketBuilder.PROTOCOL_VERSION */ );
-            off += 2;
-
-            eq = _context.hmac().verify(macKey, _validateBuf, 0, off, _data, _packet.getOffset(), MAC_SIZE);
-
-            if (!eq) {
-                // this is relatively frequent, as you can get old keys in PacketHandler.
-                Log log = _context.logManager().getLog(UDPPacket.class);
-                if (log.shouldLog(Log.INFO)) {
-                    byte[] calc = new byte[32];
-                    _context.hmac().calculate(macKey, _validateBuf, 0, off, calc, 0);
-                    StringBuilder str = new StringBuilder(512);
-                    str.append("Bad HMAC:\n\t");
-                    str.append(_packet.getLength()).append(" byte pkt, ");
-                    str.append(payloadLength).append(" byte payload");
-                    str.append("\n\tFrom: ").append(getRemoteHost().toString());
-                    str.append("\n\tIV:   ").append(Base64.encode(_validateBuf, payloadLength, IV_SIZE));
-                    str.append("\n\tIV2:  ").append(Base64.encode(_data, MAC_SIZE, IV_SIZE));
-                    str.append("\n\tGiven Len: ").append(DataHelper.fromLong(_validateBuf, payloadLength + IV_SIZE, 2));
-                    str.append("\n\tCalc HMAC: ").append(Base64.encode(calc, 0, MAC_SIZE));
-                    str.append("\n\tRead HMAC: ").append(Base64.encode(_data, _packet.getOffset(), MAC_SIZE));
-                    str.append("\n\tUsing key: ").append(macKey.toBase64());
-                    if (DataHelper.eq(macKey.getData(), 0, _context.routerHash().getData(), 0, 32))
-                        str.append(" (Intro)");
-                    else
-                        str.append(" (Session)");
-                    str.append("\n\tRaw:       ").append(Base64.encode(_data, _packet.getOffset(), _packet.getLength()));
-                    log.info(str.toString(), new Exception());
-                }
-            }
-        } else {
-            Log log = _context.logManager().getLog(UDPPacket.class);
-            if (log.shouldLog(Log.WARN))
-                log.warn("Payload length is " + payloadLength + ", too short! From: " + getRemoteHost() + '\n' +
-                         net.i2p.util.HexDump.dump(_data, _packet.getOffset(), _packet.getLength()));
-        }
-        
-        //_afterValidate = _context.clock().now();
-        _validateCount++;
-        return eq;
-    }
-    
-    /**
-     * Decrypt this valid packet, overwriting the _data buffer's payload
-     * with the decrypted data (leaving the MAC and IV unaltered)
-     * 
-     */
-    public synchronized void decrypt(SessionKey cipherKey) {
-        verifyNotReleased(); 
-        System.arraycopy(_data, MAC_SIZE, _ivBuf, 0, IV_SIZE);
-        int len = _packet.getLength();
-        // As of 0.9.7, ignore padding beyond the last mod 16,
-        // it could otherwise blow up in decryption.
-        // This allows for better obfuscation.
-        // Probably works without this since _data is bigger than necessary, but let's not
-        // bother decrypting and risk overrun.
-        int rem = len & 0x0f;
-        if (rem != 0)
-            len -= rem;
-        int off = _packet.getOffset() + MAC_SIZE + IV_SIZE;
-        _context.aes().decrypt(_data, off, _data, off, cipherKey, _ivBuf, len - MAC_SIZE - IV_SIZE);
     }
 
     /**
@@ -369,12 +280,16 @@ class UDPPacket implements CDQEntry {
     
     @Override
     public String toString() {
-        verifyNotReleased(); 
+        synchronized(this) {
+            if (_released)
+                return "RELEASED PACKET";
+        }
         StringBuilder buf = new StringBuilder(256);
         buf.append(_packet.getLength());
         buf.append(" byte pkt with ");
         buf.append(Addresses.toString(_packet.getAddress().getAddress(), _packet.getPort()));
         //buf.append(" id=").append(System.identityHashCode(this));
+        buf.append(" priority=").append(_priority);
         if (_messageType >= 0)
             buf.append(" msgType=").append(_messageType);
         if (_markedType >= 0)
@@ -396,23 +311,14 @@ class UDPPacket implements CDQEntry {
      *  @param inbound unused
      */
     public static UDPPacket acquire(RouterContext ctx, boolean inbound) {
-        UDPPacket rv = null;
+        UDPPacket rv;
         if (CACHE) {
-            rv = _packetCache.poll();
-            if (rv != null) {
-                synchronized(rv) {
-                    if (!rv._released) {
-                        Log log = rv._context.logManager().getLog(UDPPacket.class);
-                        log.error("Unreleased cached packet", new Exception());
-                        rv = null;
-                    } else {
-                        rv.init(ctx);
-                    }
-                }
-            }
-        }
-        if (rv == null)
+            PacketFactory.context = ctx;
+            rv = _packetCache.acquire();
+            rv.init(ctx);
+        } else {
             rv = new UDPPacket(ctx);
+        }
         return rv;
     }
 
@@ -440,7 +346,7 @@ class UDPPacket implements CDQEntry {
         }
         if (!CACHE)
             return;
-        _packetCache.offer(this);
+        _packetCache.release(this);
     }
     
     /**
@@ -448,8 +354,10 @@ class UDPPacket implements CDQEntry {
      *  @since 0.9.2
      */
     public static void clearCache() {
-        if (CACHE)
+        if (CACHE) {
+            PacketFactory.context = null;
             _packetCache.clear();
+        }
     }
 
     private synchronized void verifyNotReleased() {

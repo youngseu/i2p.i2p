@@ -1,57 +1,79 @@
-function setupbuttons() {
-	updatesetallbuttons();
-	var form = document.forms[0];
-	form.savepri.disabled = true;
-	form.savepri.className = 'disabled';
+/* @license http://www.gnu.org/licenses/gpl-2.0.html GPL-2.0 */
+/* see also licenses/LICENSE-GPLv2.txt */
+
+const setupbuttons=()=>{
+	let sp = document.forms[0].savepri;
+	if ( sp ) updatesetallbuttons(), sp.disabled = true, sp.className = 'disabled';
+
+	var buttons = document.getElementsByClassName("prihigh");
+	for (var index = 0; index < buttons.length; index++)
+	{
+		var button = buttons[index];
+                if (!button.disabled)
+			addClickHandler(button);
+	}
+	buttons = document.getElementsByClassName("prinorm");
+	for (var index = 0; index < buttons.length; index++)
+	{
+		var button = buttons[index];
+                if (!button.disabled)
+	 		addClickHandler(button);
+	}
+	buttons = document.getElementsByClassName("priskip");
+	for (var index = 0; index < buttons.length; index++)
+	{
+		var button = buttons[index];
+                if (!button.disabled)
+			addClickHandler(button);
+	}
+	var button = document.getElementById('setallhigh');
+	if (!button.disabled) {
+		button.addEventListener("click", function() {
+			setallhigh();
+			event.preventDefault();
+	        });
+	}
+	button = document.getElementById('setallnorm');
+	if (!button.disabled) {
+		button.addEventListener("click", function() {
+			setallnorm();
+			event.preventDefault();
+	        });
+	}
+	button = document.getElementById('setallskip');
+	if (!button.disabled) {
+		button.addEventListener("click", function() {
+			setallskip();
+			event.preventDefault();
+	        });
+	}
 }
 
-function priorityclicked() {
-	updatesetallbuttons();
-	var form = document.forms[0];
-	form.savepri.disabled = false;
-	form.savepri.className = 'accept';
+const priorityclicked=()=>{
+	let sp = document.forms[0].savepri;
+	if ( sp ) updatesetallbuttons(), sp.disabled = false, sp.className = 'accept';
 }
 
-function updatesetallbuttons() {
-	var notNorm = false;
-	var notHigh = false;
-	var notSkip = false;
-	var form = document.forms[0];
-	for(i = 0; i < form.elements.length; i++) {
-		var elem = form.elements[i];
-		if (elem.type == 'radio') {
-			if (!elem.checked) {
-				if (elem.className == 'prinorm')
-					notNorm = true;
-				else if (elem.className == 'prihigh')
-					notHigh = true;
-				else
-					notSkip = true;
-			}
+const updatesetallbuttons=()=>{
+	let notNorm = true, notHigh = true, notSkip = true, i = 0, elems = document.forms[0].elements;	
+	for (var len = elems.length ; i < len && (notNorm || notHigh || notSkip) ; ) {
+		var ele = elems[i++];
+		if (ele.type == 'radio' && !ele.checked) {
+			if (ele.className == 'prinorm') notNorm = false; 
+			else if (ele.className == 'prihigh') notHigh = false;
+			else notSkip = false;
 		}
 	}
-	if (notNorm)
-	    document.getElementById('setallnorm').className = 'control';
-	else
-	    document.getElementById('setallnorm').className = 'controld';
-	if (notHigh)
-	    document.getElementById('setallhigh').className = 'control';
-	else
-	    document.getElementById('setallhigh').className = 'controld';
-	if (notSkip)
-	    document.getElementById('setallskip').className = 'control';
-	else
-	    document.getElementById('setallskip').className = 'controld';
+	document.getElementById('setallnorm').className = notNorm ? 'controld' : 'control';
+	document.getElementById('setallhigh').className = notHigh ? 'controld' : 'control';
+	document.getElementById('setallskip').className = notSkip ? 'controld' : 'control';
 }
 
-function setallnorm() {
-	var form = document.forms[0];
-	for(i = 0; i < form.elements.length; i++) {
-		var elem = form.elements[i];
-		if (elem.type == 'radio') {
-			if (elem.className === 'prinorm')
-				elem.checked = true;
-		}
+const setallnorm=()=>{
+	let i = 0, form = document.forms[0];
+	for (var elems = form.elements, len = elems.length ; i < len ; ) {
+		var ele = elems[i++];
+		if (ele.type == 'radio' && ele.className === 'prinorm') ele.checked = true;
 	}
 	document.getElementById('setallnorm').className = 'controld';
 	document.getElementById('setallhigh').className = 'control';
@@ -60,14 +82,11 @@ function setallnorm() {
 	form.savepri.className = 'accept';
 }
 
-function setallhigh() {
-	var form = document.forms[0];
-	for(i = 0; i < form.elements.length; i++) {
-		var elem = form.elements[i];
-		if (elem.type == 'radio') {
-			if (elem.className === 'prihigh')
-				elem.checked = true;
-		}
+const setallhigh=()=>{
+	let i = 0, form = document.forms[0];
+	for (var elems = form.elements, len = elems.length ; i < len ; ) {
+		var ele = elems[i++];
+		if (ele.type == 'radio' && ele.className === 'prihigh') ele.checked = true;
 	}
 	document.getElementById('setallnorm').className = 'control';
 	document.getElementById('setallhigh').className = 'controld';
@@ -76,14 +95,11 @@ function setallhigh() {
 	form.savepri.className = 'accept';
 }
 
-function setallskip() {
-	var form = document.forms[0];
-	for(i = 0; i < form.elements.length; i++) {
-		var elem = form.elements[i];
-		if (elem.type == 'radio') {
-			if (elem.className === 'priskip')
-				elem.checked = true;
-		}
+const setallskip=()=>{
+	let i = 0, form = document.forms[0];
+	for (var elems = form.elements, len = elems.length ; i < len ; ) {
+		var ele = elems[i++];
+		if (ele.type == 'radio' && ele.className === 'priskip') ele.checked = true;
 	}
 	document.getElementById('setallnorm').className = 'control';
 	document.getElementById('setallhigh').className = 'control';
@@ -91,3 +107,16 @@ function setallskip() {
 	form.savepri.disabled = false;
 	form.savepri.className = 'accept';
 }
+
+function addClickHandler(elem)
+{
+	elem.addEventListener("click", function() {
+		priorityclicked();
+        });
+}
+
+document.addEventListener("DOMContentLoaded", function() {
+    setupbuttons();
+}, true);
+
+/* @license-end */

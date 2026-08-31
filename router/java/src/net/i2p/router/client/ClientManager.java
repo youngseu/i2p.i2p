@@ -40,9 +40,13 @@ import net.i2p.data.i2cp.SetDateMessage;
 import net.i2p.internal.I2CPMessageQueue;
 import net.i2p.router.ClientManagerFacade;
 import net.i2p.router.ClientMessage;
+import net.i2p.router.CommSystemFacade;
 import net.i2p.router.Job;
 import net.i2p.router.JobImpl;
 import net.i2p.router.RouterContext;
+import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseFacade;
+import net.i2p.router.networkdb.kademlia.FloodfillNetworkDatabaseSegmentor;
+import net.i2p.util.ConcurrentHashSet;
 import net.i2p.util.I2PThread;
 import net.i2p.util.Log;
 import net.i2p.util.SimpleTimer2;
@@ -67,15 +71,19 @@ class ClientManager {
     // ClientConnectionRunner for clients w/out a Dest yet
     private final Set<ClientConnectionRunner> _pendingRunners;
     private final Set<SessionId> _runnerSessionIds;
+    private final Set<Destination> _metaDests;
+    private final Set<Hash> _metaHashes;
     protected final RouterContext _ctx;
     protected final int _port;
-    protected volatile boolean _isStarted;
+    protected volatile boolean _isStarted, _wasStarted;
     private final SimpleTimer2.TimedEvent _clientTimestamper;
 
     /** Disable external interface, allow internal clients only @since 0.8.3 */
     private static final String PROP_DISABLE_EXTERNAL = "i2cp.disableInterface";
     /** SSL interface (only) @since 0.8.3 */
     private static final String PROP_ENABLE_SSL = "i2cp.SSL";
+    /** Disable local-local "loopback", force all traffic through tunnels @since 0.9.44 */
+    private static final String PROP_DISABLE_LOOPBACK = "i2cp.disableLoopback";
 
     private static final int INTERNAL_QUEUE_SIZE = 256;
 
@@ -84,7 +92,7 @@ class ClientManager {
     /** 2 bytes, save 65535 for unknown */
     private static final int MAX_SESSION_ID = 65534;
     private static final String PROP_MAX_SESSIONS = "i2cp.maxSessions";
-    private static final int DEFAULT_MAX_SESSIONS = 100;
+    private static final int DEFAULT_MAX_SESSIONS = 50;
     /** 65535 */
     public static final SessionId UNKNOWN_SESSION_ID = new SessionId(MAX_SESSION_ID + 1);
 
@@ -100,11 +108,13 @@ class ClientManager {
         //                                      "How large are messages received by the client?", 
         //                                      "ClientMessages", 
         //                                      new long[] { 60*1000l, 60*60*1000l, 24*60*60*1000l });
-        _listeners = new ArrayList<ClientListenerRunner>();
-        _runners = new ConcurrentHashMap<Destination, ClientConnectionRunner>();
-        _runnersByHash = new ConcurrentHashMap<Hash, ClientConnectionRunner>();
-        _pendingRunners = new HashSet<ClientConnectionRunner>();
-        _runnerSessionIds = new HashSet<SessionId>();
+        _listeners = new ArrayList<ClientListenerRunner>(4);
+        _runners = new ConcurrentHashMap<Destination, ClientConnectionRunner>(4);
+        _runnersByHash = new ConcurrentHashMap<Hash, ClientConnectionRunner>(4);
+        _pendingRunners = new HashSet<ClientConnectionRunner>(4);
+        _runnerSessionIds = new HashSet<SessionId>(4);
+        _metaDests = new ConcurrentHashSet<Destination>(4);
+        _metaHashes = new ConcurrentHashSet<Hash>(4);
         _port = port;
         _clientTimestamper = new ClientTimestamper();
         // following are for RequestLeaseSetJob
@@ -162,6 +172,9 @@ class ClientManager {
             _clientTimestamper.schedule(ClientTimestamper.LOOP_TIME);
         }
         _isStarted = true;
+        _wasStarted = true;
+        if (_log.shouldInfo())
+            _log.info("Started the ClientManager");
     }
     
     public synchronized void restart() {
@@ -207,8 +220,23 @@ class ClientManager {
      *  @since 0.8.3
      */
     public I2CPMessageQueue internalConnect() throws I2PSessionException {
-        if (!_isStarted)
-            throw new I2PSessionException("Router client manager is shut down");
+        if (!_isStarted) {
+            if (_wasStarted)
+                throw new I2PSessionException("Router client manager is shut down");
+            // don't throw the early birds out
+            // ClientManager starts shortly after the console, should be less than a second
+            // Wait up to 60 secs before giving up
+            int i = 0;
+            do {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException ie) {
+                    throw new I2PSessionException("Router client manager interrupted", ie);
+                }
+            } while (!_isStarted && i++ < 300);
+            if (!_isStarted)
+                throw new I2PSessionException("Router client manager failed to start");
+        }
         LinkedBlockingQueue<I2CPMessage> in = new LinkedBlockingQueue<I2CPMessage>(INTERNAL_QUEUE_SIZE);
         LinkedBlockingQueue<I2CPMessage> out = new LinkedBlockingQueue<I2CPMessage>(INTERNAL_QUEUE_SIZE);
         I2CPMessageQueue myQueue = new I2CPMessageQueueImpl(in, out);
@@ -218,13 +246,15 @@ class ClientManager {
         return hisQueue;
     }
 
+    /**
+     *  As of 0.9.45, this returns true iff the ClientManager is running.
+     *  Prior to that, it also required all external I2CP listeners
+     *  that were registered to be running.
+     *  Since most of our connections are in-JVM, we now return true even
+     *  if we have I2CP port conflicts.
+     */
     public synchronized boolean isAlive() {
-        boolean listening = true;
-        if (!_listeners.isEmpty()) {
-            for (ClientListenerRunner listener : _listeners)
-                listening = listening && listener.isListening();
-        }
-        return _isStarted && (_listeners.isEmpty() || listening);
+        return _isStarted;
     }
 
     public void registerConnection(ClientConnectionRunner runner) {
@@ -272,7 +302,7 @@ class ClientManager {
             }
         }
     }
-    
+
     /**
      *  Remove only the following session. Does not remove the runner if it has more.
      *
@@ -287,7 +317,21 @@ class ClientManager {
             _runnersByHash.remove(dest.calculateHash());
         }
     }
-    
+
+    /**
+     *  Remove the hash for the encrypted LS.
+     *  Call before unregisterConnection, or when the hash changes.
+     *
+     *  @since 0.9.39
+     */
+    public void unregisterEncryptedDestination(ClientConnectionRunner runner, Hash hash) {
+        if (_log.shouldLog(Log.WARN))
+            _log.warn("Unregistering encrypted LS "  + hash.toBase32());
+        synchronized (_runners) {
+            _runnersByHash.remove(hash);
+        }
+    }
+
     /**
      *  Add to the clients list. Check for a dup destination.
      *  Side effect: Sets the session ID of the runner.
@@ -297,7 +341,7 @@ class ClientManager {
      */
     public int destinationEstablished(ClientConnectionRunner runner, Destination dest) {
         if (_log.shouldLog(Log.DEBUG))
-            _log.debug("DestinationEstablished called for destination " + dest.calculateHash().toBase64());
+            _log.debug("DestinationEstablished called for destination " + dest.toBase32());
 
         synchronized (_pendingRunners) {
             _pendingRunners.remove(runner);
@@ -306,7 +350,7 @@ class ClientManager {
         synchronized (_runners) {
             boolean fail = _runnersByHash.containsKey(dest.calculateHash());
             if (fail) {
-                rv = SessionStatusMessage.STATUS_INVALID;
+                rv = SessionStatusMessage.STATUS_DUP_DEST;
             } else {
                 SessionId id = locked_getNextSessionId();
                 if (id != null) {
@@ -320,20 +364,79 @@ class ClientManager {
                 }
             }
         }
-        if (rv == SessionStatusMessage.STATUS_INVALID) {
-            _log.log(Log.CRIT, "Client attempted to register duplicate destination " + dest.calculateHash().toBase64());
+        if (rv == SessionStatusMessage.STATUS_DUP_DEST) {
+            _log.log(Log.CRIT, "Client attempted to register duplicate destination " + dest.toBase32());
         } else if (rv == SessionStatusMessage.STATUS_REFUSED) {
-            _log.error("Max sessions exceeded " + dest.calculateHash().toBase64());
+            _log.error("Max sessions exceeded " + dest.toBase32());
         }
         return rv;
     }
-    
+
+    /**
+     *  Call after destinationEstablished(),
+     *  when an encrypted leaseset is created, so we know it's local.
+     *  Add to the clients list. Check for a dup hash.
+     *  Caller must call runner.disconnectClient() on failure.
+     *
+     *  @param hash the location of the encrypted LS, will change every day
+     *  @return success, false on dup
+     *  @since 0.9.39
+     */
+    public boolean registerEncryptedDestination(ClientConnectionRunner runner, Hash hash) {
+        if (_log.shouldLog(Log.DEBUG))
+            _log.debug("New encrypted LS " + hash.toBase32());
+
+        boolean rv;
+        synchronized (_runners) {
+            rv = !_runnersByHash.containsKey(hash);
+            if (rv)
+                _runnersByHash.put(hash, runner);
+        }
+        if (!rv)
+            _log.error("Encrypted dest collision " + hash.toBase32());
+        return rv;
+    }
+
+    /**
+     *  Declare that we're going to publish a meta LS for this destination.
+     *  Must be called before publishing the leaseset.
+     *
+     *  @throws I2PSessionException on duplicate dest
+     *  @since 0.9.41
+     */
+    public void registerMetaDest(Destination dest) throws I2PSessionException {
+        synchronized (_runners) {
+            if (_runners.containsKey(dest) || _metaDests.contains(dest)) {
+                String msg = "Client attempted to register duplicate destination " + dest.toBase32();
+                _log.error(msg);
+                throw new I2PSessionException(msg);
+            }
+            _metaDests.add(dest);
+            _metaHashes.add(dest.calculateHash());
+        }
+    }
+
+    /**
+     *  Declare that we're no longer going to publish a meta LS for this destination.
+     *
+     *  @since 0.9.41
+     */
+    public void unregisterMetaDest(Destination dest) {
+        synchronized (_runners) {
+            _metaDests.remove(dest);
+            _metaHashes.remove(dest.calculateHash());
+        }
+    }
+
     /**
      *  Generate a new random, unused sessionId. Caller must synch on _runners.
      *  @return null on failure
      *  @since 0.9.12
      */
     private SessionId locked_getNextSessionId() { 
+        CommSystemFacade csf = _ctx.commSystem();
+        if (csf != null && csf.isDummy())  // unit tests if null
+            return null;
         int max = Math.max(1, Math.min(2048, _ctx.getProperty(PROP_MAX_SESSIONS, DEFAULT_MAX_SESSIONS)));
         if (_runnerSessionIds.size() >= max) {
             _log.logAlways(Log.WARN, "Session refused, max is " + max + ", increase " + PROP_MAX_SESSIONS);
@@ -350,26 +453,39 @@ class ClientManager {
 
     /**
      * Distribute message to a local or remote destination.
+     *
+     * @param sender non-null
      * @param msgId the router's ID for this message
      * @param messageNonce the client's ID for this message
      * @param flags ignored for local
      */
-    void distributeMessage(Destination fromDest, Destination toDest, Payload payload,
+    void distributeMessage(ClientConnectionRunner sender, Destination fromDest, Destination toDest, Payload payload,
                            MessageId msgId, long messageNonce, long expiration, int flags) { 
-        // check if there is a runner for it
-        ClientConnectionRunner runner = getRunner(toDest);
+        ClientConnectionRunner runner;
+        if (_ctx.getBooleanProperty(PROP_DISABLE_LOOPBACK)) {
+            runner = null;
+        } else {
+            // check if there is a runner for it
+            runner = getRunner(toDest);
+        }
         if (runner != null) {
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("Message " + msgId + " is targeting a local destination.  distribute it as such");
-            ClientConnectionRunner sender = getRunner(fromDest);
-            if (sender == null) {
-                // sender went away
-                return;
+            if (runner != sender) {
+                // run this inline so we don't clog up the job queue
+                Job j = new DistributeLocal(toDest, runner, sender, fromDest, payload, msgId, messageNonce);
+                //_ctx.jobQueue().addJob(j);
+                j.runJob();
+            } else {
+                if (_log.shouldWarn())
+                    _log.warn("Loopback attempt from client " + fromDest.getHash());
+                int rc = MessageStatusMessage.STATUS_SEND_FAILURE_LOOPBACK;
+                sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, rc);
             }
-            // run this inline so we don't clog up the job queue
-            Job j = new DistributeLocal(toDest, runner, sender, fromDest, payload, msgId, messageNonce);
-            //_ctx.jobQueue().addJob(j);
-            j.runJob();
+        } else if (!_metaDests.isEmpty() && _metaDests.contains(toDest)) {
+            // meta dests don't have runners but are local, and you can't send to them
+            int rc = MessageStatusMessage.STATUS_SEND_FAILURE_BAD_LEASESET;
+            sender.updateMessageDeliveryStatus(fromDest, msgId, messageNonce, rc);
         } else {
             // remote.  w00t
             if (_log.shouldLog(Log.DEBUG))
@@ -447,7 +563,7 @@ class ClientManager {
         if (runner == null) {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Cannot request the lease set, as we can't find a client runner for " 
-                          + dest.calculateHash().toBase64() + ".  disconnected?");
+                          + dest.toBase32() + ".  disconnected?");
             _ctx.jobQueue().addJob(onFailedJob);
         } else {
             runner.requestLeaseSet(dest.calculateHash(), set, timeout, onCreateJob, onFailedJob);
@@ -471,23 +587,25 @@ class ClientManager {
         } else {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Cannot request the lease set, as we can't find a client runner for " 
-                          + dest + ".  disconnected?");
+                          + dest.toBase32() + ".  disconnected?");
         }
     }
     
     /**
-     *  Unsynchronized
+     *  Unsynchronized.
+     *  DOES contain meta destinations.
      */
     public boolean isLocal(Destination dest) { 
-        return _runners.containsKey(dest);
+        return _runners.containsKey(dest) || _metaDests.contains(dest);
     }
 
     /**
-     *  Unsynchronized
+     *  Unsynchronized.
+     *  DOES contain meta destinations.
      */
     public boolean isLocal(Hash destHash) { 
         if (destHash == null) return false;
-        return _runnersByHash.containsKey(destHash);
+        return _runnersByHash.containsKey(destHash) || _metaHashes.contains(destHash);
     }
     
     /**
@@ -503,7 +621,8 @@ class ClientManager {
     }
 
     /**
-     *  Unsynchronized
+     *  Unsynchronized.
+     *  Does NOT contain meta destinations.
      */
     public Set<Destination> listClients() {
         Set<Destination> rv = new HashSet<Destination>();
@@ -555,7 +674,7 @@ class ClientManager {
     
     /**
      *  @param id the router's ID for this message
-     *  @param messageNonce the client's ID for this message
+     *  @param messageNonce the client's ID for this message, greater than zero
      *  @param status see I2CP MessageStatusMessage for success/failure codes
      */
     public void messageDeliveryStatusUpdate(Destination fromDest, MessageId id, long messageNonce, int status) {
@@ -563,12 +682,12 @@ class ClientManager {
         if (runner != null) {
             if (_log.shouldLog(Log.DEBUG))
                 _log.debug("Delivering status " + status + " to " 
-                           + fromDest.calculateHash() + " for message " + id);
+                           + fromDest.toBase32() + " for message " + id);
             runner.updateMessageDeliveryStatus(fromDest, id, messageNonce, status);
         } else {
             if (_log.shouldLog(Log.WARN))
                 _log.warn("Cannot deliver status " + status + " to " 
-                          + fromDest.calculateHash() + " for message " + id);
+                          + fromDest.toBase32() + " for message " + id);
         }
     }
     
@@ -655,6 +774,44 @@ class ClientManager {
         (new HandleJob(msg)).runJob();
     }
 
+    /**
+     * get the FloodfillNetworkDatabaseFacade associated with a particular client destination.
+     * This is inside the runner, so it won't be there if the runner isn't ready.
+     * 
+     * @param destHash destination hash associated with the client who's subDb we're looking for, may be null
+     * @return will be null if desthash is null or client does not exist or its netDb is not initialized
+     * @since 0.9.61
+     */
+    public FloodfillNetworkDatabaseFacade getClientFloodfillNetworkDatabaseFacade(Hash destHash) {
+        if (destHash != null) {
+            //if (_log.shouldLog(Log.DEBUG))
+            //    _log.debug("Getting subDb for desthash: " + destHash);
+            ClientConnectionRunner runner = getRunner(destHash);
+            if (runner == null){
+                if (_log.shouldLog(Log.WARN))
+                    _log.warn("ClientManager got a null runner in getClientFloodfillNetworkDatabaseFacade for " + destHash);
+                return null;
+            }
+            //if (_log.shouldLog(Log.DEBUG))
+            //    _log.debug("ClientManager got a runner in getClientFloodfillNetworkDatabaseFacade for " + destHash);
+            return runner.getFloodfillNetworkDatabaseFacade();
+        }
+        return null;
+    }
+
+    /**
+     * get all the primary hashes for all the clients and return them as a set
+     * 
+     * @return non-null
+     * @since 0.9.61
+     */
+    public Set<Hash> getPrimaryHashes() {
+        Set<Hash> rv = new HashSet<Hash>();
+        for (ClientConnectionRunner runner : _runners.values())
+            rv.add(runner.getDestHash());
+        return rv;
+    }
+
     private class HandleJob extends JobImpl {
         private final ClientMessage _msg;
 
@@ -685,8 +842,8 @@ class ClientManager {
                 // we should pool these somewhere...
                 if (_log.shouldLog(Log.WARN))
                     _log.warn("Message received but we don't have a connection to " 
-                              + dest + "/" + _msg.getDestinationHash() 
-                              + " currently.  DROPPED");
+                              + dest + "/" + _msg.getDestinationHash().toBase32()
+                              + " currently.  DROPPED", new Exception());
             }
         }
     }
@@ -708,7 +865,13 @@ class ClientManager {
         public void timeReached() {
             if (!_isStarted)
                 return;
-            for (ClientConnectionRunner runner : _runners.values()) {
+            if (_runners.isEmpty()) {
+                schedule(LOOP_TIME);
+                return;
+            }
+            // dedup subsessions
+            Set<ClientConnectionRunner> runners = new HashSet<ClientConnectionRunner>(_runners.values());
+            for (ClientConnectionRunner runner : runners) {
                 if (runner instanceof QueuedClientConnectionRunner)
                     continue;
                 if (runner.isDead())
@@ -721,7 +884,7 @@ class ClientManager {
                 try {
                     // only send version if the client can handle it (0.8.7 or greater)
                     runner.doSend(new SetDateMessage(runner.getClientVersion() != null ?
-                                                     CoreVersion.VERSION : null));
+                                                     CoreVersion.PUBLISHED_VERSION : null));
                 } catch (I2CPMessageException ime) {}
             }
             if (_isStarted)

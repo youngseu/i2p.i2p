@@ -41,6 +41,8 @@ public class SimpleTimer2 {
     private final String _name;
     private final AtomicInteger _count = new AtomicInteger();
     private final int _threads;
+    private final I2PAppContext _context;
+    private final Runnable _shutdown;
 
     /**
      *  To be instantiated by the context.
@@ -64,14 +66,15 @@ public class SimpleTimer2 {
      *  @since 0.9
      */
     protected SimpleTimer2(I2PAppContext context, String name, boolean prestartAllThreads) {
+        _context = context;
         _name = name;
         long maxMemory = SystemVersion.getMaxMemory();
         _threads = (int) Math.max(MIN_THREADS, Math.min(MAX_THREADS, 1 + (maxMemory / (32*1024*1024))));
         _executor = new CustomScheduledThreadPoolExecutor(_threads, new CustomThreadFactory());
         if (prestartAllThreads)
             _executor.prestartAllCoreThreads();
-        // don't bother saving ref to remove hook if somebody else calls stop
-        context.addShutdownTask(new Shutdown());
+        _shutdown = new Shutdown();
+        context.addShutdownTask(_shutdown);
     }
     
     /**
@@ -79,7 +82,7 @@ public class SimpleTimer2 {
      */
     private class Shutdown implements Runnable {
         public void run() {
-            stop();
+            stop(false);
         }
     }
 
@@ -89,6 +92,20 @@ public class SimpleTimer2 {
      * Cannot be restarted.
      */
     public void stop() {
+        stop(true);
+    }
+
+    /**
+     * Stops the SimpleTimer.
+     * Subsequent executions should not throw a RejectedExecutionException.
+     * Cannot be restarted.
+     *
+     * @param removeTask true to unregister the shutdown hook
+     * @since 0.9.53
+     */
+    private void stop(boolean removeTask) {
+        if (removeTask)
+            _context.removeShutdownTask(_shutdown);
         _executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
         _executor.shutdownNow();
     }
@@ -96,6 +113,7 @@ public class SimpleTimer2 {
     private static class CustomScheduledThreadPoolExecutor extends ScheduledThreadPoolExecutor {
         public CustomScheduledThreadPoolExecutor(int threads, ThreadFactory factory) {
              super(threads, factory);
+             setRemoveOnCancelPolicy(true);
         }
 
         @Override
@@ -397,10 +415,12 @@ public class SimpleTimer2 {
                 // The result (if rescheduled) is a dup on the queue, see tickets 1694, 1705
                 // Mitigated by close-to-execution check in reschedule()
                 boolean cancelled = _future.cancel(true);
-                if (cancelled)
+                if (cancelled) {
                     _state = TimedEventState.CANCELLED;
-                else
-                    _log.error("could not cancel " + this + " to run in " + (_nextRun - System.currentTimeMillis()), new Exception());
+                } else {
+                    if (_log.shouldWarn())
+                        _log.warn("could not cancel " + this + " to run in " + (_nextRun - System.currentTimeMillis()), new Exception());
+                }
                 return cancelled;
             }
             return false;
@@ -413,6 +433,9 @@ public class SimpleTimer2 {
             } catch (RuntimeException re) {
                 _log.error("timer error", re);
                 throw re;
+            } catch (OutOfMemoryError oome) {
+                _log.error("timer error", oome);
+                throw new RuntimeException("timer error", oome);
             }
         }
 
@@ -510,6 +533,15 @@ public class SimpleTimer2 {
                  if (completed % 250 == 0)
                      _log.info(_pool.debug());
             }
+        }
+
+        /**
+         *  So the critical "please report" message above isn't so ugly
+         *  @since 0.9.57
+         */
+        @Override
+        public String toString() {
+            return getClass().getSimpleName();
         }
 
         /** 

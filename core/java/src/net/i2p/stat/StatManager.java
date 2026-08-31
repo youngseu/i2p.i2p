@@ -12,6 +12,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 import net.i2p.I2PAppContext;
+import net.i2p.util.Log;
 
 /** 
  * Coordinate the management of various frequencies and rates within I2P components,
@@ -22,22 +23,17 @@ import net.i2p.I2PAppContext;
  */
 public class StatManager {
     private final I2PAppContext _context;
+    private final Log _log;
 
     /** stat name to FrequencyStat */
     private final ConcurrentHashMap<String, FrequencyStat> _frequencyStats;
     /** stat name to RateStat */
     private final ConcurrentHashMap<String, RateStat> _rateStats;
-    /** may be null */
-    private StatLog _statLog;
 
-    /**
-     *  Comma-separated stats or * for all.
-     *  This property must be set at startup, or
-     *  logging is disabled.
-     */
-    public static final String PROP_STAT_FILTER = "stat.logFilters";
-    public static final String PROP_STAT_FILE = "stat.logFile";
-    public static final String DEFAULT_STAT_FILE = "stats.log";
+    private int coalesceCounter;
+    /** every this many minutes for frequencies */
+    private static final int FREQ_COALESCE_RATE = 9;
+
     /** default false */
     public static final String PROP_STAT_FULL = "stat.full";
     
@@ -47,28 +43,17 @@ public class StatManager {
      * appropriate application context itself.
      *
      */
-	public StatManager(I2PAppContext context) {
+    public StatManager(I2PAppContext context) {
         _context = context;
+        _log = context.logManager().getLog(getClass());
         _frequencyStats = new ConcurrentHashMap<String,FrequencyStat>(8);
         _rateStats = new ConcurrentHashMap<String,RateStat>(128);
-        String filter = getStatFilter();
-        if (filter != null && filter.length() > 0)
-            _statLog = new BufferedStatLog(context);
     }
     
     /** @since 0.8.8 */
-    public void shutdown() {
+    public synchronized void shutdown() {
         _frequencyStats.clear();
         _rateStats.clear();
-    }
-
-    /** may be null */
-    public StatLog getStatLog() { return _statLog; }
-    public void setStatLog(StatLog log) { 
-        _statLog = log; 
-            for (RateStat rs : _rateStats.values()) {
-                rs.setStatLog(log);
-            }
     }
 
     /**
@@ -127,7 +112,6 @@ public class StatManager {
     public void createRequiredRateStat(String name, String description, String group, long periods[]) {
             if (_rateStats.containsKey(name)) return;
             RateStat rs = new RateStat(name, description, group, periods);
-            if (_statLog != null) rs.setStatLog(_statLog);
             _rateStats.putIfAbsent(name, rs);
     }
 
@@ -139,13 +123,21 @@ public class StatManager {
     /** update the given frequency statistic, taking note that an event occurred (and recalculating all frequencies) */
     public void updateFrequency(String name) {
         FrequencyStat freq = _frequencyStats.get(name);
-        if (freq != null) freq.eventOccurred();
+        if (freq != null)
+            freq.eventOccurred();
+        else
+            if (_log.shouldLog(Log.DEBUG))
+                _log.debug("Invalid frequency stat : " + name);
     }
 
     /** update the given rate statistic, taking note that the given data point was received (and recalculating all rates) */
     public void addRateData(String name, long data, long eventDuration) {
         RateStat stat = _rateStats.get(name); // unsynchronized
-        if (stat != null) stat.addData(data, eventDuration);
+        if (stat != null)
+            stat.addData(data, eventDuration);
+        else
+            if (_log.shouldLog(Log.DEBUG))
+                _log.debug("Invalid rate stat : " + name);
     }
 
     /**
@@ -155,14 +147,14 @@ public class StatManager {
      */
     public void addRateData(String name, long data) {
         RateStat stat = _rateStats.get(name); // unsynchronized
-        if (stat != null) stat.addData(data);
+        if (stat != null)
+            stat.addData(data);
+        else
+            if (_log.shouldLog(Log.DEBUG))
+                _log.debug("Invalid rate stat : " + name);
     }
 
-    private int coalesceCounter;
-    /** every this many minutes for frequencies */
-    private static final int FREQ_COALESCE_RATE = 9;
-
-    public void coalesceStats() {
+    public synchronized void coalesceStats() {
         if (++coalesceCounter % FREQ_COALESCE_RATE == 0) {
                 for (FrequencyStat stat : _frequencyStats.values()) {
                     if (stat != null) {
@@ -170,15 +162,13 @@ public class StatManager {
                     }
                 }
         }
-            for (RateStat stat : _rateStats.values()) {
-                if (stat != null) {
-                    stat.coalesceStats();
-                }
-            }
+        for (RateStat stat : _rateStats.values()) {
+            stat.coalesceStats();
+        }
     }
 
     /**
-     *  Misnamed, as it returns a FrequenceyStat, not a Frequency.
+     *  Misnamed, as it returns a FrequencyStat, not a Frequency.
      */
     public FrequencyStat getFrequency(String name) {
         return _frequencyStats.get(name);
@@ -191,10 +181,12 @@ public class StatManager {
         return _rateStats.get(name);
     }
 
+    /** @return a copy */
     public Set<String> getFrequencyNames() {
         return new HashSet<String>(_frequencyStats.keySet());
     }
 
+    /** @return a copy */
     public Set<String> getRateNames() {
         return new HashSet<String>(_rateStats.keySet());
     }
@@ -236,9 +228,6 @@ public class StatManager {
         return groups;
     }
 
-    public String getStatFilter() { return _context.getProperty(PROP_STAT_FILTER); }
-    public String getStatFile() { return _context.getProperty(PROP_STAT_FILE, DEFAULT_STAT_FILE); }
-
     /**
      * Save memory by not creating stats unless they are required for router operation.
      * For backward compatibility of any external clients, always returns false if not in router context.
@@ -258,9 +247,11 @@ public class StatManager {
      * @since 0.9.23
      */
     public void store(OutputStream out, String prefix) throws IOException {
-        for (FrequencyStat fs : _frequencyStats.values())
+        for (FrequencyStat fs : _frequencyStats.values()) {
             fs.store(out, prefix);
-        for (RateStat rs : _rateStats.values())
+        }
+        for (RateStat rs : _rateStats.values()) {
             rs.store(out,prefix);
+        }
     }
 }

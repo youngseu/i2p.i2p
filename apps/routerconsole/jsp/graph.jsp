@@ -1,20 +1,19 @@
 <%@page contentType="text/html"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("graphs")%>
- <jsp:useBean class="net.i2p.router.web.GraphHelper" id="graphHelper" scope="request" />
- <jsp:setProperty name="graphHelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
+ <jsp:useBean class="net.i2p.router.web.helpers.GraphHelper" id="graphHelper" scope="request" />
+ <jsp:setProperty name="graphHelper" property="contextId" value="<%=i2pcontextId%>" />
 <% /* GraphHelper sets the defaults in setContextId, so setting the properties must be after the context */ %>
  <jsp:setProperty name="graphHelper" property="*" />
 <%
     graphHelper.storeWriter(out);
+    graphHelper.storeSession(session);
 %>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
+</head><body>
 <%@include file="summary.jsi" %>
 <%
     // needs to be after the summary bar is rendered, so
@@ -22,8 +21,10 @@
     String stat = request.getParameter("stat");
     if (stat == null) {
         // probably because restart or shutdown was clicked
-        response.setStatus(302);
+        response.setStatus(307);
         response.setHeader("Location", "/graphs");
+        // force commitment
+        response.getWriter().close();
         return;
     }
 %>

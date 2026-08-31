@@ -48,7 +48,6 @@ import java.io.Serializable;
 import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Map;
 
 import net.i2p.crypto.CryptixAESKeyCache;
@@ -95,7 +94,7 @@ import net.i2p.crypto.SHA256Generator;
  *
  * NOTE: As of 0.8.8, uses the java.security.MessageDigest instead of GNU Sha256Standalone
  */
-public class FortunaStandalone extends BasePRNGStandalone implements Serializable, RandomEventListenerStandalone
+public class FortunaStandalone extends BasePRNGStandalone implements Serializable
 {
 
   private static final long serialVersionUID = 0xFACADE;
@@ -103,37 +102,41 @@ public class FortunaStandalone extends BasePRNGStandalone implements Serializabl
   private static final int SEED_FILE_SIZE = 64;
   static final int NUM_POOLS = 32;
   static final int MIN_POOL_SIZE = 64;
-  final Generator generator;
-  final MessageDigest[] pools;
-  long lastReseed;
-  int pool;
-  int pool0Count;
-  int reseedCount;
-  static long refillCount = 0;
-  static long lastRefill = System.currentTimeMillis();
+  protected final IRandomStandalone generator;
+  /** null if using DevRandom */
+  protected final MessageDigest[] pools;
+  protected long lastReseed;
+  private int pool;
+  protected int pool0Count;
+  protected int reseedCount;
 
   public static final String SEED = "gnu.crypto.prng.fortuna.seed";
 
-  public FortunaStandalone()
-  {
-    super("Fortuna i2p");
-    generator = new Generator();
-    pools = new MessageDigest[NUM_POOLS];
-    for (int i = 0; i < NUM_POOLS; i++)
-      pools[i] = SHA256Generator.getDigestInstance();
-    lastReseed = 0;
-    pool = 0;
-    pool0Count = 0;
-    allocBuffer();
-  }
-  protected void allocBuffer() {
-    buffer = new byte[4*1024*1024]; //256]; // larger buffer to reduce churn
+  public FortunaStandalone() {
+      this(false);
   }
 
+  /**
+   *  @since 0.9.58
+   */
+  public FortunaStandalone(boolean useDevRandom) {
+    super("Fortuna i2p");
+    if (useDevRandom && !DevRandom.isSupported())
+        useDevRandom = false;
+    generator = useDevRandom ? new DevRandom() : new Generator();
+    if (useDevRandom) {
+        pools = null;
+    } else {
+        pools = new MessageDigest[NUM_POOLS];
+        for (int i = 0; i < NUM_POOLS; i++) {
+            pools[i] = SHA256Generator.getDigestInstance();
+        }
+    }
+  }
+
+  /** Unused, see AsyncFortunaStandalone */
   public void seed(byte val[]) {
-      Map<String, byte[]> props = Collections.singletonMap(SEED, val);
-      init(props);
-      fillBlock();
+      throw new UnsupportedOperationException("use override");
   }
   
   public void setup(Map<String, byte[]> attributes)
@@ -145,33 +148,17 @@ public class FortunaStandalone extends BasePRNGStandalone implements Serializabl
     generator.init(attributes);
   }
 
+  /** Unused, see AsyncFortunaStandalone */
   public void fillBlock()
   {
-    long start = System.currentTimeMillis();
-    if (pool0Count >= MIN_POOL_SIZE
-        && System.currentTimeMillis() - lastReseed > 100)
-      {
-        reseedCount++;
-        //byte[] seed = new byte[0];
-        for (int i = 0; i < NUM_POOLS; i++)
-          {
-            if (reseedCount % (1 << i) == 0) {
-              generator.addRandomBytes(pools[i].digest());
-            }
-          }
-        lastReseed = System.currentTimeMillis();
-      }
-    generator.nextBytes(buffer);
-    long now = System.currentTimeMillis();
-    long diff = now-lastRefill;
-    lastRefill = now;
-    long refillTime = now-start;
-    System.out.println("Refilling " + (++refillCount) + " after " + diff + " for the PRNG took " + refillTime);
+      throw new UnsupportedOperationException("use override");
   }
 
     @Override
   public void addRandomByte(byte b)
   {
+    if (pools == null)
+        return;
     pools[pool].update(b);
     if (pool == 0)
       pool0Count++;
@@ -181,23 +168,12 @@ public class FortunaStandalone extends BasePRNGStandalone implements Serializabl
     @Override
   public void addRandomBytes(byte[] buf, int offset, int length)
   {
+    if (pools == null)
+        return;
     pools[pool].update(buf, offset, length);
     if (pool == 0)
       pool0Count += length;
     pool = (pool + 1) % NUM_POOLS;
-  }
-
-  public void addRandomEvent(RandomEventStandalone event)
-  {
-    if (event.getPoolNumber() < 0 || event.getPoolNumber() >= pools.length)
-      throw new IllegalArgumentException("pool number out of range: "
-                                         + event.getPoolNumber());
-    pools[event.getPoolNumber()].update(event.getSourceNumber());
-    pools[event.getPoolNumber()].update((byte) event.getData().length);
-    byte data[] = event.getData();
-    pools[event.getPoolNumber()].update(data, 0, data.length); //event.getData());
-    if (event.getPoolNumber() == 0)
-      pool0Count += event.getData().length;
   }
 
   // Reading and writing this object is equivalent to storing and retrieving
@@ -222,7 +198,7 @@ public class FortunaStandalone extends BasePRNGStandalone implements Serializabl
    * right; Fortuna itself is basically a wrapper around this generator
    * that manages reseeding in a secure way.
    */
-  public static class Generator extends BasePRNGStandalone implements Cloneable
+  private static class Generator extends BasePRNGStandalone implements Cloneable
   {
 
     private static final int LIMIT = 1 << 20;

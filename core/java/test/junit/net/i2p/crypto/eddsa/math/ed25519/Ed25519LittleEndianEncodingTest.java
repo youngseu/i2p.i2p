@@ -1,8 +1,21 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa.math.ed25519;
 
 import net.i2p.crypto.eddsa.math.*;
 import org.hamcrest.core.IsEqual;
 import org.junit.*;
+import static org.hamcrest.MatcherAssert.assertThat;
+
 
 import java.math.BigInteger;
 import java.security.SecureRandom;
@@ -28,8 +41,8 @@ public class Ed25519LittleEndianEncodingTest {
         final byte[] bytes2 = MathUtils.getField().getEncoding().encode(fieldElement2);
 
         // Assert:
-        Assert.assertThat(bytes1, IsEqual.equalTo(MathUtils.toByteArray(BigInteger.ZERO)));
-        Assert.assertThat(bytes2, IsEqual.equalTo(MathUtils.toByteArray(BigInteger.ONE)));
+        assertThat(bytes1, IsEqual.equalTo(MathUtils.toByteArray(BigInteger.ZERO)));
+        assertThat(bytes2, IsEqual.equalTo(MathUtils.toByteArray(BigInteger.ONE)));
     }
 
     @Test
@@ -47,7 +60,7 @@ public class Ed25519LittleEndianEncodingTest {
             final byte[] bytes = MathUtils.getField().getEncoding().encode(fieldElement1);
 
             // Assert:
-            Assert.assertThat(bytes, IsEqual.equalTo(MathUtils.toByteArray(b.mod(MathUtils.getQ()))));
+            assertThat(bytes, IsEqual.equalTo(MathUtils.toByteArray(b.mod(MathUtils.getQ()))));
         }
     }
 
@@ -65,8 +78,8 @@ public class Ed25519LittleEndianEncodingTest {
         final BigInteger b2 = MathUtils.toBigInteger(f2.t);
 
         // Assert:
-        Assert.assertThat(b1, IsEqual.equalTo(BigInteger.ZERO));
-        Assert.assertThat(b2, IsEqual.equalTo(BigInteger.ONE));
+        assertThat(b1, IsEqual.equalTo(BigInteger.ZERO));
+        assertThat(b2, IsEqual.equalTo(BigInteger.ONE));
     }
 
     @Test
@@ -83,7 +96,7 @@ public class Ed25519LittleEndianEncodingTest {
             final BigInteger b2 = MathUtils.toBigInteger(f.t).mod(MathUtils.getQ());
 
             // Assert:
-            Assert.assertThat(b2, IsEqual.equalTo(b1));
+            assertThat(b2, IsEqual.equalTo(b1));
         }
     }
 
@@ -99,7 +112,7 @@ public class Ed25519LittleEndianEncodingTest {
             final FieldElement f = new Ed25519FieldElement(MathUtils.getField(), t);
 
             // Assert:
-            Assert.assertThat(MathUtils.getField().getEncoding().isNegative(f), IsEqual.equalTo(isNegative));
+            assertThat(MathUtils.getField().getEncoding().isNegative(f), IsEqual.equalTo(isNegative));
         }
     }
 }

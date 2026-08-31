@@ -1,24 +1,19 @@
 <%@page contentType="text/html" %>
-<%@page trimDirectiveWhitespaces="true"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("configure bandwidth")%>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
-
+</head><body>
 <%@include file="summary.jsi" %>
-
-<jsp:useBean class="net.i2p.router.web.ConfigNetHelper" id="nethelper" scope="request" />
-<jsp:setProperty name="nethelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
-<h1><%=intl._t("I2P Bandwidth Configuration")%></h1>
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigNetHelper" id="nethelper" scope="request" />
+<jsp:setProperty name="nethelper" property="contextId" value="<%=i2pcontextId%>" />
+<h1><%=intl._t("Configuration")%></h1>
 <div class="main" id="config_bandwidth">
  <%@include file="confignav.jsi" %>
 
- <jsp:useBean class="net.i2p.router.web.ConfigNetHandler" id="formhandler" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.ConfigNetHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
  <form action="" method="POST">
  <input type="hidden" name="nonce" value="<%=pageNonce%>">
@@ -28,23 +23,30 @@
  <h3 id="bwlimiter" class="tabletitle"><%=intl._t("Bandwidth Limiter")%>&nbsp;<a href="confignet">[<%=intl._t("Advanced Network Configuration")%>]</a></h3>
  <table id="bandwidthconfig" class="configtable">
  <tr><td class="infohelp" colspan="2">
- <b><%=intl._t("I2P will work best if you configure your rates to match the speed of your internet connection.")%></b>
- </td></tr>
-   <tr><td><input style="text-align: right; width: 5em;" name="inboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="inboundRate" />" >
+ <b><%=intl._t("I2P will work best if you configure your rates to match the speed of your internet connection.")%></b><p>
+<%=intl._t("All sidebar values are in bytes per second, not bits per second.")%>
+<%=intl._t("You may change your bandwidth limits here.")%>
+<%=intl._t("The more bandwidth you make available, the more you help the network and improve your own anonymity, so please take the time to review the settings.")%>
+<%=intl._t("If you are unsure of your network's speed, use the <a href=\"/welcome?page=3\">Bandwidth Test</a>.")%>
+<%=intl._t("Your upstream share amount (KBps Out) will determine your overall contribution to the network.")%>
+</p></td></tr>
+<%-- display burst, set standard, handler will fix up --%>
+   <tr><td><input style="text-align: right; width: 5em;" name="inboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="inboundBurstRate" />" required>
           <%=intl._t("KBps In")%>
-        </td><td>(<jsp:getProperty name="nethelper" property="inboundRateBits" />)</td>
-<% /********
+        </td><td>(<jsp:getProperty name="nethelper" property="inboundBurstRateBits" />)</td>
+<%--
 <!-- let's keep this simple...
  bursting up to
     <input name="inboundburstrate" type="text" size="5" value="<jsp:getProperty name="nethelper" property="inboundBurstRate" />" /> KBps for
     <jsp:getProperty name="nethelper" property="inboundBurstFactorBox" /><br>
 -->
-*********/ %>
+--%>
     </tr><tr>
-        <td><input style="text-align: right; width: 5em;" name="outboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="outboundRate" />" >
+<%-- display burst, set standard, handler will fix up --%>
+        <td><input style="text-align: right; width: 5em;" name="outboundrate" type="text" size="5" maxlength="5" value="<jsp:getProperty name="nethelper" property="outboundBurstRate" />" required>
          <%=intl._t("KBps Out")%>
-        </td><td>(<jsp:getProperty name="nethelper" property="outboundRateBits" />)</td>
-<% /********
+        </td><td>(<jsp:getProperty name="nethelper" property="outboundBurstRateBits" />)</td>
+<%--
 <!-- let's keep this simple...
  bursting up to
     <input name="outboundburstrate" type="text" size="2" value="<jsp:getProperty name="nethelper" property="outboundBurstRate" />" /> KBps for
@@ -52,13 +54,13 @@
  <i>KBps = kilobytes per second = 1024 bytes per second = 8192 bits per second.<br>
     A negative rate sets the default.</i><br>
 -->
-*********/ %>
+--%>
     </tr><tr>
         <td><jsp:getProperty name="nethelper" property="sharePercentageBox" /> <%=intl._t("Share")%></td>
         <td>(<jsp:getProperty name="nethelper" property="shareRateBits" />)
 </td></tr>
 <tr><td class="infohelp" colspan="2">
-<% int share = nethelper.getShareBandwidth();
+<% int share = Math.round(nethelper.getShareBandwidth() * 1.024f);
     if (share < 12) {
         out.print("<b>");
         out.print(intl._t("NOTE"));

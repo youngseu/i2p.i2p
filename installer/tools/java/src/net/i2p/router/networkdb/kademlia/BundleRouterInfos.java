@@ -29,7 +29,7 @@ import net.i2p.data.DataFormatException;
 import net.i2p.data.Hash;
 import net.i2p.data.router.RouterAddress;
 import net.i2p.data.router.RouterInfo;
-import net.i2p.router.transport.BadCountries;
+import net.i2p.router.transport.StrictCountries;
 import net.i2p.router.transport.GeoIP;
 import net.i2p.util.FileUtil;
 
@@ -46,7 +46,7 @@ import net.i2p.util.FileUtil;
 public class BundleRouterInfos {
 
     /**
-     *  Usage: PersistentDataStore -i configDir -o toDir -c count
+     *  Usage: BundleRouterInfos -i configDir -o toDir -c count
      *
      *  Copy a random selection of 'count' router infos from configDir/netDb
      *  to 'toDir'. Skip your own router info, and old, hidden, unreachable, and
@@ -55,7 +55,7 @@ public class BundleRouterInfos {
      *  @since 0.9.15
      */
     public static void main(String[] args) {
-        Getopt g = new Getopt("PersistentDataStore", args, "i:o:c:");
+        Getopt g = new Getopt("BundleRouterInfos", args, "i:o:c:");
         String in = System.getProperty("user.home") + "/.i2p";
         String out = "netDb";
         int count = 200;
@@ -123,7 +123,7 @@ public class BundleRouterInfos {
         List<File> toRead = new ArrayList<File>(2048);
         for (int j = 0; j < Base64.ALPHABET_I2P.length(); j++) {
             File subdir = new File(dbDir, PersistentDataStore.DIR_PREFIX + Base64.ALPHABET_I2P.charAt(j));
-            File[] files = subdir.listFiles(PersistentDataStore.RouterInfoFilter.getInstance());
+            File[] files = subdir.listFiles(PersistentDataStore.RI_FILTER);
             if (files == null)
                 continue;
             routerCount += files.length;
@@ -179,7 +179,7 @@ public class BundleRouterInfos {
                 boolean hasIPv4 = false;
                 boolean dupIP = false;
                 for (RouterAddress addr : addrs) {
-                    if ("SSU".equals(addr.getTransportStyle()) && addr.getOption("ihost0") != null) {
+                    if ("SSU".equals(addr.getTransportStyle()) && addr.getOption("itag0") != null) {
                         hasIntro = true;
                         break;
                     }
@@ -227,7 +227,7 @@ public class BundleRouterInfos {
             for (Map.Entry<String, String> e : ipMap.entrySet()) {
                 String co = geoIP.get(e.getKey());
                 if (co != null) {
-                    if (BadCountries.contains(co)) {
+                    if (StrictCountries.contains(co)) {
                         String name = e.getValue();
                         File toFile = new File(toDir, name);
                         if (toFile.delete()) {

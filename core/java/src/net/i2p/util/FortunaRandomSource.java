@@ -17,6 +17,7 @@ import java.util.Random;
 
 import net.i2p.I2PAppContext;
 import net.i2p.crypto.EntropyHarvester;
+import net.i2p.data.DataHelper;
 
 /**
  * Wrapper around GNU-Crypto's Fortuna PRNG.  This seeds from /dev/urandom and
@@ -77,19 +78,35 @@ public class FortunaRandomSource extends RandomSource implements EntropyHarveste
      * Ok, so we're going to have it return between 0 and n (including 0, excluding n), since 
      * thats what it has been used for.
      *
+     * Unlike Java's Random, which throws IAE, this returns 0 if n is 0.
+     *
+     * @param n non-negative
+     * @throws IllegalArgumentException if n is negative
      */
     @Override
     public int nextInt(int n) {
-        if (n == 0) return 0;
+        if (n == 1 || n == 0) return 0;
         int rv = signedNextInt(n);
         if (rv < 0) 
             rv = 0 - rv;
         rv %= n;
         return rv;
     }
-    
+
     @Override
-    public int nextInt() { return signedNextInt(Integer.MAX_VALUE); }
+    public int nextInt() {
+        return signedNextInt() & 0x7fffffff;
+    }
+
+    /**
+     *  @return all possible int values, positive and negative
+     *  @since 0.9.54
+     */
+    public int signedNextInt() {
+        byte[] b = new byte[4];
+        nextBytes(b);
+        return (int) DataHelper.fromLong(b, 0, 4);
+    }
 
     /**
      * Implementation from Sun's java.util.Random javadocs
@@ -98,23 +115,16 @@ public class FortunaRandomSource extends RandomSource implements EntropyHarveste
         if (n<=0)
           throw new IllegalArgumentException("n must be positive");
 
-        ////
-        // this shortcut from sun's docs neither works nor is necessary.
-        //
-        //if ((n & -n) == n)  {
-        //    // i.e., n is a power of 2
-        //    return (int)((n * (long)nextBits(31)) >> 31);
-        //}
-
+        boolean isPowerOfTwo = (n & (n - 1)) == 0;
         // get at least 4 extra bits if possible for better
         // distribution after the %
         // No extra needed if power of two.
         int numBits;
-        if (n > 0x100000)
+        if (n > 0x1000000 || (n > 0x100000 && !isPowerOfTwo))
             numBits = 31;
-        else if (n > 0x1000)
+        else if (n > 0x10000 || (n > 0x1000 && !isPowerOfTwo))
             numBits = 24;
-        else if (n > 0x10)
+        else if (n > 0x100 || (n > 0x10 && !isPowerOfTwo))
             numBits = 16;
         else
             numBits = 8;
@@ -123,40 +133,35 @@ public class FortunaRandomSource extends RandomSource implements EntropyHarveste
             rv = nextBits(numBits);
         }
         return rv % n;
-        
-        //int bits, val;
-        //do {
-        //    bits = nextBits(31);
-        //    val = bits % n;
-        //} while(bits - val + (n-1) < 0);
-        //
-        //return val;
     }
 
     /**
      * Like the modified nextInt, nextLong(n) returns a random number from 0 through n,
      * including 0, excluding n.
+     *
+     * Unlike Java's Random, which throws IAE, this returns 0 if n is 0.
+     *
+     * @param n non-negative
+     * @throws IllegalArgumentException if n is negative
      */
     @Override
     public long nextLong(long n) {
-        if (n == 0) return 0;
-        long rv = signedNextLong();
+        if (n == 1 || n == 0) return 0;
+        long rv = nextLong();
         if (rv < 0) 
             rv = 0 - rv;
         rv %= n;
         return rv;
     }
     
-    @Override
-    public long nextLong() { return signedNextLong(); }
-
     /**
-     * Implementation from Sun's java.util.Random javadocs
+     *  @return all possible long values, positive and negative
      */
-    private long signedNextLong() {
-        synchronized(_fortuna) {
-            return ((long)nextBits(32) << 32) + nextBits(32);
-        }
+    @Override
+    public long nextLong() {
+        byte[] b = new byte[8];
+        nextBytes(b);
+        return DataHelper.fromLong8(b, 0);
     }
 
     @Override
@@ -264,9 +269,6 @@ public class FortunaRandomSource extends RandomSource implements EntropyHarveste
         return (int)rv;
     }
     
-    @Override
-    public EntropyHarvester harvester() { return this; }
- 
     /** reseed the fortuna */
     @Override
     public void feedEntropy(String source, long data, int bitoffset, int bits) {

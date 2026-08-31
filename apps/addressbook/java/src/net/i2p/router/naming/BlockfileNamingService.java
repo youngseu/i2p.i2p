@@ -79,6 +79,8 @@ import net.metanotion.util.skiplist.SkipList;
  *         Each property key is a hostname.
  *         Each property value is the empty string.
  *
+ * There are host databases for each name in "lists", and a "conflicts" database.
+ *
  * For each host database, there is a skiplist containing
  * the hosts for that database.
  * The keys/values in these skiplists are as follows:
@@ -98,7 +100,7 @@ import net.metanotion.util.skiplist.SkipList;
  *
  * </pre>
  *
- * All host names are converted to lower case.
+ * All hostnames are converted to lower case.
  *
  * @since 0.8.7, moved from core to addressbook in 0.9.31
  */
@@ -125,6 +127,7 @@ public class BlockfileNamingService extends DummyNamingService {
 
     private static final String HOSTS_DB = "hostsdb.blockfile";
     private static final String FALLBACK_LIST = "hosts.txt";
+    private static final String CONFLICTS_LIST = "conflicts";
     private static final String PROP_FORCE = "i2p.naming.blockfile.writeInAppContext";
 
     private static final String INFO_SKIPLIST = "%%__INFO__%%";
@@ -138,9 +141,11 @@ public class BlockfileNamingService extends DummyNamingService {
     private static final String VERSION = "4";
 
     private static final String PROP_ADDED = "a";
-    private static final String PROP_MODDED = "m";
+    // See susidns
+    //private static final String PROP_MODDED = "m";
     private static final String PROP_SOURCE = "s";
-    private static final String PROP_VALIDATED = "v";
+    // See susidns
+    //private static final String PROP_VALIDATED = "v";
     
     private static final String DUMMY = "";
     private static final int NEGATIVE_CACHE_SIZE = 32;
@@ -249,6 +254,7 @@ public class BlockfileNamingService extends DummyNamingService {
 
             int total = 0;
             for (String hostsfile : getFilenames(list)) {
+                _lists.add(hostsfile);
                 File file = new File(_context.getRouterDir(), hostsfile);
                 if ((!file.exists()) || !(file.canRead()))
                     continue;
@@ -288,7 +294,6 @@ public class BlockfileNamingService extends DummyNamingService {
                 }
                 total += count;
                 _log.logAlways(Log.INFO, "Migrating " + count + " hosts from " + file + " to new hosts database");
-                _lists.add(hostsfile);
             }
             if (_log.shouldLog(Log.INFO))
                 _log.info("DB init took " + DataHelper.formatDuration(_context.clock().now() - start));
@@ -760,6 +765,10 @@ public class BlockfileNamingService extends DummyNamingService {
      */
     @Override
     public Destination lookup(String hostname, Properties lookupOptions, Properties storedOptions) {
+        if (hostname.endsWith(".i2p.alt")) {
+            // RFC 9476
+            hostname = hostname.substring(0, hostname.length() - 4);
+        }
         Destination rv = lookup2(hostname, lookupOptions, storedOptions);
         if (rv == null) {
             // if hostname starts with "www.", strip and try again
@@ -785,13 +794,15 @@ public class BlockfileNamingService extends DummyNamingService {
             listname = lookupOptions.getProperty("list");
 
         Destination d = null;
+        boolean isb32 = hostname.length() >= BASE32_HASH_LENGTH + 8 && hostname.toLowerCase(Locale.US).endsWith(".b32.i2p");
         // only use cache if we aren't retreiving options or specifying the list
-        if (listname == null && storedOptions == null) {
-            d = super.lookup(hostname, null, null);
+        // except support ls2 options for b32 (prop. 167)
+        if (listname == null && (storedOptions == null || isb32)) {
+            d = super.lookup(hostname, null, storedOptions);
             if (d != null)
                 return d;
             // Base32 failed?
-            if (hostname.length() == BASE32_HASH_LENGTH + 8 && hostname.toLowerCase(Locale.US).endsWith(".b32.i2p"))
+            if (isb32)
                 return null;
         }
 
@@ -824,7 +835,7 @@ public class BlockfileNamingService extends DummyNamingService {
         }
         if (d != null) {
             putCache(hostname, d);
-        } else {
+        } else if (listname == null) {
             synchronized(_negativeCache) {
                 _negativeCache.put(key, DUMMY);
             }
@@ -842,7 +853,7 @@ public class BlockfileNamingService extends DummyNamingService {
      */
     private List<Destination> lookupAll2(String hostname, Properties lookupOptions, List<Properties> storedOptions) {
         // only use cache for b32
-        if (hostname.length() == BASE32_HASH_LENGTH + 8 && hostname.toLowerCase(Locale.US).endsWith(".b32.i2p")) {
+        if (hostname.length() >= BASE32_HASH_LENGTH + 8 && hostname.toLowerCase(Locale.US).endsWith(".b32.i2p")) {
             Destination d = super.lookup(hostname, null, null);
             if (d != null) {
                 if (storedOptions != null)
@@ -865,14 +876,12 @@ public class BlockfileNamingService extends DummyNamingService {
         synchronized(_bf) {
             if (_isClosed)
                 return null;
-            for (String list : _lists) { 
-                if (listname != null && !list.equals(listname))
-                    continue;
-                try {
-                    DestEntry de = getEntry(list, key);
+            try {
+                if (listname != null) {
+                    DestEntry de = getEntry(listname, key);
                     if (de != null) {
                         if (!validate(key, de, listname))
-                            continue;
+                            return null;
                         if (de.destList != null) {
                             rv = de.destList;
                             if (storedOptions != null)
@@ -882,17 +891,32 @@ public class BlockfileNamingService extends DummyNamingService {
                             if (storedOptions != null)
                                 storedOptions.add(de.props);
                         }
-                        break;
                     }
-                } catch (IOException ioe) {
-                    break;
+                } else {
+                    for (String list : _lists) { 
+                        DestEntry de = getEntry(list, key);
+                        if (de != null) {
+                            if (!validate(key, de, listname))
+                                continue;
+                            if (de.destList != null) {
+                                rv = de.destList;
+                                if (storedOptions != null)
+                                    storedOptions.addAll(de.propsList);
+                            } else {
+                                rv = Collections.singletonList(de.dest);
+                                if (storedOptions != null)
+                                    storedOptions.add(de.props);
+                            }
+                            break;
+                        }
+                    }
                 }
-            }
+            } catch (IOException ioe) {}
             deleteInvalid();
         }
         if (rv != null) {
             putCache(hostname, rv.get(0));
-        } else {
+        } else if (listname == null) {
             synchronized(_negativeCache) {
                 _negativeCache.put(key, DUMMY);
             }
@@ -963,7 +987,8 @@ public class BlockfileNamingService extends DummyNamingService {
                     removeCache(hostname);
                     // removeReverseEntry(key, oldDest) ???
                 }
-                addReverseEntry(key, d);
+                if (!listname.equals(CONFLICTS_LIST))
+                    addReverseEntry(key, d);
                 for (NamingServiceListener nsl : _listeners) { 
                     if (changed)
                         nsl.entryChanged(this, hostname, d, options);
@@ -1038,7 +1063,8 @@ public class BlockfileNamingService extends DummyNamingService {
                 for (int i = 0; i < dests.size(); i++) {
                     Destination d = dests.get(i);
                     Properties options = propsList.get(i);
-                    addReverseEntry(key, d);
+                    if (!listname.equals(CONFLICTS_LIST))
+                        addReverseEntry(key, d);
                     for (NamingServiceListener nsl : _listeners) { 
                         if (changed)
                             nsl.entryChanged(this, hostname, d, options);
@@ -1086,10 +1112,12 @@ public class BlockfileNamingService extends DummyNamingService {
                 boolean rv = removed != null;
                 if (rv) {
                     removeCache(hostname);
-                    try {
-                        removeReverseEntry(key, removed.dest);
-                    } catch (ClassCastException cce) {
-                        _log.error("DB reverse remove error", cce);
+                    if (!listname.equals(CONFLICTS_LIST)) {
+                        try {
+                            removeReverseEntry(key, removed.dest);
+                        } catch (ClassCastException cce) {
+                            _log.error("DB reverse remove error", cce);
+                        }
                     }
                     for (NamingServiceListener nsl : _listeners) { 
                         nsl.entryRemoved(this, key);
@@ -1395,6 +1423,11 @@ public class BlockfileNamingService extends DummyNamingService {
                             p = de.propsList.get(i);
                             d = de.destList.get(i);
                         }
+                        out.write("# ");
+                        out.write(key);
+                        out.write(": ");
+                        out.write(d.toBase32());
+                        out.write(nl);
                         out.write(key);
                         out.write('=');
                         out.write(d.toBase64());
@@ -1424,6 +1457,8 @@ public class BlockfileNamingService extends DummyNamingService {
     }
 
     /**
+     * Broken prior to 0.9.62, would only return one name.
+     *
      * @param options If non-null and contains the key "list", get
      *                from that list (default "hosts.txt", NOT all lists)
      *                Key "skip": skip that many entries
@@ -1495,6 +1530,7 @@ public class BlockfileNamingService extends DummyNamingService {
                             break;
                         }
                     }
+                    iter.next();
                     if (search != null && key.indexOf(search) < 0)
                         continue;
                     rv.add(key);
@@ -1709,12 +1745,16 @@ public class BlockfileNamingService extends DummyNamingService {
                             newDests.add(dests.get(j));
                     }
                     storedOptions.remove(i);
-                    removeReverseEntry(hostname, d);
+                    boolean removerev = true;
                     if (options != null) {
                         String list = options.getProperty("list");
-                        if (list != null)
+                        if (list != null) {
                             storedOptions.get(0).setProperty("list", list);
+                            removerev = !list.equals(CONFLICTS_LIST);
+                        }
                     }
+                    if (removerev)
+                        removeReverseEntry(hostname, d);
                     return put(hostname, newDests, storedOptions, false);
                 }
             }
@@ -2062,9 +2102,8 @@ public class BlockfileNamingService extends DummyNamingService {
             }
             if (baos.size() > 65535)
                 throw new DataFormatException("Properties too big (65535 max): " + baos.size());
-            byte propBytes[] = baos.toByteArray();
-            DataHelper.writeLong(rawStream, 2, propBytes.length);
-            rawStream.write(propBytes);
+            DataHelper.writeLong(rawStream, 2, baos.size());
+            baos.writeTo(rawStream);
         } else {
             DataHelper.writeLong(rawStream, 2, 0);
         }
@@ -2188,15 +2227,11 @@ public class BlockfileNamingService extends DummyNamingService {
         I2PAppContext ctx = new I2PAppContext(ctxProps);
         BlockfileNamingService bns = new BlockfileNamingService(ctx);
         Properties sprops = new Properties();
-        String lname = "privatehosts.txt";
-        sprops.setProperty("list", lname);
-        System.out.println("List " + lname + " contains " + bns.size(sprops));
-        lname = "userhosts.txt";
-        sprops.setProperty("list", lname);
-        System.out.println("List " + lname + " contains " + bns.size(sprops));
-        lname = "hosts.txt";
-        sprops.setProperty("list", lname);
-        System.out.println("List " + lname + " contains " + bns.size(sprops));
+        String[] names = { "privatehosts.txt", "userhosts.txt", "hosts.txt", CONFLICTS_LIST, REVERSE_SKIPLIST };
+        for (String lname : names) {
+            sprops.setProperty("list", lname);
+            System.out.println("List " + lname + " contains " + bns.size(sprops) + " entries");
+        }
 
 /****
         List<String> names = null;

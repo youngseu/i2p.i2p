@@ -388,11 +388,21 @@ public class HTTPRequest extends HTTPPacket
 	
 	private Socket postSocket = null;
 	
+	private String bindTo = null;
+
+	/**
+	 *  I2P - bind HTTP socket to specified local host address
+	 *
+	 *  @param host null to not bind to a particlar local address
+	 *  @since 0.9.50
+	 */
+	public void setBindHost(String host) { bindTo = host; }
+
 	public HTTPResponse post(String host, int port, boolean isKeepAlive)
 	{
 		HTTPResponse httpRes = new HTTPResponse();
 
-		setHost(host);
+		setHost(host, port);
 		
 		setConnection((isKeepAlive == true) ? HTTP.KEEP_ALIVE : HTTP.CLOSE);
 		
@@ -413,6 +423,16 @@ public class HTTPRequest extends HTTPPacket
 				// And set the soTimeout to 2 second (for reads).
 				//postSocket = new Socket(host, port);
 				postSocket = new Socket();
+				if (bindTo != null) {
+					boolean fromv6 = bindTo.contains(":");
+					boolean tov6 = host.contains(":");
+					if (fromv6 == tov6) {
+						//Debug.warning("POST bindTo " + bindTo + " connect to " + host);
+						postSocket.bind(new InetSocketAddress(bindTo, 0));
+					} else {
+						Debug.warning("POST mismatch, NOT binding to " + bindTo + " connect to " + host);
+					}
+				}
 				postSocket.setSoTimeout(2000);
 				SocketAddress sa = new InetSocketAddress(host, port);
 				postSocket.connect(sa, 3000);

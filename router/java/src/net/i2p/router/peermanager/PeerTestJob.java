@@ -12,7 +12,6 @@ import net.i2p.data.i2np.DeliveryStatusMessage;
 import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.router.JobImpl;
 import net.i2p.router.MessageSelector;
-import net.i2p.router.PeerSelectionCriteria;
 import net.i2p.router.ReplyJob;
 import net.i2p.router.RouterContext;
 import net.i2p.router.TunnelInfo;
@@ -27,7 +26,7 @@ import net.i2p.util.Log;
  * TODO - What's the point? Disable this? See also notes in PeerManager.selectPeers().
  * TODO - Use something besides sending the peer's RI to itself?
  */
-public class PeerTestJob extends JobImpl {
+class PeerTestJob extends JobImpl {
     private final Log _log;
     private PeerManager _manager;
     private boolean _keepTesting;
@@ -49,7 +48,6 @@ public class PeerTestJob extends JobImpl {
     /** number of peers to test each round */
     private int getTestConcurrency() { return 1; }
     
-    // FIXME Exporting non-public type through public API FIXME
     public synchronized void startTesting(PeerManager manager) {
         _manager = manager;
         _keepTesting = true;
@@ -194,10 +192,11 @@ public class PeerTestJob extends JobImpl {
      *
      */
     private class ReplySelector implements MessageSelector {
-        private long _expiration;
-        private long _nonce;
-        private Hash _peer;
+        private final long _expiration;
+        private final long _nonce;
+        private final Hash _peer;
         private boolean _matchFound;
+
         public ReplySelector(Hash peer, long nonce, long expiration) {
             _nonce = nonce;
             _expiration = expiration;
@@ -207,7 +206,7 @@ public class PeerTestJob extends JobImpl {
         public boolean continueMatching() { return false; }
         public long getExpiration() { return _expiration; }
         public boolean isMatch(I2NPMessage message) {
-            if (message instanceof DeliveryStatusMessage) {
+            if (message.getType() == DeliveryStatusMessage.MESSAGE_TYPE) {
                 DeliveryStatusMessage msg = (DeliveryStatusMessage)message;
                 if (_nonce == msg.getMessageId()) {
                     long timeLeft = _expiration - getContext().clock().now();
@@ -229,7 +228,7 @@ public class PeerTestJob extends JobImpl {
         @Override
         public String toString() {
             StringBuilder buf = new StringBuilder(64);
-            buf.append("Test peer ").append(_peer.toBase64().substring(0,4));
+            buf.append("Test peer ").append(_peer.toBase64(), 0, 4);
             buf.append(" with nonce ").append(_nonce);
             return buf.toString();
         }
@@ -239,10 +238,11 @@ public class PeerTestJob extends JobImpl {
      * Called when the peer's response is found
      */
     private class PeerReplyFoundJob extends JobImpl implements ReplyJob {
-        private RouterInfo _peer;
-        private long _testBegin;
-        private TunnelInfo _replyTunnel;
-        private TunnelInfo _sendTunnel;
+        private final RouterInfo _peer;
+        private final long _testBegin;
+        private final TunnelInfo _replyTunnel;
+        private final TunnelInfo _sendTunnel;
+
         public PeerReplyFoundJob(RouterContext context, RouterInfo peer, TunnelInfo replyTunnel, TunnelInfo sendTunnel) {
             super(context);
             _peer = peer;
@@ -274,10 +274,11 @@ public class PeerTestJob extends JobImpl {
      * Called when the peer's response times out
      */
     private class PeerReplyTimeoutJob extends JobImpl {
-        private RouterInfo _peer;
-        private TunnelInfo _replyTunnel;
-        private TunnelInfo _sendTunnel;
-        private ReplySelector _selector;
+        private final RouterInfo _peer;
+        private final TunnelInfo _replyTunnel;
+        private final TunnelInfo _sendTunnel;
+        private final ReplySelector _selector;
+
         public PeerReplyTimeoutJob(RouterContext context, RouterInfo peer, TunnelInfo replyTunnel, TunnelInfo sendTunnel, ReplySelector sel) {
             super(context);
             _peer = peer;

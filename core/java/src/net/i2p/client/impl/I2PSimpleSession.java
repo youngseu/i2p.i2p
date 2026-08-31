@@ -80,7 +80,7 @@ public class I2PSimpleSession extends I2PSessionImpl2 {
                     _reader = new QueuedI2CPMessageReader(_queue, this);
                     _reader.startReading();
                 } else {
-                    if (Boolean.parseBoolean(getOptions().getProperty(PROP_ENABLE_SSL))) {
+                    if (Boolean.parseBoolean(getOptions().getProperty(I2PClient.PROP_ENABLE_SSL))) {
                         try {
                             I2PSSLSocketFactory fact = new I2PSSLSocketFactory(_context, false, "certificates/i2cp");
                             _socket = fact.createSocket(_hostname, _portNum);
@@ -110,24 +110,24 @@ public class I2PSimpleSession extends I2PSessionImpl2 {
                 // Auth was not enforced on a simple session until 0.9.11
                 // We will get disconnected for router version < 0.9.11 since it doesn't
                 // support the AuthMessage
-                if ((!opts.containsKey(PROP_USER)) && (!opts.containsKey(PROP_PW))) {
+                if ((!opts.containsKey(I2PClient.PROP_USER)) && (!opts.containsKey(I2PClient.PROP_PW))) {
                     // auto-add auth if not set in the options
-                    String configUser = _context.getProperty(PROP_USER);
-                    String configPW = _context.getProperty(PROP_PW);
+                    String configUser = _context.getProperty(I2PClient.PROP_USER);
+                    String configPW = _context.getProperty(I2PClient.PROP_PW);
                     if (configUser != null && configPW != null) {
-                        opts.setProperty(PROP_USER, configUser);
-                        opts.setProperty(PROP_PW, configPW);
+                        opts.setProperty(I2PClient.PROP_USER, configUser);
+                        opts.setProperty(I2PClient.PROP_PW, configPW);
                     }
                 }
-                if (opts.containsKey(PROP_USER) && opts.containsKey(PROP_PW)) {
+                if (opts.containsKey(I2PClient.PROP_USER) && opts.containsKey(I2PClient.PROP_PW)) {
                     Properties auth = new OrderedProperties();
-                    auth.setProperty(PROP_USER, opts.getProperty(PROP_USER));
-                    auth.setProperty(PROP_PW, opts.getProperty(PROP_PW));
-                    sendMessage_unchecked(new GetDateMessage(CoreVersion.VERSION, auth));
+                    auth.setProperty(I2PClient.PROP_USER, opts.getProperty(I2PClient.PROP_USER));
+                    auth.setProperty(I2PClient.PROP_PW, opts.getProperty(I2PClient.PROP_PW));
+                    sendMessage_unchecked(new GetDateMessage(CoreVersion.PUBLISHED_VERSION, auth));
                 } else {
                     // we must now send a GetDate even in SimpleSession, or we won't know
                     // what version we are talking with and cannot use HostLookup
-                    sendMessage_unchecked(new GetDateMessage(CoreVersion.VERSION));
+                    sendMessage_unchecked(new GetDateMessage(CoreVersion.PUBLISHED_VERSION));
                 }
                 waitForDate();
             }
@@ -168,11 +168,9 @@ public class I2PSimpleSession extends I2PSessionImpl2 {
      */
     private static class SimpleMessageHandlerMap extends I2PClientMessageHandlerMap {
         public SimpleMessageHandlerMap(I2PAppContext context) {
-            int highest = Math.max(DestReplyMessage.MESSAGE_TYPE, BandwidthLimitsMessage.MESSAGE_TYPE);
-            highest = Math.max(highest, DisconnectMessage.MESSAGE_TYPE);
-            highest = Math.max(highest, HostReplyMessage.MESSAGE_TYPE);
-            highest = Math.max(highest, SetDateMessage.MESSAGE_TYPE);
-            _handlers = new I2CPMessageHandler[highest+1];
+            // 39 = highest type expected from router
+            // http://i2p-projekt.i2p/spec/i2cp#message-types
+            super(HostReplyMessage.MESSAGE_TYPE);
             _handlers[DestReplyMessage.MESSAGE_TYPE] = new DestReplyMessageHandler(context);
             _handlers[BandwidthLimitsMessage.MESSAGE_TYPE] = new BWLimitsMessageHandler(context);
             _handlers[DisconnectMessage.MESSAGE_TYPE] = new DisconnectMessageHandler(context);

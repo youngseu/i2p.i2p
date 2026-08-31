@@ -60,8 +60,12 @@ public class Destination extends KeysAndCert {
         byte[] padding;
         if (c.getCertificateType() == Certificate.CERTIFICATE_TYPE_KEY) {
             // convert SPK to new SPK and padding
+            // EncTypes 1-3 allowed in Destinations, see proposal 145
             KeyCertificate kcert = c.toKeyCertificate();
-            padding = sk.getPadding(kcert);
+            byte[] pad1 = pk.getPadding(kcert);
+            byte[] pad2 = sk.getPadding(kcert);
+            padding = combinePadding(pad1, pad2);
+            pk = pk.toTypedKey(kcert);
             sk = sk.toTypedKey(kcert);
             c = kcert;
         } else {
@@ -70,7 +74,8 @@ public class Destination extends KeysAndCert {
         Destination rv;
         synchronized(_cache) {
             rv = _cache.get(sk);
-            if (rv != null && rv.getPublicKey().equals(pk) && rv.getCertificate().equals(c)) {
+            if (rv != null && rv.getPublicKey().equals(pk) && rv.getCertificate().equals(c) &&
+                DataHelper.eq(rv.getPadding(), padding)) {
                 //if (STATS)
                 //    I2PAppContext.getGlobalContext().statManager().addRateData("DestCache", 1);
                 return rv;
@@ -97,10 +102,15 @@ public class Destination extends KeysAndCert {
      * @since 0.9.9
      */
     private Destination(PublicKey pk, SigningPublicKey sk, Certificate c, byte[] padding) {
+        if (padding != null) {
+            int sz = pk.length() + sk.length() + padding.length;
+            if (sz != 384)
+                throw new IllegalArgumentException("bad total length " + sz);
+        }
         _publicKey = pk;
         _signingKey = sk;
         _certificate = c;
-        _padding = padding;
+        setPadding(padding);
     }
 
     /**
@@ -112,10 +122,7 @@ public class Destination extends KeysAndCert {
         int cur = offset;
         System.arraycopy(_publicKey.getData(), 0, target, cur, PublicKey.KEYSIZE_BYTES);
         cur += PublicKey.KEYSIZE_BYTES;
-        if (_padding != null) {
-            System.arraycopy(_padding, 0, target, cur, _padding.length);
-            cur += _padding.length;
-        }
+        cur = writePaddingBytes(target, cur);
         int spkTrunc = Math.min(SigningPublicKey.KEYSIZE_BYTES, _signingKey.length());
         System.arraycopy(_signingKey.getData(), 0, target, cur, spkTrunc);
         cur += spkTrunc;
@@ -127,8 +134,10 @@ public class Destination extends KeysAndCert {
      * deprecated was used only by Packet.java in streaming, now unused
      * Warning - used by i2p-bote. Does NOT support alternate key types. DSA-SHA1 only.
      *
+     * @deprecated
      * @throws IllegalStateException if data already set
      */
+    @Deprecated
     public int readBytes(byte source[], int offset) throws DataFormatException {
         if (source == null) throw new DataFormatException("Null source");
         if (source.length <= offset + PublicKey.KEYSIZE_BYTES + SigningPublicKey.KEYSIZE_BYTES) 
@@ -154,8 +163,13 @@ public class Destination extends KeysAndCert {
         if (_certificate.getCertificateType() == Certificate.CERTIFICATE_TYPE_KEY) {
             // cert data included in keys
             rv += 7;
-            if (_padding != null)
-                rv += _padding.length;
+            if (_paddingBlocks > 1) {
+                rv += 32 * _paddingBlocks;
+            } else {
+                byte[] padding = getPadding();
+                if (padding != null)
+                    rv += padding.length;
+            }
         } else {
             rv += _certificate.size();
         }
@@ -181,7 +195,7 @@ public class Destination extends KeysAndCert {
      */
     public String toBase32() {
         try {
-            return Base32.encode(getHash().getData()) + ".b32.i2p";
+            return getHash().toBase32();
         } catch (IllegalStateException ise) {
             return null;
         }

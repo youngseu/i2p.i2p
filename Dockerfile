@@ -1,62 +1,88 @@
-FROM meeh/java8server:latest
-# Docker image based on Alpine with Java.
+ARG TARGETARCH
 
-# We use Oracle Java to run I2P, but uses the openjdk to build it.
+# --- Single builder (Java bytecode is platform-independent) ---
+FROM debian:trixie-slim AS builder
 
+ARG ANT_VERSION="1.10.17"
 
-MAINTAINER Mikal Villa <mikal@sigterm.no>
+WORKDIR /tmp/build
+COPY --exclude=docker . .
 
-ENV GIT_BRANCH="master"
-ENV I2P_PREFIX="/opt/i2p"
-ENV PATH=${I2P_PREFIX}/bin:$PATH
-ENV JAVA_HOME=/usr/lib/jvm/default-jvm
+RUN apt-get update \
+    && apt-get install -y \
+        ca-certificates \
+        curl \
+        gettext \
+        tar \
+        bzip2 \
+        git \
+        openjdk-21-jdk-headless \
+    && echo "javac.version=21" >> override.properties \
+    && echo "javac.release=21" >> override.properties \
+    && echo "build.built-by=Docker" >> override.properties \
+    && echo "build.revision=$(git rev-parse HEAD)" >> override.properties \
+    && curl -fsSL https://dlcdn.apache.org/ant/binaries/apache-ant-${ANT_VERSION}-bin.tar.bz2 | tar -jxf - -C /opt \
+    && /opt/apache-ant-${ANT_VERSION}/bin/ant preppkg-linux-only \
+    && rm -rf pkg-temp/osid pkg-temp/lib/wrapper pkg-temp/lib/wrapper.* \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV GOSU_VERSION=1.7
-ENV GOSU_SHASUM="34049cfc713e8b74b90d6de49690fa601dc040021980812b2f1f691534be8a50  /usr/local/bin/gosu"
+COPY docker docker
 
-RUN mkdir /user && adduser -S -h /user i2p && chown -R i2p:nobody /user
+# --- Runtime stages per architecture ---
+# Note:
+# Separate runtime stages are maintained for each supported
+# architecture to allow future architecture-specific changes.
+# This does not increase the size of the final images.
+FROM debian:trixie-slim AS runtime-amd64
+RUN apt-get update && apt-get install -y \
+        openjdk-21-jre-headless \
+        fonts-dejavu \
+        iproute2 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Adding files first, since Docker.expt is required for installation
-ADD Docker.expt /tmp/Docker.expt
-ADD Docker.entrypoint.sh /entrypoint.sh
+FROM debian:trixie-slim AS runtime-arm64
+RUN apt-get update && apt-get install -y \
+        openjdk-21-jre-headless \
+        fonts-dejavu \
+        iproute2 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Required for wget https
-RUN apk add --no-cache openssl
-# Gosu is a replacement for su/sudo in docker and not a backdoor :) See https://github.com/tianon/gosu
-RUN wget -O /usr/local/bin/gosu https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-amd64 \
-    && echo "${GOSU_SHASUM}" | sha256sum -c && chmod +x /usr/local/bin/gosu
+FROM debian:trixie-slim AS runtime-arm
+RUN apt-get update && apt-get install -y \
+        openjdk-21-jre-headless \
+        fonts-dejavu \
+        iproute2 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-#
-# Each RUN is a layer, adding the dependencies and building i2pd in one layer takes around 8-900Mb, so to keep the
-# image under 200mb we need to remove all the build dependencies in the same "RUN" / layer.
-#
+# Select runtime based on target architecture
+FROM runtime-${TARGETARCH}
 
-# The main layer
-RUN apk --no-cache add build-base git gettext tar bzip2 apache-ant openjdk8 expect \
-    && mkdir -p /usr/src/build \
-    && cd /usr/src/build \
-    && git clone -b ${GIT_BRANCH} https://github.com/i2p/i2p.i2p.git \
-    && cd /usr/src/build/i2p.i2p \
-    && echo "noExe=true" >> build.properties \
-    && ant installer-linux \
-    && cp i2pinstall*.jar /tmp/i2pinstall.jar \
-    && mkdir -p /opt \
-    && chown i2p:root /opt \
-    && chmod u+rw /opt \
-    && gosu i2p expect -f /tmp/Docker.expt \
-    && cd ${I2P_PREFIX} \
-    && rm -fr man docs *.bat *.command *.app /tmp/i2pinstall.jar /tmp/Docker.expt \
-    && rm -fr /usr/src/build \
-    && apk --purge del build-base apache-ant expect tcl expat git openjdk8 openjdk8-jre openjdk8-jre-base openjdk8-jre-lib bzip2 tar \
-      binutils-libs binutils pkgconfig libcurl libc-dev musl-dev g++ make fortify-headers pkgconf giflib libssh2 libxdmcp libxcb \
-      libx11 pcre alsa-lib libxi libxrender libxml2 readline bash openssl \
-    && rm -fr /usr/lib/jvm/default-jre \
-    && ln -sf /opt/jdk/jre /usr/lib/jvm/default-jre \
-    && chmod a+x /entrypoint.sh
+ENV I2P_DIR_BASE="/i2p"
+ENV I2P_DIR_CONFIG="${I2P_DIR_BASE}/.i2p"
+ENV I2PSNARK_DIR="/i2psnark"
+ENV EEPSITE_DIR="${I2P_DIR_CONFIG}/eepsite"
 
+WORKDIR ${I2P_DIR_BASE}
+COPY --from=builder /tmp/build/pkg-temp .
 
+COPY docker/rootfs/ /
+RUN chmod +x /entrypoint/entrypoint.sh
 
-EXPOSE 7654 7656 7657 7658 4444 6668 8998 7659 7660 4445 15000-20000
+# Mount home and snark
+VOLUME ["${I2P_DIR_CONFIG}"]
+VOLUME ["${I2PSNARK_DIR}"]
 
-ENTRYPOINT [ "/entrypoint.sh" ]
+EXPOSE 7654 7656 7657 7658 4444 6668 7659 7660 7670 4445 12345
 
+# Metadata.
+LABEL \
+      org.label-schema.name="i2p" \
+      org.label-schema.description="Docker container for I2P" \
+      org.label-schema.version="1.0" \
+      org.label-schema.vcs-url="https://github.com/i2p/i2p.i2p" \
+      org.label-schema.schema-version="1.0"
+
+RUN groupadd -r i2p && useradd -r -g i2p -d /i2p -s /sbin/nologin i2p \
+ && chown -R i2p:i2p /i2p
+
+ENTRYPOINT ["/entrypoint/entrypoint.sh"]

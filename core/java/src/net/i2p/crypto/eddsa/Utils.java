@@ -1,7 +1,18 @@
+/**
+ * EdDSA-Java by str4d
+ *
+ * To the extent possible under law, the person who associated CC0 with
+ * EdDSA-Java has waived all copyright and related or neighboring rights
+ * to EdDSA-Java.
+ *
+ * You should have received a copy of the CC0 legalcode along with this
+ * work. If not, see <https://creativecommons.org/publicdomain/zero/1.0/>.
+ *
+ */
 package net.i2p.crypto.eddsa;
 
 /**
- * Basic utilities for eddsa.
+ * Basic utilities for EdDSA.
  * Not for external use, not maintained as a public API.
  *
  * @since 0.9.15
@@ -11,6 +22,8 @@ package net.i2p.crypto.eddsa;
 public class Utils {
     /**
      * Constant-time byte comparison.
+     * @param b a byte
+     * @param c a byte
      * @return 1 if b and c are equal, 0 otherwise.
      */
     public static int equal(int b, int c) {
@@ -24,6 +37,8 @@ public class Utils {
 
     /**
      * Constant-time byte[] comparison.
+     * @param b a byte[]
+     * @param c a byte[]
      * @return 1 if b and c are equal, 0 otherwise.
      */
     public static int equal(byte[] b, byte[] c) {
@@ -61,6 +76,9 @@ public class Utils {
      */
     public static byte[] hexToBytes(String s) {
         int len = s.length();
+        if (len % 2 != 0) {
+            throw new IllegalArgumentException("Hex string must have an even length");
+        }
         byte[] data = new byte[len / 2];
         for (int i = 0; i < len; i += 2) {
             data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)

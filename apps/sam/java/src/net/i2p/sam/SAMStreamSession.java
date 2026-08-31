@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.net.ConnectException;
@@ -21,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -62,7 +64,7 @@ class SAMStreamSession implements SAMMessageSess {
     /** stream id (Long) to StreamSender */
     private final HashMap<Integer,StreamSender> sendersMap = new HashMap<Integer,StreamSender>();
 
-    private final AtomicInteger lastNegativeId = new AtomicInteger();;
+    private final AtomicInteger lastNegativeId = new AtomicInteger();
 
     // Can we create outgoing connections?
     protected final boolean canCreate;
@@ -84,7 +86,8 @@ class SAMStreamSession implements SAMMessageSess {
      *
      * Caller MUST call start().
      *
-     * @param dest Base64-encoded destination and private keys (same format as PrivateKeyFile)
+     * @param dest Base64-encoded destination and private keys,
+     *             and optional offline signature section (same format as PrivateKeyFile)
      * @param dir Session direction ("RECEIVE", "CREATE" or "BOTH") or "__v3__" if extended by SAMv3StreamSession
      * @param props Properties to setup the I2P session
      * @param recv Object that will receive incoming data
@@ -100,7 +103,10 @@ class SAMStreamSession implements SAMMessageSess {
     /**
      * Create a new SAM STREAM session.
      *
-     * @param destStream Input stream containing the destination and private keys (same format as PrivateKeyFile)
+     * Caller MUST call start().
+     *
+     * @param destStream Input stream containing the binary destination and private keys,
+     *                   and optional offline signature section (same format as PrivateKeyFile)
      * @param dir Session direction ("RECEIVE", "CREATE" or "BOTH") or "__v3__" if extended by SAMv3StreamSession
      * @param props Properties to setup the I2P session
      * @param recv Object that will receive incoming data
@@ -145,19 +151,25 @@ class SAMStreamSession implements SAMMessageSess {
         allprops.putAll(props);
 
         String i2cpHost = allprops.getProperty(I2PClient.PROP_TCP_HOST, "127.0.0.1");
-        int i2cpPort = 7654;
-        String port = allprops.getProperty(I2PClient.PROP_TCP_PORT, "7654");
-        try {
-            i2cpPort = Integer.parseInt(port);
-        } catch (NumberFormatException nfe) {
-            throw new SAMException("Invalid I2CP port specified [" + port + "]");
+        int i2cpPort = I2PClient.DEFAULT_LISTEN_PORT;
+        String sport = allprops.getProperty(I2PClient.PROP_TCP_PORT);
+        if (sport != null) {
+            try {
+                i2cpPort = Integer.parseInt(sport);
+            } catch (NumberFormatException nfe) {
+                throw new SAMException("Invalid I2CP port specified [" + sport + "]");
+            }
         }
         if (!canReceive)
             allprops.setProperty("i2cp.dontPublishLeaseSet", "true");
-        if (!allprops.containsKey("inbound.nickname") && !allprops.containsKey("outbound.nickname")) {
-            allprops.setProperty("inbound.nickname", "SAM TCP Client");
-            allprops.setProperty("outbound.nickname", "SAM TCP Client");
+        String name = allprops.getProperty("inbound.nickname");
+        if (name == null || name.trim().isEmpty()) {
+            name = getClass().getSimpleName().equals("PrimarySession") ? "SAM Mux Client" : "SAM TCP Client";
+            allprops.setProperty("inbound.nickname", name);
         }
+        String name2 = allprops.getProperty("outbound.nickname");
+        if (name2 == null || name2.trim().isEmpty())
+            allprops.setProperty("outbound.nickname", name);
 
         _isOwnSession = true;
         if (_log.shouldLog(Log.DEBUG))
@@ -336,6 +348,18 @@ class SAMStreamSession implements SAMMessageSess {
     }
 
     /**
+     * Lookup a destination through the I2CP session.
+     * Blocking.
+     *
+     * @param lsopts out parameter, or null
+     * @return the Destination or null
+     * @since 0.9.69
+     */
+    public Destination lookupDest(String name, Properties lsopts) throws I2PSessionException {
+        return SAMMessageSession.lookupDest(socketMgr.getSession(), name, lsopts);
+    }
+
+    /**
      * Close a SAM STREAM session.
      *
      */
@@ -348,6 +372,13 @@ class SAMStreamSession implements SAMMessageSess {
         if (_isOwnSession)
             socketMgr.destroySocketManager();
     }
+
+    /**
+     * Is the underlying streaming socket manager destroyed?
+     *
+     * @since 0.9.61
+     */
+    public boolean isDestroyed() { return socketMgr.isDestroyed(); }
 
     /**
      * Close a connection managed by the SAM STREAM session.
@@ -372,7 +403,7 @@ class SAMStreamSession implements SAMMessageSess {
      *  @since 0.9.25 moved from subclass SAMv3StreamSession to implement SAMMessageSess
      */
     public boolean sendBytes(String s, byte[] b, int pr, int fp, int tp) throws I2PSessionException {
-        throw new I2PSessionException("Unsupported in STREAM or MASTER session");
+        throw new I2PSessionException("Unsupported in STREAM or PRIMARY session");
     }
 
     /**
@@ -384,7 +415,7 @@ class SAMStreamSession implements SAMMessageSess {
                              boolean sendLeaseSet, int sendTags,
                              int tagThreshold, int expiration)
                                  throws I2PSessionException {
-        throw new I2PSessionException("Unsupported in STREAM or MASTER session");
+        throw new I2PSessionException("Unsupported in STREAM or PRIMARY session");
     }
 
     /** 
@@ -396,8 +427,8 @@ class SAMStreamSession implements SAMMessageSess {
      * @return An id associated to the socket handler
      */
     protected int createSocketHandler ( I2PSocket s, int id ) {
-        SAMStreamSessionSocketReader reader = null;
-        StreamSender sender = null;
+        SAMStreamSessionSocketReader reader;
+        StreamSender sender;
         if (id == 0) {
             id = createUniqueId();
         }
@@ -468,8 +499,9 @@ class SAMStreamSession implements SAMMessageSess {
         StreamSender sender;
 
         synchronized (handlersMap) {
-            reader = handlersMap.remove(Integer.valueOf(id));
-            sender = sendersMap.remove(Integer.valueOf(id));
+            Integer iid = Integer.valueOf(id);
+            reader = handlersMap.remove(iid);
+            sender = sendersMap.remove(iid);
         }
 
         if (reader != null)
@@ -486,17 +518,10 @@ class SAMStreamSession implements SAMMessageSess {
      *
      */
     private void removeAllSocketHandlers() {
-        Integer id;
-        Set<Integer> keySet;
-        Iterator<Integer> iter;
-
         synchronized (handlersMap) {
-            keySet = handlersMap.keySet();
-            iter = keySet.iterator();
-            
-            while (iter.hasNext()) {
-                 id = iter.next();
-                 handlersMap.get(id).stopRunning();
+            for (Map.Entry<Integer, SAMStreamSessionSocketReader> e : handlersMap.entrySet()) {
+                 Integer id = e.getKey();
+                 e.getValue().stopRunning();
                  sendersMap.get(id).shutDownGracefully();
             }
             handlersMap.clear();
@@ -691,14 +716,15 @@ class SAMStreamSession implements SAMMessageSess {
                 InputStream in = i2pSocket.getInputStream();
 
                 while (stillRunning) {
-                	data.clear();
+                    ((Buffer)data).clear();
                     read = Channels.newChannel(in).read(data);
                     if (read == -1) {
                         if (_log.shouldLog(Log.DEBUG))
                             _log.debug("Handler " + id + ": connection closed");
                         break;
                     }
-                    data.flip();
+                    // not ByteBuffer to avoid Java 8/9 issues with flip()
+                    ((Buffer)data).flip();
                     recv.receiveStreamBytes(id, data);
                 }
             } catch (IOException e) {

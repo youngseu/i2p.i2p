@@ -27,7 +27,7 @@ import net.i2p.I2PAppContext;
  * @author zzz
  */
 public class PartialEepGet extends EepGet {
-    long _fetchSize;
+    private final long _fetchSize;
 
     /**
      * Instantiate an EepGet that will fetch exactly size bytes when fetch() is called.
@@ -210,7 +210,7 @@ public class PartialEepGet extends EepGet {
         buf.append(_fetchSize - 1);
         buf.append("\r\n");
 
-        buf.append("Cache-control: no-cache\r\n" +
+        buf.append("Cache-Control: no-cache\r\n" +
                    "Pragma: no-cache\r\n" +
                    "Accept-Encoding: \r\n" +
                    "Connection: close\r\n");

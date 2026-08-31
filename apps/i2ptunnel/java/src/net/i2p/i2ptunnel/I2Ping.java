@@ -95,7 +95,7 @@ public class I2Ping extends I2PTunnelClientBase {
       int remotePort = 0;
       boolean error = false;
       String[] argv = DataHelper.split(cmd, " ");
-      Getopt g = new Getopt("ping", argv, "t:m:n:chl:f:p:");
+      Getopt g = new Getopt("i2ping", argv, "t:m:n:chl:f:p:");
       int c;
       while ((c = g.getopt()) != -1) {
         switch (c) {
@@ -159,7 +159,9 @@ public class I2Ping extends I2PTunnelClientBase {
       }
 
       if (hostListFile != null) {
-            BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(hostListFile), "UTF-8"));
+        BufferedReader br = null;
+        try {
+            br = new BufferedReader(new InputStreamReader(new FileInputStream(hostListFile), "UTF-8"));
             String line;
             List<PingHandler> pingHandlers = new ArrayList<PingHandler>();
             int i = 0;
@@ -181,6 +183,9 @@ public class I2Ping extends I2PTunnelClientBase {
             for (Thread t : pingHandlers)
                 t.join();
             return;
+        } finally {
+            if (br != null) try { br.close(); } catch (IOException ioe) {}
+        }
       }
 
       String host = argv[g.getOptind()];
@@ -264,7 +269,7 @@ public class I2Ping extends I2PTunnelClientBase {
         /**
          *  As of 0.9.11, does NOT start itself.
          *  Caller must call start()
-         *  @param dest b64 or b32 or host name
+         *  @param dest b64 or b32 or hostname
          */
         public PingHandler(String dest, int count, int fromPort, int toPort,
                            long timeout, boolean countPings, boolean report) {
@@ -330,7 +335,7 @@ public class I2Ping extends I2PTunnelClientBase {
         }
 
         /**
-         *  @param name b64 or b32 or host name
+         *  @param name b64 or b32 or hostname
          *  @since 0.9.11
          */
         private Destination lookup(String name) {

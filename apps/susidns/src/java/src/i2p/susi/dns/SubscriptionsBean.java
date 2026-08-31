@@ -46,7 +46,7 @@ public class SubscriptionsBean extends BaseBean
 	private String fileName, content;
 	private static final String SUBS_FILE = "subscriptions.txt";
 	// If you change this, change in Addressbook Daemon also
-	private static final String DEFAULT_SUB = "http://i2p-projekt.i2p/hosts.txt";
+	private static final String DEFAULT_SUB = "http://i2p-projekt.i2p/hosts.txt\nhttp://notbob.i2p/hosts.txt";
 	
 	public String getFileName()
 	{
@@ -130,8 +130,9 @@ public class SubscriptionsBean extends BaseBean
 	public String getMessages() {
 		String message = "";
 		if( action != null ) {
-                        if (_context.getBooleanProperty(PROP_PW_ENABLE) ||
-			    (serial != null && serial.equals(lastSerial))) {
+			if ("POST".equals(method) &&
+			    (_context.getBooleanProperty(PROP_PW_ENABLE) ||
+			     (serial != null && serial.equals(lastSerial)))) {
 				if (action.equals(_t("Save"))) {
 					save();
 				/*******
@@ -144,8 +145,8 @@ public class SubscriptionsBean extends BaseBean
 						// config reload and fetch.
 				*******/
 					if (content != null && content.length() > 2 &&
-					    _context.portMapper().getPort(PortMapper.SVC_HTTP_PROXY) > 0) {
-						message = _t("Subscriptions saved, updating addressbook from subscription sources now.");
+					    _context.portMapper().isRegistered(PortMapper.SVC_HTTP_PROXY)) {
+						message = _t("Subscriptions saved, updating address book from subscription sources now.");
 						          // + "<img height=\"1\" width=\"1\" alt=\"\" " +
 						          // "src=\"/addressbook/?wakeup=1&nonce=" + nonce + "\">";
 						_context.namingService().requestUpdate(null);

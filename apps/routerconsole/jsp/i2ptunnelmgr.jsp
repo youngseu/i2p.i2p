@@ -2,24 +2,34 @@
 <%@page trimDirectiveWhitespaces="true"%>
 <%@page pageEncoding="UTF-8"%>
 <jsp:useBean class="net.i2p.router.web.CSSHelper" id="tester" scope="request" />
-<jsp:setProperty name="tester" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
+<%
+   String i2pcontextId1 = null;
+   try {
+       i2pcontextId1 = (String) session.getAttribute("i2p.contextId");
+   } catch (IllegalStateException ise) {}
+%>
+<jsp:setProperty name="tester" property="contextId" value="<%=i2pcontextId1%>" />
 <%
     // CSSHelper is also pulled in by css.jsi below...
     boolean testIFrame = tester.allowIFrame(request.getHeader("User-Agent"));
     if (!testIFrame) {
-        response.setStatus(302);
+        response.setStatus(307);
         response.setHeader("Location", "/i2ptunnel/");
+        // force commitment
+        response.getOutputStream().close();
+        return;
     } else {
 %>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("Hidden Services Manager")%>
-<script src="/js/ajax.js" type="text/javascript"></script>
-<script src="/js/iframed.js" type="text/javascript"></script>
+<script src="/js/iframed.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<script src="/js/iframeResizer.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-<script type="text/javascript">
+<script nonce="<%=cspNonce%>" type="text/javascript">
+/* @license http://creativecommons.org/publicdomain/zero/1.0/legalcode CC0-1.0 */
+
   function injectClassSpecific(f) {
       var doc = 'contentDocument' in f? f.contentDocument : f.contentWindow.document;
       if (doc.getElementsByClassName == undefined) {
@@ -43,18 +53,23 @@
   }
   function setupFrame() {
       f = document.getElementById("i2ptunnelframe");
-      injectClass(f);
-      injectClassSpecific(f);
-      resizeFrame(f);
+      f.addEventListener("load", function() {
+          injectClass(f);
+          injectClassSpecific(f);
+          resizeFrame(f);
+          iFrameResize({ log: false }, '#i2ptunnelframe')
+      }, true);
   }
+
+/* @license-end */
 </script>
-</head><body onload="initAjax()">
+</head><body>
 
 <%@include file="summary.jsi" %>
 
 <h1><%=intl._t("Hidden Services Manager")%> <span class="newtab"><a href="/i2ptunnel/" target="_blank" title="<%=intl._t("Open in new tab")%>"><img src="<%=intl.getTheme(request.getHeader("User-Agent"))%>images/newtab.png" /></a></span></h1>
 <div class="main" id="tunnelmgr">
-<iframe src="/i2ptunnel/" width="100%" height="100%" frameborder="0" border="0" name="i2ptunnelframe" id="i2ptunnelframe" onload="setupFrame()" allowtransparency="true">
+<iframe src="/i2ptunnel/" width="100%" height="100%" frameborder="0" border="0" name="i2ptunnelframe" id="i2ptunnelframe" allowtransparency="true">
 <%=intl._t("Your browser does not support iFrames.")%>
 &nbsp;<a href="/i2ptunnel/"><%=intl._t("Click here to continue.")%></a>
 </iframe>

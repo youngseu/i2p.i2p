@@ -47,10 +47,9 @@ public class PeerID implements Comparable<PeerID>
   private byte[] id;
   private Destination address;
   private final int port;
-  private byte[] destHash;
+  private final byte[] destHash;
   /** whether we have tried to get the dest from the hash - only do once */
   private boolean triedDestLookup;
-  private final int hash;
   private final I2PSnarkUtil util;
   private String _toStringCache;
 
@@ -60,13 +59,15 @@ public class PeerID implements Comparable<PeerID>
     this.address = address;
     this.port = TrackerClient.PORT;
     this.destHash = address.calculateHash().getData();
-    hash = calculateHash();
     util = null;
   }
 
   /**
    * Creates a PeerID from a BDecoder.
+   *
+   * @deprecated unused, non-compact
    */
+  @Deprecated
   public PeerID(BDecoder be)
     throws IOException
   {
@@ -76,7 +77,10 @@ public class PeerID implements Comparable<PeerID>
   /**
    * Creates a PeerID from a Map containing BEncoded peer id, ip and
    * port.
+   *
+   * @deprecated non-compact
    */
+  @Deprecated
   public PeerID(Map<String, BEValue> m)
     throws InvalidBEncodingException, UnknownHostException
   {
@@ -94,7 +98,6 @@ public class PeerID implements Comparable<PeerID>
 
     port = TrackerClient.PORT;
     this.destHash = address.calculateHash().getData();
-    hash = calculateHash();
     util = null;
   }
 
@@ -110,7 +113,6 @@ public class PeerID implements Comparable<PeerID>
     if (dest_hash.length != 32)
         throw new InvalidBEncodingException("bad hash length");
     destHash = dest_hash;
-    hash = DataHelper.hashCode(dest_hash);
     this.util = util;
   }
 
@@ -153,18 +155,13 @@ public class PeerID implements Comparable<PeerID>
     return destHash;
   }
 
-  private int calculateHash()
-  {
-    return DataHelper.hashCode(destHash);
-  }
-
   /**
    * The hash code of a PeerID is the hashcode of the desthash
    */
     @Override
   public int hashCode()
   {
-    return hash;
+    return (int) DataHelper.fromLong(destHash, 0, 4);
   }
 
   /**
@@ -219,16 +216,21 @@ public class PeerID implements Comparable<PeerID>
 
   /**
    * Returns the String "id@address" where id is the first 4 chars of the base64 encoded id
-   * and address is the first 6 chars of the base64 dest (was the base64 hash of the dest) which
-   * should match what the bytemonsoon tracker reports on its web pages.
+   * and address is the first 4 chars of the base64 dest (was the base64 hash of the dest) which
+   * should match what some old trackers (bytemonsoon) used to report on their web pages,
+   * although none do now?
    */
   @Override
   public String toString()
   {
     if (_toStringCache != null)
         return _toStringCache;
+    if (id != null && DataHelper.eq(id, 0, WebPeer.IDBytes, 0, WebPeer.IDBytes.length)) {
+        _toStringCache = "WebSeed@" + Base32.encode(destHash) + ".b32.i2p";
+        return _toStringCache;
+    }
     if (id == null || address == null)
-        return "unkn@" + Base64.encode(destHash).substring(0, 6);
+        return "unkn@" + Base32.encode(destHash) + ".b32.i2p";
     int nonZero = 0;
     for (int i = 0; i < id.length; i++) {
         if (id[i] != 0) {
@@ -236,7 +238,8 @@ public class PeerID implements Comparable<PeerID>
             break;
         }
     }
-    _toStringCache = Base64.encode(id, nonZero, id.length-nonZero).substring(0,4) + "@" + address.toBase64().substring(0,6);
+    _toStringCache = Base64.encode(id, nonZero, Math.min(3, id.length-nonZero)) + '@' +
+                     Base64.encode(address.getPublicKey().getData(), 0, 3);
     return _toStringCache;
   }
 

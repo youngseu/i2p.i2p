@@ -20,14 +20,8 @@ import net.i2p.data.Hash;
  *
  */
 public interface PeerManagerFacade extends Service {
-    /**
-     * Select peers from the manager's existing routing tables according to 
-     * the specified criteria.  This call DOES block.
-     *
-     * @return List of Hash objects of the RouterIdentity for matching peers
-     */
-    public List<Hash> selectPeers(PeerSelectionCriteria criteria);
     public Set<Hash> getPeersByCapability(char capability);
+    public int countPeersByCapability(char capability);
     public void setCapabilities(Hash peer, String caps);
     public void removeCapabilities(Hash peer);
     public Hash selectRandomByCapability(char capability);

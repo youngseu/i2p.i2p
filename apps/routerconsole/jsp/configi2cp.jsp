@@ -1,7 +1,6 @@
 <%@page contentType="text/html"%>
 <%@page pageEncoding="UTF-8"%>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-
+<!DOCTYPE html>
 <html><head>
 <%@include file="css.jsi" %>
 <%=intl.title("config clients")%>
@@ -11,20 +10,17 @@ button span.hide{
 }
 input.default { width: 1px; height: 1px; visibility: hidden; }
 </style>
-<script src="/js/ajax.js" type="text/javascript"></script>
 <%@include file="summaryajax.jsi" %>
-</head><body onload="initAjax()">
-
+</head><body>
 <%@include file="summary.jsi" %>
-
-<jsp:useBean class="net.i2p.router.web.ConfigClientsHelper" id="clientshelper" scope="request" />
-<jsp:setProperty name="clientshelper" property="contextId" value="<%=(String)session.getAttribute(\"i2p.contextId\")%>" />
+<jsp:useBean class="net.i2p.router.web.helpers.ConfigClientsHelper" id="clientshelper" scope="request" />
+<jsp:setProperty name="clientshelper" property="contextId" value="<%=i2pcontextId%>" />
 <jsp:setProperty name="clientshelper" property="edit" value="<%=request.getParameter(\"edit\")%>" />
-<h1><%=intl._t("I2P Client Configuration")%></h1>
+<h1><%=intl._t("Configuration")%></h1>
 <div class="main" id="config_i2cp">
  <%@include file="confignav.jsi" %>
 
- <jsp:useBean class="net.i2p.router.web.ConfigClientsHandler" id="formhandler" scope="request" />
+ <jsp:useBean class="net.i2p.router.web.helpers.ConfigClientsHandler" id="formhandler" scope="request" />
 <%@include file="formhandler.jsi" %>
  <div class="configure">
 <h3 id="advancedclientconfig"><a name="i2cp"></a><%=intl._t("Advanced Client Interface Configuration")%></h3>
@@ -43,9 +39,17 @@ input.default { width: 1px; height: 1px; visibility: hidden; }
 <%=intl._t("Enabled without SSL")%></label><br>
 <label><input type="radio" class="optbox" name="mode" value="2" <%=clientshelper.i2cpModeChecked(2) %> >
 <%=intl._t("Enabled with SSL required")%></label><br>
-<label><input type="radio" class="optbox" name="mode" value="0" <%=clientshelper.i2cpModeChecked(0) %> >
+<%
+    // returns nonempty string if disabled
+    String disableChecked = clientshelper.i2cpModeChecked(0);
+    boolean isDisabled = disableChecked.length() > 0;
+%>
+<label><input type="radio" class="optbox" name="mode" value="0" <%=disableChecked%> >
 <%=intl._t("Disabled - Clients outside this Java process may not connect")%></label><br>
 </td></tr>
+<%
+    if (!isDisabled) {
+%>
 <tr><td>
 <b><%=intl._t("I2CP Interface")%>:</b>
 <select name="interface">
@@ -77,6 +81,9 @@ input.default { width: 1px; height: 1px; visibility: hidden; }
 <b><%=intl._t("Password")%>:</b>
 <input name="nofilter_pw" type="password" value="" />
 </td></tr>
+<%
+    } // !isDisabled
+%>
 <tr><td class="optionsave" align="right">
 <input type="submit" class="default" name="action" value="<%=intl._t("Save Interface Configuration")%>" />
 <input type="submit" class="cancel" name="foo" value="<%=intl._t("Cancel")%>" />

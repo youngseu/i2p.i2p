@@ -76,7 +76,7 @@ Index: b/installer/resources/i2prouter
  
  # Priority at which to run the wrapper.  See "man nice" for valid priorities.
  #  nice is only used if a priority is specified.
-@@ -177,77 +168,8 @@ if [ ! -e "$WRAPPER_CONF" ]; then
+@@ -180,77 +171,8 @@ if [ ! -e "$WRAPPER_CONF" ]; then
         exit 1
  fi
  
@@ -154,7 +154,7 @@ Index: b/installer/resources/i2prouter
  if [ -n "$FIXED_COMMAND" ]
  then
      COMMAND="$FIXED_COMMAND"
-@@ -1068,7 +990,6 @@ startwait() {
+@@ -1078,7 +1000,6 @@ startwait() {
          if [ "X$pid" = "X" ]
          then
              eval echo " `gettext 'WARNING: $APP_LONG_NAME may have failed to start.'`"
@@ -162,7 +162,7 @@ Index: b/installer/resources/i2prouter
          else
              eval echo ' running: PID:$pid'
          fi
-@@ -1871,7 +1792,7 @@ showUsage() {
+@@ -1881,7 +1802,7 @@ showUsage() {
  }
  
  showsetusermesg()  {
@@ -171,7 +171,7 @@ Index: b/installer/resources/i2prouter
  }
  
  checkifstartingasroot() {
-@@ -1879,7 +1800,7 @@ checkifstartingasroot() {
+@@ -1889,7 +1810,7 @@ checkifstartingasroot() {
          echo "`gettext 'Running I2P as the root user is *not* recommended.'`"
          showsetusermesg
          echo
@@ -180,7 +180,7 @@ Index: b/installer/resources/i2prouter
          exit 1
      fi
  }
-@@ -1946,24 +1867,10 @@ docommand() {
+@@ -1981,24 +1902,10 @@ docommand() {
              status
              ;;
  
@@ -272,8 +272,8 @@ Index: b/installer/resources/wrapper.config
 +wrapper.java.library.path.2=/usr/share/java/lib
  
  # Java Bits.  On applicable platforms, tells the JVM to run in 32 or 64-bit mode.
- wrapper.java.additional.auto_bits=TRUE
-@@ -74,7 +66,7 @@ wrapper.java.additional.auto_bits=TRUE
+ wrapper.java.additional.auto_bits=FALSE
+@@ -74,7 +66,7 @@ wrapper.java.additional.auto_bits=FALSE
  # Java Additional Parameters
  # Numbers must be consecutive (except for stripquotes)
  wrapper.java.additional.1=-DloggerFilenameOverride=logs/log-router-@.txt
@@ -281,8 +281,8 @@ Index: b/installer/resources/wrapper.config
 +wrapper.java.additional.2=-Di2p.dir.base=/usr/share/i2p
  wrapper.java.additional.2.stripquotes=TRUE
  
- # Prevent the JVM from exporting stats (and thereby causing hundreds of
-@@ -146,11 +138,7 @@ wrapper.console.loglevel=INFO
+ # Suppress JNI warning in JRE 24+, and eventual restriction
+@@ -153,11 +145,7 @@ wrapper.console.loglevel=INFO
  # You may wish to change this.
  # NOTE: On Linux/Mac this is overridden in the i2prouter script; changes here will have no effect.
  # System temp directory:
@@ -295,7 +295,7 @@ Index: b/installer/resources/wrapper.config
  
  # Format of output for the log file.
  # The format consists of the tokens 'L' for log level, 'P' for prefix, 'D' for thread,
-@@ -220,11 +208,7 @@ wrapper.use_system_time=false
+@@ -227,11 +215,7 @@ wrapper.use_system_time=false
  # Linux/Mac users, do not set here, see settings in the i2prouter script.
  # Directory must exist or the wrapper will fail to start.
  # System temp directory:
@@ -308,7 +308,7 @@ Index: b/installer/resources/wrapper.config
  #
  # From i2prouter:
  #
-@@ -238,10 +222,7 @@ wrapper.use_system_time=false
+@@ -245,10 +229,7 @@ wrapper.use_system_time=false
  # Linux/Mac users, do not set here, see settings in the i2prouter script.
  # Directory must exist or the wrapper will fail to start.
  # System temp directory:
@@ -320,7 +320,7 @@ Index: b/installer/resources/wrapper.config
  
  #********************************************************************
  # Wrapper General Properties
-@@ -259,32 +240,6 @@ wrapper.umask=0022
+@@ -266,32 +247,6 @@ wrapper.umask=0022
  wrapper.java.umask=0022
  wrapper.logfile.umask=0077
  
@@ -382,16 +382,16 @@ Index: b/installer/resources/locale/po/messages_en.po
 @@ -185,7 +185,7 @@ msgid "Request a Java thread dump if run
  msgstr ""
  
- #: ../i2prouter:1874
+ #: ../i2prouter:1884
 -msgid "Please edit i2prouter and set the variable RUN_AS_USER"
 +msgid "Please edit /etc/default/i2p and set the variable RUN_AS_USER"
  msgstr ""
  
- #: ../i2prouter:1879
+ #: ../i2prouter:1889
 @@ -193,5 +193,5 @@ msgid "Running I2P as the root user is *
  msgstr ""
  
- #: ../i2prouter:1882
+ #: ../i2prouter:1892
 -msgid "To run as root anyway, edit i2prouter and set ALLOW_ROOT=true."
 +msgid "To run as root anyway, edit /etc/default/i2p and set ALLOW_ROOT=true."
  msgstr ""
@@ -443,8 +443,8 @@ Index: b/installer/resources/locale/po/messages_tr.po
 ===================================================================
 --- a/installer/resources/locale/po/messages_tr.po
 +++ b/installer/resources/locale/po/messages_tr.po
-@@ -186,13 +186,13 @@ msgid "Request a Java thread dump if run
- msgstr "Çalışıyorsa Java iş parçacığı dökümü isteyin."
+@@ -186,13 +186,13 @@ msgid "Request a Java thread dump if running."
+ msgstr "Çalışıyorsa Java iş parçacığı dökümünü iste."
  
  #: ../i2prouter:1874
 -msgid "Please edit i2prouter and set the variable RUN_AS_USER"
@@ -454,7 +454,7 @@ Index: b/installer/resources/locale/po/messages_tr.po
  
  #: ../i2prouter:1879
  msgid "Running I2P as the root user is *not* recommended."
- msgstr "I2P yazılımının root olarak çalıştırmanız *önerilmez*."
+ msgstr "I2P uygulamasını root olarak çalıştırmanız *önerilmez*."
  
  #: ../i2prouter:1882
 -msgid "To run as root anyway, edit i2prouter and set ALLOW_ROOT=true."
@@ -509,8 +509,8 @@ Index: b/installer/resources/locale/po/messages_fr.po
 ===================================================================
 --- a/installer/resources/locale/po/messages_fr.po
 +++ b/installer/resources/locale/po/messages_fr.po
-@@ -188,13 +188,13 @@ msgid "Request a Java thread dump if run
- msgstr "Demander un vidage des fils d'exécution de Java si elle est en cours d'exécution."
+@@ -189,13 +189,13 @@ msgid "Request a Java thread dump if run
+ msgstr "Demander un vidage des fils d’exécution de Java si elle est en cours d’exécution."
  
  #: ../i2prouter:1874
 -msgid "Please edit i2prouter and set the variable RUN_AS_USER"
@@ -520,7 +520,7 @@ Index: b/installer/resources/locale/po/messages_fr.po
  
  #: ../i2prouter:1879
  msgid "Running I2P as the root user is *not* recommended."
- msgstr "Il n'est *pas* recommandé d'exécuter I2P en tant que root."
+ msgstr "Il n’est *pas* recommandé d’exécuter I2P en tant que root."
  
  #: ../i2prouter:1882
 -msgid "To run as root anyway, edit i2prouter and set ALLOW_ROOT=true."
@@ -531,7 +531,7 @@ Index: b/installer/resources/locale/po/messages_ru.po
 ===================================================================
 --- a/installer/resources/locale/po/messages_ru.po
 +++ b/installer/resources/locale/po/messages_ru.po
-@@ -191,13 +191,13 @@ msgid "Request a Java thread dump if run
+@@ -194,13 +194,13 @@ msgid "Request a Java thread dump if running."
  msgstr "Запросить дамп нитей Java, если запущено."
  
  #: ../i2prouter:1874
@@ -542,25 +542,25 @@ Index: b/installer/resources/locale/po/messages_ru.po
  
  #: ../i2prouter:1879
  msgid "Running I2P as the root user is *not* recommended."
- msgstr "Запускать I2P от имени root'а *НЕ* рекомендуется."
+ msgstr "Запускать I2P от суперпользователя *НЕ* желательно"
  
  #: ../i2prouter:1882
 -msgid "To run as root anyway, edit i2prouter and set ALLOW_ROOT=true."
--msgstr "Чтобы всё равно запустить под root'ом, отредактируйте i2prouter и установите ALLOW_ROOT=true."
+-msgstr "Чтобы всё равно запустить от суперпользователя, отредактируйте i2prouter и установите ALLOW_ROOT=true."
 +msgid "To run as root anyway, edit /etc/default/i2p and set ALLOW_ROOT=true."
-+msgstr "Чтобы всё равно запустить под root'ом, отредактируйте /etc/default/i2p и установите ALLOW_ROOT=true."
++msgstr "Чтобы всё равно запустить от суперпользователя, отредактируйте /etc/default/i2p и установите ALLOW_ROOT=true."
 Index: b/installer/resources/locale/po/messages_sv.po
 ===================================================================
 --- a/installer/resources/locale/po/messages_sv.po
 +++ b/installer/resources/locale/po/messages_sv.po
-@@ -187,13 +187,13 @@ msgid "Request a Java thread dump if run
+@@ -190,13 +190,13 @@ msgid "Request a Java thread dump if run
  msgstr "Fråga efter en Java thread dump vid drift."
  
  #: ../i2prouter:1874
 -msgid "Please edit i2prouter and set the variable RUN_AS_USER"
--msgstr "Var god ändra i2prouter och set variabeln RUN_AS_USER"
+-msgstr "Ändra i2prouter och ställ in variabeln RUN_AS_USER"
 +msgid "Please edit /etc/default/i2p and set the variable RUN_AS_USER"
-+msgstr "Var god ändra /etc/default/i2p och set variabeln RUN_AS_USER"
++msgstr "Ändra /etc/default/i2p och ställ in variabeln RUN_AS_USER"
  
  #: ../i2prouter:1879
  msgid "Running I2P as the root user is *not* recommended."
@@ -568,9 +568,9 @@ Index: b/installer/resources/locale/po/messages_sv.po
  
  #: ../i2prouter:1882
 -msgid "To run as root anyway, edit i2prouter and set ALLOW_ROOT=true."
--msgstr "För att köra som root oavsett, ändra i2prouter och sätt ALLOW_ROOT=true"
+-msgstr "För att köra som root ändå, redigera i2prouter och ställ in ALLOW_ROOT=true."
 +msgid "To run as root anyway, edit /etc/default/i2p and set ALLOW_ROOT=true."
-+msgstr "För att köra som root oavsett, ändra /etc/default/i2p och sätt ALLOW_ROOT=true"
++msgstr "För att köra som root ändå, redigera i2prouter och ställ in ALLOW_ROOT=true."
 Index: b/installer/resources/locale/po/messages_ro.po
 ===================================================================
 --- a/installer/resources/locale/po/messages_ro.po
@@ -641,7 +641,7 @@ Index: b/installer/resources/locale/po/messages_ja.po
 ===================================================================
 --- a/installer/resources/locale/po/messages_ja.po
 +++ b/installer/resources/locale/po/messages_ja.po
-@@ -186,13 +186,13 @@ msgid "Request a Java thread dump if run
+@@ -188,13 +188,13 @@ msgid "Request a Java thread dump if run
  msgstr "起動中の場合、 Java スレッドダンプを要求"
  
  #: ../i2prouter:1874

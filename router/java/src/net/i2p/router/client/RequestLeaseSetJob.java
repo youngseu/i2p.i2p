@@ -9,6 +9,7 @@ package net.i2p.router.client;
  */
 
 import java.util.Date;
+import java.util.Properties;
 
 import net.i2p.data.Lease;
 import net.i2p.data.LeaseSet;
@@ -16,6 +17,7 @@ import net.i2p.data.i2cp.I2CPMessage;
 import net.i2p.data.i2cp.I2CPMessageException;
 import net.i2p.data.i2cp.RequestLeaseSetMessage;
 import net.i2p.data.i2cp.RequestVariableLeaseSetMessage;
+import net.i2p.data.i2cp.SessionConfig;
 import net.i2p.data.i2cp.SessionId;
 import net.i2p.router.JobImpl;
 import net.i2p.router.RouterContext;
@@ -36,10 +38,6 @@ class RequestLeaseSetJob extends JobImpl {
     
     private static final long MAX_FUDGE = 2*1000;
 
-    /** temp for testing */
-    private static final String PROP_VARIABLE = "router.variableLeaseExpiration";
-    private static final boolean DFLT_VARIABLE = true;
-
     public RequestLeaseSetJob(RouterContext ctx, ClientConnectionRunner runner, LeaseRequestState state) {
         super(ctx);
         _log = ctx.logManager().getLog(RequestLeaseSetJob.class);
@@ -53,16 +51,38 @@ class RequestLeaseSetJob extends JobImpl {
     public void runJob() {
         if (_runner.isDead()) return;
         
+        boolean isLS2 = false;
+        SessionConfig cfg = _runner.getPrimaryConfig();
+        if (cfg != null) {
+            Properties props = cfg.getOptions();
+            if (props != null) {
+                String lsType = props.getProperty("i2cp.leaseSetType");
+                if (lsType != null && !lsType.equals("1"))
+                    isLS2 = true;
+            }
+        }
+        
         LeaseSet requested = _requestState.getRequested();
         long endTime = requested.getEarliestLeaseDate();
         // Add a small number of ms (0 to MAX_FUDGE) that increases as we approach the expire time.
         // Since the earliest date functions as a version number,
         // this will force the floodfill to flood each new version;
         // otherwise it won't if the earliest time hasn't changed.
-        long fudge = MAX_FUDGE - ((endTime - getContext().clock().now()) / (10*60*1000 / MAX_FUDGE));
+
+        if (isLS2) {
+            // fix for 0.9.38 floodfills,
+            // adding some ms doesn't work since the dates are truncated,
+            // and 0.9.38 did not use LeaseSet2.getPublished()
+            long earliest = 1000 + _requestState.getCurrentEarliestLeaseDate();
+            if (endTime < earliest)
+                endTime = earliest;
+        } else {
+            long diff = endTime - getContext().clock().now();
+            long fudge = MAX_FUDGE - (diff / (10*60*1000 / MAX_FUDGE));
+            endTime += fudge;
+        }
         //if (_log.shouldLog(Log.DEBUG))
         //    _log.debug("Adding fudge " + fudge);
-        endTime += fudge;
 
         SessionId id = _runner.getSessionId(requested.getDestination().calculateHash());
         if (id == null) {
@@ -70,20 +90,19 @@ class RequestLeaseSetJob extends JobImpl {
             return;
         }
         I2CPMessage msg;
-        if (getContext().getProperty(PROP_VARIABLE, DFLT_VARIABLE) &&
-            (_runner instanceof QueuedClientConnectionRunner ||
-             RequestVariableLeaseSetMessage.isSupported(_runner.getClientVersion()))) {
+        if (_runner instanceof QueuedClientConnectionRunner ||
+             RequestVariableLeaseSetMessage.isSupported(_runner.getClientVersion())) {
             // new style - leases will have individual expirations
             RequestVariableLeaseSetMessage rmsg = new RequestVariableLeaseSetMessage();
             rmsg.setSessionId(id);
             for (int i = 0; i < requested.getLeaseCount(); i++) {
                 Lease lease = requested.getLease(i);
-                if (lease.getEndDate().getTime() < endTime) {
+                if (lease.getEndTime() < endTime) {
                     // don't modify old object, we don't know where it came from
                     Lease nl = new Lease();
                     nl.setGateway(lease.getGateway());
                     nl.setTunnelId(lease.getTunnelId());
-                    nl.setEndDate(new Date(endTime));
+                    nl.setEndDate(endTime);
                     lease = nl;
                     //if (_log.shouldLog(Log.INFO))
                     //    _log.info("Adjusted end date to " + endTime + " for " + lease);

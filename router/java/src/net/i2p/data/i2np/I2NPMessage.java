@@ -9,16 +9,17 @@ package net.i2p.data.i2np;
  */
 
 import java.io.IOException;
-import java.io.InputStream;
 
 import net.i2p.data.DataStructure;
 
 /**
  * Base interface for all I2NP messages
  *
+ * Note: No longer extends DataStructure as of 0.9.48
+ *
  * @author jrandom
  */
-public interface I2NPMessage extends DataStructure {
+public interface I2NPMessage {
 
     /** 4 bytes unsigned */
     public static final long MAX_ID_VALUE = (1l << 32) - 1l;
@@ -31,26 +32,6 @@ public interface I2NPMessage extends DataStructure {
      */
     public static final int MAX_SIZE = 64*1024;
     
-    /**
-     * Read the body into the data structures, after the initial type byte, using
-     * the current class's format as defined by the I2NP specification
-     *
-     * Unused - All transports provide encapsulation and so we have byte arrays available.
-     *
-     * @param in stream to read from
-     *           starting at type if type is &lt; 0 (16 byte header)
-     *           starting at ID if type is &gt;= 0 (15 byte header)
-     * @param type I2NP message type. If less than zero, read the type from data
-     * @param buffer scratch buffer to be used when reading and parsing
-     * @return size of the message read (including headers)
-     * @throws I2NPMessageException if the stream doesn't contain a valid message
-     *          that this class can read.
-     * @throws IOException if there is a problem reading from the stream
-     * @deprecated unused
-     */
-    @Deprecated
-    public int readBytes(InputStream in, int type, byte buffer[]) throws I2NPMessageException, IOException;
-
     /**
      * Read the body into the data structures, after the initial type byte, using
      * the current class's format as defined by the I2NP specification
@@ -87,6 +68,9 @@ public interface I2NPMessage extends DataStructure {
      * the uniqueId / expiration, using the current class's format as defined by
      * the I2NP specification
      *
+     * Implementations must not read more than dataSize,
+     * or throw I2NPMessageException or IndexOutOfBoundsException if they do.
+     *
      * @param data data to read from
      * @param offset where to start in the data array
      * @param dataSize how long into the data to read
@@ -105,8 +89,13 @@ public interface I2NPMessage extends DataStructure {
     
     /**
      * Replay resistant message ID
+     * optionally, the caller may pass a msgIDBloomXor value, and the
+     * return value will be Xor'ed with that value. Passing a msgIDBloomXor
+     * value of 0 will result in the original ID being returned, instead of
+     * passing 0 use the no-arg version.
      */
-    public long getUniqueId(); 
+    public long getUniqueId(long msgIDBloomXor); 
+    public long getUniqueId();
     public void setUniqueId(long id);
     
     /**
@@ -123,19 +112,52 @@ public interface I2NPMessage extends DataStructure {
     /** How large the raw message is with the short 5 byte header */
     public int getRawMessageSize();
 
+    /**
+     * @since 0.9.48 from DataStructure
+     */
+    public byte[] toByteArray();
+
     /** 
-     * write the message to the buffer, returning the number of bytes written.
+     * Write the message to the buffer, returning the new offset (NOT the length).
      * the data is formatted so as to be self contained, with the type, size,
      * expiration, unique id, as well as a checksum bundled along.  
-     * Full 16 byte header.
+     * Full 16 byte header for NTCP 1.
+     *
+     * @return the new offset (NOT the length)
      */
     public int toByteArray(byte buffer[]);
 
+    /** 
+     * Write the message to the buffer, returning the new offset (NOT the length).
+     * the data is formatted so as to be self contained, with the type, size,
+     * expiration, unique id, as well as a checksum bundled along.  
+     * Full 16 byte header for NTCP 1.
+     *
+     * @param off the offset to start writing at
+     * @return the new offset (NOT the length)
+     * @since 0.9.36
+     */
+    public int toByteArray(byte buffer[], int off);
+
     /**
-     * write the message to the buffer, returning the number of bytes written.
+     * Write the message to the buffer, returning the new offset (NOT the length).
      * the data is is not self contained - it does not include the size,
      * unique id, or any checksum, but does include the type and expiration.
-     * Short 5 byte header.
+     * Short 5 byte header for SSU.
+     *
+     * @return the length written
      */
     public int toRawByteArray(byte buffer[]);
+
+    /**
+     * Write the message to the buffer, returning the new offset (NOT the length).
+     * the data is is not self contained - it does not include the size,
+     * unique id, or any checksum, but does include the type and expiration.
+     * Short 9 byte header for NTCP 2.
+     *
+     * @param off the offset to start writing at
+     * @return the new offset (NOT the length)
+     * @since 0.9.36
+     */
+    public int toRawByteArrayNTCP2(byte buffer[], int off);
 }

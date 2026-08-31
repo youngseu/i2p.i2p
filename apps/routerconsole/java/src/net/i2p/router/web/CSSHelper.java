@@ -1,10 +1,16 @@
 package net.i2p.router.web;
 
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import javax.servlet.http.HttpSession;
+
+import net.i2p.I2PAppContext;
+import net.i2p.data.DataHelper;
+import net.i2p.servlet.util.ServletUtil;
 import net.i2p.util.RandomSource;
 
 /**
@@ -17,38 +23,137 @@ public class CSSHelper extends HelperBase {
 
     public static final String PROP_UNIVERSAL_THEMING = "routerconsole.universal.theme";
     public static final String PROP_THEME_NAME = "routerconsole.theme";
+    /**  @since 0.9.33 moved from ConfigUIHelper */
+    public static final String PROP_THEME_PFX = PROP_THEME_NAME + '.';
     public static final String DEFAULT_THEME = "light";
+    public static final String ALT_THEME = "dark";
     public static final String BASE_THEME_PATH = "/themes/console/";
     private static final String FORCE = "classic";
     public static final String PROP_REFRESH = "routerconsole.summaryRefresh";
-    public static final String DEFAULT_REFRESH = "60";
+    public static final String DEFAULT_REFRESH = "15";
     public static final int MIN_REFRESH = 3;
     public static final String PROP_DISABLE_REFRESH = "routerconsole.summaryDisableRefresh";
     private static final String PROP_XFRAME = "routerconsole.disableXFrame";
     public static final String PROP_FORCE_MOBILE_CONSOLE = "routerconsole.forceMobileConsole";
+    /** @since 0.9.32 */
+    public static final String PROP_EMBED_APPS = "routerconsole.embedApps";
+    /** @since 0.9.36 */
+    public static final String PROP_DISABLE_OLD = "routerconsole.disableOldThemes";
+    public static final boolean DEFAULT_DISABLE_OLD = true;
 
-    private static final String _consoleNonce = Long.toString(RandomSource.getInstance().nextLong());
+    private static final String SESSION_CONSOLE_NONCE = "__router.console.nonce.queue__";
+    private static final int NONCE_QUEUE_SIZE = 10;
 
     /**
-     *  formerly stored in System.getProperty("router.consoleNonce")
-     *  @since 0.9.4
+     *  Replaces static consoleNonce, updateNonce, reseedNonce, systemNonce
+     *  @param session returns an invalid nonce if null
+     *  @return a new nonce for each call
+     *  @since 0.9.70
      */
-    public static String getNonce() { 
-        return _consoleNonce;
+    @SuppressWarnings("unchecked")
+    public static String getNonce(HttpSession session) { 
+        if (session == null) {
+            //I2PAppContext.getGlobalContext().logManager().getLog(CSSHelper.class).error("getNonce() null session", new Exception());
+            return "FAIL_SESSION_NOT_SET";
+        }
+        // add a prefix to distinguish from other nonces for debugging
+        String rv = "CN" + RandomSource.getInstance().nextLong();
+        synchronized(session) {
+            LinkedList<String> nonces = (LinkedList<String>) session.getAttribute(SESSION_CONSOLE_NONCE);
+            if (nonces == null) {
+                nonces = new LinkedList<String>();
+                session.setAttribute(SESSION_CONSOLE_NONCE, nonces);
+            }
+            nonces.offer(rv);
+            if (nonces.size() > NONCE_QUEUE_SIZE)
+                nonces.poll();
+        }
+        return rv;
+    }
+
+    /**
+     *  Replaces static consoleNonce, updateNonce, reseedNonce, systemNonce
+     *  @param nonce returns false if null
+     *  @param session returns false if null
+     *  @return true if valid
+     *  @since 0.9.70
+     */
+    public static boolean validateNonce(HttpSession session, String nonce) { 
+        return validateNonce(session, nonce, false);
+    }
+
+    /**
+     *  Replaces static consoleNonce, updateNonce, reseedNonce, systemNonce
+     *  @param nonce returns false if null
+     *  @param session returns false if null
+     *  @param preserve if true, do not delete the nonce. Use for early checks in jsps.
+     *  @return true if valid
+     *  @since 0.9.70
+     */
+    @SuppressWarnings("unchecked")
+    public static boolean validateNonce(HttpSession session, String nonce, boolean preserve) { 
+        if (nonce == null) {
+            //I2PAppContext.getGlobalContext().logManager().getLog(CSSHelper.class).error("validateNonce() null nonce", new Exception());
+            return false;
+        }
+        if (session == null) {
+            //I2PAppContext.getGlobalContext().logManager().getLog(CSSHelper.class).error("validateNonce() null session", new Exception());
+            return false;
+        }
+        boolean rv;
+        synchronized(session) {
+            LinkedList<String> nonces = (LinkedList<String>) session.getAttribute(SESSION_CONSOLE_NONCE);
+            if (nonces != null) {
+                if (preserve)
+                    rv = nonces.lastIndexOf(nonce) >= 0;
+                else
+                    rv = nonces.removeLastOccurrence(nonce);
+            } else {
+                rv = false;
+            }
+        }
+        return rv;
     }
 
     public String getTheme(String userAgent) {
         String url = BASE_THEME_PATH;
-        if (userAgent != null && (userAgent.contains("MSIE") && !userAgent.contains("Trident/6"))) {
+        if (userAgent != null && userAgent.contains("MSIE") && !userAgent.contains("Trident/6") &&
+            !_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD)) {
             url += FORCE + "/";
         } else {
             // This is the first thing to use _context on most pages
             if (_context == null)
                 throw new IllegalStateException("No contexts. This is usually because the router is either starting up or shutting down.");
             String theme = _context.getProperty(PROP_THEME_NAME, DEFAULT_THEME);
+            // remap deprecated themes
+            if (theme.equals("midnight")) {
+                if (_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD))
+                    theme = "dark";
+            } else if (theme.equals("classic")) {
+                if (_context.getProperty(PROP_DISABLE_OLD, DEFAULT_DISABLE_OLD))
+                    theme = "light";
+            }
             url += theme + "/";
         }
         return url;
+    }
+
+    /**
+     * So we don't have to refresh after saving. Called from css.jsi.
+     * @since 0.9.52
+     */
+    public void setTheme(String theme) {
+        if (theme != null && theme.length() > 0 &&
+            theme.replaceAll("[a-zA-Z0-9_-]", "").length() == 0)
+            _context.router().saveConfig(PROP_THEME_NAME, theme);
+    }
+
+    /**
+     * Returns whether app embedding is enabled or disabled
+     * @since 0.9.32
+     */
+    public boolean embedApps() {
+        return _context.getBooleanProperty(PROP_EMBED_APPS);
     }
 
     /**
@@ -105,7 +210,7 @@ public class CSSHelper extends HelperBase {
     public void setRefresh(String r) {
         try {
             if (Integer.parseInt(r) < MIN_REFRESH)
-                r = "" + MIN_REFRESH;
+                r = Integer.toString(MIN_REFRESH);
             _context.router().saveConfig(PROP_REFRESH, r);
         } catch (RuntimeException e) {
         }
@@ -116,9 +221,9 @@ public class CSSHelper extends HelperBase {
         String r = _context.getProperty(PROP_REFRESH, DEFAULT_REFRESH);
         try {
             if (Integer.parseInt(r) < MIN_REFRESH)
-                r = "" + MIN_REFRESH;
+                r = Integer.toString(MIN_REFRESH);
         } catch (RuntimeException e) {
-            r = "" + MIN_REFRESH;
+            r = Integer.toString(MIN_REFRESH);
         }
         return r;
     }
@@ -144,9 +249,14 @@ public class CSSHelper extends HelperBase {
 
     /** translate the title and display consistently */
     public String title(String s) {
+         String id = _context.getProperty("routerconsole.id");
+         if (id != null)
+             id = DataHelper.escapeHTML(id);
+         else
+             id = _t("I2P Router Console");
          StringBuilder buf = new StringBuilder(128);
          buf.append("<title>")
-            .append(_t("I2P Router Console"))
+            .append(id)
             .append(" - ")
             .append(_t(s))
             .append("</title>");
@@ -172,29 +282,6 @@ public class CSSHelper extends HelperBase {
     }
 
     private static boolean shouldAllowIFrame(String ua) {
-        return
-                               // text
-                             !(ua.startsWith("Lynx") || ua.startsWith("w3m") ||
-                               ua.startsWith("ELinks") || ua.startsWith("Links") ||
-                               ua.startsWith("Dillo") || ua.startsWith("Emacs-w3m") ||
-                               // mobile
-                               // http://www.zytrax.com/tech/web/mobile_ids.html
-                               // Android tablet UAs don't have "Mobile" in them
-                               (ua.contains("Android") && ua.contains("Mobile")) ||
-                               ua.contains("iPhone") ||
-                               ua.contains("iPod") || ua.contains("iPad") ||
-                               ua.contains("Kindle") || ua.contains("Mobile") ||
-                               ua.contains("Nintendo Wii") ||
-                               ua.contains("Opera Mini") || ua.contains("Opera Mobi") ||
-                               ua.contains("Palm") ||
-                               ua.contains("PLAYSTATION") || ua.contains("Playstation") ||
-                               ua.contains("Profile/MIDP-") || ua.contains("SymbianOS") ||
-                               ua.contains("Windows CE") || ua.contains("Windows Phone") ||
-                               ua.startsWith("BlackBerry") || ua.startsWith("DoCoMo") ||
-                               ua.startsWith("Nokia") || ua.startsWith("OPWV-SDK") ||
-                               ua.startsWith("MOT-") || ua.startsWith("SAMSUNG-") ||
-                               ua.startsWith("nook") || ua.startsWith("SCH-") ||
-                               ua.startsWith("SEC-") || ua.startsWith("SonyEricsson") ||
-                               ua.startsWith("Vodafone"));
+        return !ServletUtil.isSmallBrowser(ua);
     }
 }

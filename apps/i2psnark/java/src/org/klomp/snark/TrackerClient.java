@@ -28,6 +28,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -89,15 +90,17 @@ public class TrackerClient implements Runnable {
   /** No guidance in BEP 5; standard practice is K (=8) */
   private static final int DHT_ANNOUNCE_PEERS = 4;
   public static final int PORT = 6881;
+  private static final int DEFAULT_UDP_TRACKER_PORT = 6969;
   private static final int MAX_TRACKERS = 12;
   // tracker.welterde.i2p
   private static final Hash DSA_ONLY_TRACKER = ConvertToHash.getHash("cfmqlafjfmgkzbt4r3jsfyhgsr5abgxryl6fnz3d3y5a365di5aa.b32.i2p");
 
   private final I2PSnarkUtil _util;
-  private final MetaInfo meta;
+  // non-final for reinitialize()
+  private MetaInfo meta;
   private final String infoHash;
   private final String peerID;
-  private final String additionalTrackerURL;
+  private final List<String> additionalTrackerURLs;
   private final PeerCoordinator coordinator;
   private final Snark snark;
   private final int port;
@@ -113,7 +116,8 @@ public class TrackerClient implements Runnable {
   private volatile SimpleTimer2.TimedEvent _event;
   // these 2 used in loop()
   private volatile boolean runStarted;
-  private volatile  int consecutiveFails;
+  private volatile int consecutiveFails;
+  private volatile boolean lastHadMeta;
   // if we don't want anything else.
   // Not necessarily seeding, as we may have skipped some files.
   private boolean completed;
@@ -127,24 +131,24 @@ public class TrackerClient implements Runnable {
    * Call start() to start it.
    *
    * @param meta null if in magnet mode
-   * @param additionalTrackerURL may be null, from the ?tr= param in magnet mode, otherwise ignored
+   * @param additionalTrackerURLs may be null, from the ?tr= param in magnet mode, otherwise ignored
    */
-  public TrackerClient(I2PSnarkUtil util, MetaInfo meta, String additionalTrackerURL,
+  public TrackerClient(I2PSnarkUtil util, MetaInfo meta, List<String> additionalTrackerURLs,
                        PeerCoordinator coordinator, Snark snark)
   {
     super();
     // Set unique name.
-    String id = urlencode(snark.getID());
-    _threadName = "TrackerClient " + id.substring(id.length() - 12);
+    byte[] hash = snark.getInfoHash();
+    _threadName = "TrackerClient " + I2PSnarkUtil.toHex(hash);
     _util = util;
     _log = util.getContext().logManager().getLog(TrackerClient.class);
     this.meta = meta;
-    this.additionalTrackerURL = additionalTrackerURL;
+    this.additionalTrackerURLs = additionalTrackerURLs;
     this.coordinator = coordinator;
     this.snark = snark;
 
     this.port = PORT; //(port == -1) ? 9 : port;
-    this.infoHash = urlencode(snark.getInfoHash());
+    this.infoHash = urlencode(hash);
     this.peerID = urlencode(snark.getID());
     this.trackers = new ArrayList<TCTracker>(2);
     this.backupTrackers = new ArrayList<TCTracker>(2);
@@ -267,7 +271,21 @@ public class TrackerClient implements Runnable {
   }
 
   /**
+   *  Call after editing torrent
+   *  @since 0.9.57
+   */
+  public synchronized void reinitialize() {
+      if (!_initialized || !stop)
+          return;
+      trackers.clear();
+      backupTrackers.clear();
+      meta = snark.getMetaInfo();
+      setup();
+  }
+
+  /**
    *  Do this one time only (not every time it is started).
+   *  Unless torrent was edited.
    *  @since 0.9.1
    */
   private void setup() {
@@ -276,12 +294,11 @@ public class TrackerClient implements Runnable {
     // followed by the secondary open trackers
     // It's painful, but try to make sure if an open tracker is also
     // the primary tracker, that we don't add it twice.
-    // todo: check for b32 matches as well
     String primary = null;
     if (meta != null)
         primary = meta.getAnnounce();
-    else if (additionalTrackerURL != null)
-        primary = additionalTrackerURL;
+    else if (additionalTrackerURLs != null && !additionalTrackerURLs.isEmpty())
+        primary = additionalTrackerURLs.get(0);
     Set<Hash> trackerHashes = new HashSet<Hash>(8);
 
     // primary tracker
@@ -292,46 +309,52 @@ public class TrackerClient implements Runnable {
                 _log.debug("Announce: [" + primary + "] infoHash: " + infoHash);
         } else {
             if (_log.shouldLog(Log.WARN))
-                _log.warn("Skipping invalid or non-i2p announce: " + primary);
+                _log.warn("Skipping invalid or non-i2p announce: " + primary + " for torrent " + snark.getBaseName());
         }
     } else {
         _log.warn("No primary announce");
     }
 
-    // announce list
-    // We completely ignore the BEP 12 processing rules
-    if (meta != null && !meta.isPrivate()) {
-        List<List<String>> list = meta.getAnnounceList();
-        if (list != null) {
-            for (List<String> llist : list) {
-                for (String url : llist) {
-                    if (!isNewValidTracker(trackerHashes, url))
-                        continue;
-                    trackers.add(new TCTracker(url, trackers.isEmpty()));
-                    if (_log.shouldLog(Log.DEBUG))
-                        _log.debug("Additional announce (list): [" + url + "] for infoHash: " + infoHash);
-                }
-            }
-            if (trackers.size() > 2) {
-                // shuffle everything but the primary
-                TCTracker pri = trackers.remove(0);
-                Collections.shuffle(trackers, _util.getContext().random());
-                trackers.add(0, pri);
+    // additional trackers in magnet
+    if (additionalTrackerURLs != null && additionalTrackerURLs.size() > 1) {
+        for (int i = 1; i < additionalTrackerURLs.size(); i++) {
+            String url = additionalTrackerURLs.get(i);
+            if (isNewValidTracker(trackerHashes, url)) {
+                trackers.add(new TCTracker(url, false));
+                if (_log.shouldDebug())
+                    _log.debug("Additional announce: [" + url + "] for infoHash: " + infoHash);
             }
         }
     }
 
-    // configured open trackers
-    if (meta == null || !meta.isPrivate()) {
-        List<String> tlist = _util.getOpenTrackers();
-        for (int i = 0; i < tlist.size(); i++) {
-            String url = tlist.get(i);
+    // announce list
+    // We completely ignore the BEP 12 processing rules
+    if (meta != null && !meta.isPrivate()) {
+        List<String> urls = new ArrayList<String>(16);
+        List<List<String>> list = meta.getAnnounceList();
+        if (list != null) {
+            for (List<String> llist : list) {
+                for (String url : llist) {
+                     urls.add(url);
+                }
+            }
+        }
+        // configured open trackers
+        urls.addAll(_util.getOpenTrackers());
+        if (urls.size() > 1) {
+            Collections.shuffle(trackers, _util.getContext().random());
+            if (_util.udpEnabled()) {
+                // sort the list to put udp first so it will trump http
+                Collections.sort(urls, new URLComparator());
+            }
+        }
+        for (String url : urls) {
             if (!isNewValidTracker(trackerHashes, url))
                 continue;
-            // opentrackers are primary if we don't have primary
-            trackers.add(new TCTracker(url, trackers.isEmpty()));
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Additional announce: [" + url + "] for infoHash: " + infoHash);
+             // first one is primary if we don't have a primary
+             trackers.add(new TCTracker(url, trackers.isEmpty()));
+             if (_log.shouldLog(Log.DEBUG))
+                 _log.debug("Additional announce: [" + url + "] for infoHash: " + infoHash);
         }
     }
 
@@ -366,7 +389,7 @@ public class TrackerClient implements Runnable {
       Hash h = getHostHash(ann);
       if (h == null) {
           if (_log.shouldLog(Log.WARN))
-              _log.warn("Bad announce URL: [" + ann + ']');
+              _log.warn("Bad announce URL: [" + ann + "] for torrent " + snark.getBaseName());
           return false;
       }
       // comment this out if tracker.welterde.i2p upgrades
@@ -374,19 +397,19 @@ public class TrackerClient implements Runnable {
           Destination dest = _util.getMyDestination();
           if (dest != null && dest.getSigType() != SigType.DSA_SHA1) {
               if (_log.shouldLog(Log.WARN))
-                  _log.warn("Skipping incompatible tracker: " + ann);
+                  _log.warn("Skipping incompatible tracker: " + ann + " for torrent " + snark.getBaseName());
               return false;
           }
       }
       if (existing.size() >= MAX_TRACKERS) {
           if (_log.shouldLog(Log.INFO))
-              _log.info("Not using announce URL, we have enough: [" + ann + ']');
+              _log.info("Not using announce URL, we have enough: [" + ann + "] for torrent " + snark.getBaseName());
           return false;
       }
       boolean rv = existing.add(h);
       if (!rv) {
           if (_log.shouldLog(Log.INFO))
-             _log.info("Dup announce URL: [" + ann + ']');
+             _log.info("Dup announce URL: [" + ann + "] for torrent " + snark.getBaseName());
       }
       return rv;
   }
@@ -406,6 +429,9 @@ public class TrackerClient implements Runnable {
                 stop = true;
                 return;
             }
+            boolean hadMeta = coordinator.getLeft() >= 0;   // -1 in magnet mode
+
+            int webPeers = getWebPeers();
 
             // Local DHT tracker announce
             DHT dht = _util.getDHT();
@@ -438,7 +464,7 @@ public class TrackerClient implements Runnable {
             }
 
             // we could try and total the unique peers but that's too hard for now
-            snark.setTrackerSeenPeers(maxSeenPeers);
+            snark.setTrackerSeenPeers(maxSeenPeers + webPeers);
 
             if (stop)
                 return;
@@ -454,6 +480,8 @@ public class TrackerClient implements Runnable {
                 else if (snark.getTrackerProblems() != null && ++consecutiveFails < MAX_CONSEC_FAILS)
                   delay = INITIAL_SLEEP;
                 else if ((!runStarted) && _runCount < MAX_CONSEC_FAILS)
+                  delay = INITIAL_SLEEP;
+                else if (!hadMeta)
                   delay = INITIAL_SLEEP;
                 else
                   // sleep a while, when we wake up we will contact only the trackers whose intervals have passed
@@ -493,13 +521,20 @@ public class TrackerClient implements Runnable {
             } else {
                 newlyCompleted = false;
             }
+            // First time we got the metainfo?
+            // If so, ignore interval, because we previously sent left=1
+            boolean hasMeta = left >= 0;
+            boolean newlyGotMeta = hasMeta && !lastHadMeta;
+            lastHadMeta = hasMeta;
+            if ((newlyCompleted || newlyGotMeta) && _log.shouldWarn())
+                _log.warn("State change completed? " + newlyCompleted + " gotMeta? " + newlyGotMeta + ", announcing early for " + snark.getBaseName());
 
             // *** loop once for each tracker
             int maxSeenPeers = 0;
             for (TCTracker tr : trckrs) {
               if ((!stop) && (!tr.stop) &&
                   (completed || coordinator.needOutboundPeers() || !tr.started) &&
-                  (newlyCompleted || System.currentTimeMillis() > tr.lastRequestTime + tr.interval))
+                  (newlyCompleted || newlyGotMeta || System.currentTimeMillis() > tr.lastRequestTime + tr.interval))
               {
                 try
                   {
@@ -509,18 +544,30 @@ public class TrackerClient implements Runnable {
                     if (len > 0 && downloaded > len)
                         downloaded = len;
                     left = coordinator.getLeft();
-                    String event;
-                    if (!tr.started) {
-                        event = STARTED_EVENT;
-                    } else if (newlyCompleted) {
-                        event = COMPLETED_EVENT;
+                    TrackerInfo info;
+                    if (tr.isUDP) {
+                        int event;
+                        if (!tr.started) {
+                            event = UDPTrackerClient.EVENT_STARTED;
+                        } else if (newlyCompleted) {
+                            event = UDPTrackerClient.EVENT_COMPLETED;
+                        } else {
+                            event = UDPTrackerClient.EVENT_NONE;
+                        }
+                        info = doRequest(tr, uploaded, downloaded, left, event);
                     } else {
-                        event = NO_EVENT;
+                        String event;
+                        if (!tr.started) {
+                            event = STARTED_EVENT;
+                        } else if (newlyCompleted) {
+                            event = COMPLETED_EVENT;
+                        } else {
+                            event = NO_EVENT;
+                        }
+                        info = doRequest(tr, infoHash, peerID,
+                                         uploaded, downloaded, left,
+                                         event);
                     }
-                    TrackerInfo info = doRequest(tr, infoHash, peerID,
-                                                 uploaded, downloaded, left,
-                                                 event);
-
                     snark.setTrackerProblems(null);
                     tr.trackerProblems = null;
                     tr.registerFails = 0;
@@ -605,7 +652,7 @@ public class TrackerClient implements Runnable {
                             tplc.startsWith(ERROR_GOT_HTML) ||   // fake msg from doRequest()
                             (!tr.isPrimary && tr.registerFails > MAX_REGISTER_FAILS / 2))
                           if (_log.shouldLog(Log.WARN))
-                              _log.warn("Not longer announcing to " + tr.announce + " : " +
+                              _log.warn("No longer announcing to " + tr.announce + " : " +
                                         tr.trackerProblems + " after " + tr.registerFails + " failures");
                           tr.stop = true;
                       //
@@ -720,6 +767,62 @@ public class TrackerClient implements Runnable {
             return rv;
   }
 
+  /**
+   *  @return valid web peers from metainfo
+   *  @since 0.9.49
+   */
+  private int getWebPeers() {
+      if (meta == null)
+          return 0;
+      // prevent connecting out to a webseed for comments only
+      if (coordinator.getNeededLength() <= 0)
+          return 0;
+      List<String> urls = meta.getWebSeedURLs();
+      if (urls == null || urls.isEmpty())
+          return 0;
+      // Uncomment to skip multifile torrents
+      //if (meta.getLengths() != null)
+      //    return 0;
+      List<Peer> peers = new ArrayList<Peer>(urls.size());
+      for (String url : urls) {
+          Hash h = getHostHash(url);
+          if (h == null)
+              continue;
+          try {
+              PeerID pID = new PeerID(h.getData(), _util);
+              byte[] id = new byte[20];
+              System.arraycopy(WebPeer.IDBytes, 0, id, 0, 12);
+              System.arraycopy(h.getData(), 0, id, 12, 8);
+              pID.setID(id);
+              URI uri = new URI(url);
+              String host = uri.getHost();
+              if (host == null)
+                  continue;
+              if (coordinator.isWebPeerBanned(host)) {
+                  if (_log.shouldWarn())
+                      _log.warn("Skipping banned webseed " + url);
+                  continue;
+              }
+              peers.add(new WebPeer(coordinator, uri, pID, snark.getMetaInfo()));
+          } catch (InvalidBEncodingException ibe) {
+          } catch (URISyntaxException use) {
+          }
+      }
+      if (peers.isEmpty())
+          return 0;
+      Random r = _util.getContext().random();
+      if (peers.size() > 1)
+          Collections.shuffle(peers, r);
+      Iterator<Peer> it = peers.iterator();
+      while ((!stop) && it.hasNext() && coordinator.needOutboundPeers()) {
+          Peer cur = it.next();
+          if (coordinator.addPeer(cur) && it.hasNext()) {
+              int delay = r.nextInt(DELAY_RAND) + DELAY_MIN;
+              try { Thread.sleep(delay); } catch (InterruptedException ie) {}
+          }
+      }
+      return peers.size();
+  }
 
   /**
    *  Creates a thread for each tracker in parallel if tunnel is still open
@@ -766,24 +869,31 @@ public class TrackerClient implements Runnable {
         if (len > 0 && downloaded > len)
             downloaded = len;
         long left = coordinator.getLeft();
-        try
-          {
+        try {
             // Don't try to restart I2CP connection just to say goodbye
-              if (_util.connected()) {
-                  if (tr.started && (!tr.stop) && tr.trackerProblems == null)
-                      doRequest(tr, infoHash, peerID, uploaded,
-                                         downloaded, left, STOPPED_EVENT);
-              }
-          }
+            if (_util.connected()) {
+                if (tr.started && (!tr.stop) && tr.trackerProblems == null) {
+                    if (tr.isUDP) {
+                        doRequest(tr, uploaded,
+                                  downloaded, left, UDPTrackerClient.EVENT_STOPPED);
+                    } else {
+                        doRequest(tr, infoHash, peerID, uploaded,
+                                  downloaded, left, STOPPED_EVENT);
+                    }
+                }
+            }
+        }
         catch(IOException ioe) { /* ignored */ }
         tr.reset();
      }
   }
   
   /**
+   *  HTTP - blocking
    *
    *  Note: IOException message text gets displayed in the UI
    *
+   *  @param left -1 for magnet
    */
   private TrackerInfo doRequest(TCTracker tr, String infoHash,
                                 String peerID, long uploaded,
@@ -803,7 +913,10 @@ public class TrackerClient implements Runnable {
        .append("&uploaded=").append(uploaded)
        .append("&downloaded=").append(downloaded)
        .append("&left=");
-    // What do we send for left in magnet mode? Can we omit it?
+    // -1 for magnet.
+    // The spec implies that "left" is required, and postman does indeed require it,
+    // so we send left=1.
+    // We will send another announce once we have the metainfo.
     if (left >= 0)
         buf.append(left);
     else
@@ -844,6 +957,48 @@ public class TrackerClient implements Runnable {
         String failure = info.getFailureReason();
         if (failure != null)
             throw new IOException("Tracker " + tr.host + " responded with: " + failure);
+
+        tr.interval = Math.max(MIN_TRACKER_ANNOUNCE_INTERVAL, info.getInterval() * 1000l);
+        return info;
+  }
+
+  /**
+   *  UDP - blocking
+   *
+   *  @return null if _fastUnannounce && event == STOPPED
+   *  @since 0.9.54
+   */
+  private TrackerInfo doRequest(TCTracker tr, long uploaded,
+                                long downloaded, long left, int event) throws IOException {
+        UDPTrackerClient udptc = _util.getUDPTrackerClient();
+        if (udptc == null)
+            throw new IOException("no UDPTC");
+        if (_log.shouldLog(Log.INFO))
+            _log.info("Sending UDPTrackerClient request");
+
+        tr.lastRequestTime = System.currentTimeMillis();
+        // Don't wait for a response to stopped when shutting down
+        boolean fast = _fastUnannounce && event == UDPTrackerClient.EVENT_STOPPED;
+        long maxWait = fast ? 5*1000 : 60*1000;
+        boolean small = left == 0 || event == UDPTrackerClient.EVENT_STOPPED || !coordinator.needOutboundPeers();
+        int numWant = small ? 0 : _util.getMaxConnections();
+        UDPTrackerClient.TrackerResponse fetched = udptc.announce(snark.getInfoHash(), snark.getID(), numWant,
+                                                                  maxWait, tr.host, tr.port,
+                                                                  downloaded, left, uploaded, event, fast);
+        if (fast)
+            return null;
+        if (fetched == null)
+            throw new IOException("UDP announce error to: " + tr.host);
+
+        TrackerInfo info = new TrackerInfo(fetched.getPeers(), fetched.getInterval(), fetched.getSeedCount(),
+                                           fetched.getLeechCount(), fetched.getFailureReason(),
+                                           snark.getID(), snark.getInfoHash(), snark.getMetaInfo(), _util);
+        if (_log.shouldLog(Log.INFO))
+            _log.info("TrackerClient response: " + info);
+
+        String failure = info.getFailureReason();
+        if (failure != null)
+            throw new IOException(failure);
 
         tr.interval = Math.max(MIN_TRACKER_ANNOUNCE_INTERVAL, info.getInterval() * 1000l);
         return info;
@@ -894,10 +1049,16 @@ public class TrackerClient implements Runnable {
         return false;
     }
     String path = url.getPath();
-    if (path == null || !path.startsWith("/"))
+    String scheme = url.getScheme();
+    if ("http".equals(scheme)) {
+        if (path == null || !path.startsWith("/"))
+            return false;
+    }
+    if (!("http".equals(scheme) || "udp".equals(scheme)))
         return false;
-    return "http".equals(url.getScheme()) && url.getHost() != null &&
-           (url.getHost().endsWith(".i2p") || url.getHost().equals("i2p"));
+    String host = url.getHost();
+    return host != null &&
+           host.endsWith(".i2p");
   }
 
   /**
@@ -907,33 +1068,58 @@ public class TrackerClient implements Runnable {
    *  @return a Hash for i2p hosts only, null otherwise
    *  @since 0.9.5
    */
-  private static Hash getHostHash(String ann) {
+  private Hash getHostHash(String ann) {
     URI url;
     try {
         url = new URI(ann);
     } catch (URISyntaxException use) {
         return null;
     }
-    if (!"http".equals(url.getScheme()))
+    String scheme = url.getScheme();
+    if (!("http".equals(scheme) || (_util.udpEnabled() && "udp".equals(scheme))))
         return null;
     String host = url.getHost();
-    if (host == null)
+    if (host == null) {
+        // URI can't handle b64dest or b64dest.i2p if it contains '~'
+        // but it doesn't throw an exception, just returns a null host
+        if (ann.startsWith("http://") && ann.length() >= 7 + 516 && ann.contains("~")) {
+            ann = ann.substring(7);
+            int slash = ann.indexOf('/');
+            if (slash >= 516) {
+                ann = ann.substring(0, slash);
+                if (ann.endsWith(".i2p"))
+                    ann = ann.substring(0, ann.length() - 4);
+                return ConvertToHash.getHash(ann);
+            }
+        }
         return null;
+    }
     if (host.endsWith(".i2p")) {
-        String path = url.getPath();
-        if (path == null || !path.startsWith("/"))
-            return null;
+        if ("http".equals(scheme)) {
+            String path = url.getPath();
+            if (path == null || !path.startsWith("/"))
+                return null;
+        }
         return ConvertToHash.getHash(host);
     }
-    if (host.equals("i2p")) {
-        String path = url.getPath();
-        if (path == null || path.length() < 517 ||
-            !path.startsWith("/"))
-            return null;
-        String[] parts = DataHelper.split(path.substring(1), "[/\\?&;]", 2);
-        return ConvertToHash.getHash(parts[0]);
-    }
     return null;
+  }
+
+  /**
+   *  UDP before HTTP
+   *
+   *  @since 0.9.67
+   */
+  private static class URLComparator implements Comparator<String> {
+      public int compare(String l, String r) {
+          boolean ul = l.startsWith("udp://");
+          boolean ur = r.startsWith("udp://");
+          if (ul && !ur)
+              return -1;
+          if (ur && !ul)
+              return -1;
+          return 0;
+      }
   }
 
   private static class TCTracker
@@ -941,6 +1127,8 @@ public class TrackerClient implements Runnable {
       final String announce;
       final String host;
       final boolean isPrimary;
+      final boolean isUDP;
+      final int port;
       long interval;
       long lastRequestTime;
       String trackerProblems;
@@ -951,14 +1139,27 @@ public class TrackerClient implements Runnable {
       int seenPeers;
 
       /**
-       *  @param a must be a valid http URL with a path
+       *  @param a must be a valid http URL with a path,
+       *           or a udp URL (path is ignored)
        *  @param p true if primary
        */
       public TCTracker(String a, boolean p)
       {
           announce = a;
-          String s = a.substring(7);
-          host = s.substring(0, s.indexOf('/'));
+          URI url;
+          try {
+             url = new URI(a);
+             isUDP = "udp".equals(url.getScheme());
+             host = url.getHost();
+             int pt = url.getPort();
+             if (pt < 0) {
+                 pt = isUDP ? DEFAULT_UDP_TRACKER_PORT : 80;
+             }
+             port = pt;
+          } catch (URISyntaxException use) {
+             // shouldn't happen, already validated
+             throw new IllegalArgumentException(use);
+          }
           isPrimary = p;
           interval = INITIAL_SLEEP;
       }

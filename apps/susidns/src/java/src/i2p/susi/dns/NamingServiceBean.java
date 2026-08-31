@@ -21,11 +21,18 @@
 
 package i2p.susi.dns;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Writer;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -33,10 +40,18 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.SortedMap;
 
+import net.i2p.addressbook.DeletedHosts;
+import net.i2p.app.ClientAppManager;
 import net.i2p.client.naming.NamingService;
+import net.i2p.client.naming.SingleFileNamingService;
+import net.i2p.data.Base32;
+import net.i2p.data.Base64;
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
+import net.i2p.data.Hash;
+import net.i2p.servlet.RequestWrapper;
+import net.i2p.util.PortMapper;
 
 /**
  *  Talk to the NamingService API instead of modifying the hosts.txt files directly,
@@ -48,6 +63,7 @@ public class NamingServiceBean extends AddressbookBean
 {
 	private static final String DEFAULT_NS = "BlockfileNamingService";
 	private String detail;
+	private String notes;
 
 	private boolean isDirect() {
 		return getBook().equals("published");
@@ -92,8 +108,13 @@ public class NamingServiceBean extends AddressbookBean
 	{
 		if (isDirect())
 			return super.getFileName();
+		String getbook = getBook();
+                if (getbook.equals("conflicts"))
+                    return "conflicts";
 		loadConfig();
-		String filename = properties.getProperty( getBook() + "_addressbook" );
+		String filename = properties.getProperty(getbook + "_addressbook");
+		if (filename == null)
+			return getbook;
 		return basename(filename);
 	}
 
@@ -156,8 +177,9 @@ public class NamingServiceBean extends AddressbookBean
 			Map<String, Destination> results;
 			Properties searchProps = new Properties();
 			// only blockfile needs this
+			boolean sortByDate = "latest".equals(filter);
 			searchProps.setProperty("list", getFileName());
-			if (filter != null) {
+			if (filter != null && !sortByDate) {
 				String startsAt = filter.equals("0-9") ? "[0-9]" : filter;
 				searchProps.setProperty("startsWith", startsAt);
 			}
@@ -170,14 +192,42 @@ public class NamingServiceBean extends AddressbookBean
 				if (limit > 0)
 					searchProps.setProperty("limit", Integer.toString(limit));
 			}
-			if (search != null && search.length() > 0)
-				searchProps.setProperty("search", search.toLowerCase(Locale.US));
-			results = service.getEntries(searchProps);
+
+			Hash reverse = null;
+			if (search != null && search.length() > 0) {
+				if (search.length() == 60 && search.endsWith(".b32.i2p")) {
+					byte[] b = Base32.decode(search.substring(0, 52));
+					if (b != null)
+						reverse = new Hash(b);
+				} else if (search.length() >= 516) {
+					byte[] b = Base64.decode(search);
+					if (b != null)
+						reverse = _context.sha().calculateHash(b);
+				}
+				if (reverse == null)
+					searchProps.setProperty("search", search.toLowerCase(Locale.US));
+			}
+			if (reverse != null) {
+				List<String> names = service.reverseLookupAll(reverse);
+				if (names != null) {
+					results = new HashMap<String, Destination>(names.size());
+					for (String name : names) {
+						Destination d = service.lookup(name, searchProps, null);
+						if (d != null)
+							results.put(name, d);
+					}
+				} else {
+					results = Collections.emptyMap();
+				}
+
+			} else {
+				results = service.getEntries(searchProps);
+			}
 
 			debug("Result count: " + results.size());
 			for (Map.Entry<String, Destination> entry : results.entrySet()) {
 				String name = entry.getKey();
-				if( filter != null && filter.length() > 0 ) {
+				if (filter != null && filter.length() > 0 && !sortByDate) {
 					if (filter.equals("0-9")) {
 						char first = name.charAt(0);
 						if( first < '0' || first > '9' )
@@ -187,22 +237,28 @@ public class NamingServiceBean extends AddressbookBean
 						continue;
 					}
 				}
-				if( search != null && search.length() > 0 ) {
+				if (search != null && search.length() > 0 && reverse == null) {
 					if( name.indexOf( search ) == -1 ) {
 						continue;
 					}
 				}
-				String destination = entry.getValue().toBase64();
-				if (destination != null) {
-					list.addLast( new AddressBean( name, destination ) );
-				} else {
-					// delete it too?
-					System.err.println("Bad entry " + name + " in database " + service.getName());
+				AddressBean bean = new AddressBean(name, entry.getValue());
+				if (sortByDate) {
+					Properties p = new Properties();
+					Destination d = service.lookup(name, searchProps, p);
+					if (d != null && !p.isEmpty())
+						bean.setProperties(p);
 				}
+				list.addLast(bean);
 			}
 			AddressBean array[] = list.toArray(new AddressBean[list.size()]);
-			if (!(results instanceof SortedMap))
-			    Arrays.sort( array, sorter );
+			if (sortByDate) {
+				Arrays.sort(array, new AddressByDateSorter());
+				if (getBook().equals("router"))
+					clearBubbles();
+			} else if (!(results instanceof SortedMap)) {
+				Arrays.sort(array, sorter);
+			}
 			entries = array;
 
 			message = generateLoadMessage();
@@ -228,8 +284,9 @@ public class NamingServiceBean extends AddressbookBean
 			Properties nsOptions = new Properties();
 			// only blockfile needs this
 			nsOptions.setProperty("list", getFileName());
-                        if (_context.getBooleanProperty(PROP_PW_ENABLE) ||
-			    (serial != null && serial.equals(lastSerial))) {
+			if ("POST".equals(method) &&
+                            (_context.getBooleanProperty(PROP_PW_ENABLE) ||
+			     (serial != null && serial.equals(lastSerial)))) {
 				boolean changed = false;
 				if (action.equals(_t("Add")) || action.equals(_t("Replace")) || action.equals(_t("Add Alternate"))) {
 					if(hostname != null && destination != null) {
@@ -248,8 +305,37 @@ public class NamingServiceBean extends AddressbookBean
 							} else if (oldDest != null && action.equals(_t("Add"))) {
 								message = _t("Host name {0} is already in address book with a different destination. Click \"Replace\" to overwrite.", displayHost);
 							} else {
+								boolean wasB32 = false;
 								try {
-									Destination dest = new Destination(destination);
+									Destination dest;
+									if (destination.length() >= 516) {
+										dest = new Destination(destination);
+									} else if (destination.contains(".b32.i2p")) {
+										wasB32 = true;
+										if (destination.startsWith("http://") ||
+										    destination.startsWith("https://")) {
+											// do them a favor, pull b32 out of pasted URL
+											try {
+												URI uri = new URI(destination);
+												String b32 = uri.getHost();
+												if (b32 == null || !b32.endsWith(".b32.i2p") || b32.length() < 60)
+													throw new DataFormatException("");
+												dest = _context.namingService().lookup(b32);
+												if (dest == null)
+													throw new DataFormatException(_t("Unable to resolve Base 32 address"));
+											} catch(URISyntaxException use) {
+												throw new DataFormatException("");
+											}
+										} else if (destination.endsWith(".b32.i2p") && destination.length() >= 60) {
+											dest = _context.namingService().lookup(destination);
+											if (dest == null)
+												throw new DataFormatException(_t("Unable to resolve Base 32 address"));
+										} else {
+											throw new DataFormatException("");
+										}
+									} else {
+										throw new DataFormatException("");
+									}
 									if (oldDest != null) {
 										nsOptions.putAll(outProperties);
 							                        String now = Long.toString(_context.clock().now());
@@ -279,7 +365,7 @@ public class NamingServiceBean extends AddressbookBean
 										else
 											message = _t("Destination changed for {0}.", displayHost);
 										if (!host.endsWith(".i2p"))
-											message += "<br>" + _t("Warning - host name does not end with \".i2p\"");
+											message += "<br>" + _t("Warning - hostname does not end with \".i2p\"");
 										// clear form
 										hostname = null;
 										destination = null;
@@ -287,16 +373,22 @@ public class NamingServiceBean extends AddressbookBean
 										message = _t("Failed to add Destination for {0} to naming service {1}", displayHost, getNamingService().getName()) + "<br>";
 									}
 								} catch (DataFormatException dfe) {
-									message = _t("Invalid Base 64 destination.");
+									String msg = dfe.getMessage();
+									if (msg != null && msg.length() > 0)
+										message = msg;
+									else if (wasB32)
+										message = _t("Invalid Base 32 hostname.");
+									else
+										message = _t("Invalid Base 64 destination.");
 								}
 							}
 						} catch (IllegalArgumentException iae) {
 							message = iae.getMessage();
 							if (message == null)
-								message = _t("Invalid host name \"{0}\".", hostname);
+								message = _t("Invalid hostname \"{0}\".", hostname);
 						}
 					} else {
-						message = _t("Please enter a host name and destination");
+						message = _t("Please enter a hostname and destination");
 					}
 					// clear search when adding
 					search = null;
@@ -329,7 +421,7 @@ public class NamingServiceBean extends AddressbookBean
 					}
 					if( changed ) {
 						if (deleted == 1)
-							// parameter is a host name
+							// parameter is a hostname
 							message += _t("Destination {0} deleted.", name);
 						else
 							// parameter will always be >= 2
@@ -340,10 +432,60 @@ public class NamingServiceBean extends AddressbookBean
 					// clear search when deleting
 					if (action.equals(_t("Delete Entry")))
 						search = null;
+					if (getBook().equals("router")) {
+						// add to delete list so they don't come back via subscription
+						DeletedHosts dh = new DeletedHosts(addressbookDir());
+						dh.add(deletionMarks);
+					}
+				} else if (action.equals(_t("Replace Router Entry"))) {
+					Destination matchDest = null;
+					// remove specified dest only in case there is more than one
+					if (destination != null) {
+						try {
+							matchDest = new Destination(destination);
+						} catch (DataFormatException dfe) {}
+					}
+					boolean success = false;
+					if (matchDest != null && deletionMarks.size() == 1) {
+						String name = null;
+						String n = deletionMarks.get(0);
+						// get stored options
+						List<Properties> propsList = new ArrayList<Properties>(4);
+						List<Destination> dests = getNamingService().lookupAll(n, nsOptions, propsList);
+						if (dests != null) {
+							int i = dests.indexOf(matchDest);
+							if (i >= 0) {
+								Properties sprops = propsList.get(i);
+								// remove old host.txt entry
+								nsOptions.setProperty("list", "hosts.txt");
+								getNamingService().remove(n, matchDest, nsOptions);
+								// add new host.txt entry with stored options
+								nsOptions.putAll(sprops);
+								nsOptions.setProperty("list", "hosts.txt");
+								success = getNamingService().put(n, matchDest, nsOptions);
+								if (success) {
+									// remove conflicts entry
+									nsOptions.clear();
+									nsOptions.setProperty("list", "conflicts");
+									success = getNamingService().remove(n, matchDest, nsOptions);
+								}
+							}
+						}
+						String uni = AddressBean.toUnicode(n);
+						String displayHost = uni.equals(n) ? n :  uni + " (" + n + ')';
+						if (!success) {
+							message += _t("Failed to replace Destination for {0} in naming service {1}", displayHost, getNamingService().getName()) + "<br>";
+						} else {
+							message += _t("Replaced Destination for {0} in naming service {1}", displayHost, getNamingService().getName()) + "<br>";
+							changed = true;
+							name = displayHost;
+						}
+					}
 				}
 				if( changed ) {
 					message += "<br>" + _t("Address book saved.");
 				}
+
 			}			
 			else {
 				message = _t("Invalid form submission, probably because you used the \"back\" or \"reload\" button on your browser. Please resubmit.")
@@ -355,12 +497,71 @@ public class NamingServiceBean extends AddressbookBean
 		action = null;
 		
 		if( message.length() > 0 )
-			message = "<p class=\"messages\">" + message + "</p>";
+			message = styleMessage(message);
 		return message;
+	}
+
+	/**
+	 *  @since 0.9.35
+	 */
+        public void saveNotes() {
+		if (action == null || !action.equals(_t("Save Notes")) ||
+		    destination == null || detail == null || isDirect() ||
+		    serial == null || !serial.equals(lastSerial))
+			return;
+		Properties nsOptions = new Properties();
+		List<Properties> propsList = new ArrayList<Properties>(4);
+		nsOptions.setProperty("list", getFileName());
+		List<Destination> dests = getNamingService().lookupAll(detail, nsOptions, propsList);
+		if (dests == null)
+			return;
+		for (int i = 0; i < dests.size(); i++) {
+			if (!dests.get(i).toBase64().equals(destination))
+				continue;
+			Properties props = propsList.get(i);
+			if (notes != null && notes.length() > 0) {
+				byte[] nbytes = DataHelper.getUTF8(notes);
+	                        if (nbytes.length > 255) {
+					// violently truncate, possibly splitting a char
+					byte[] newbytes = new byte[255];
+					System.arraycopy(nbytes, 0, newbytes, 0, 255);
+					notes = DataHelper.getUTF8(newbytes);
+					// drop replacement char or split pair
+					int last = notes.length() - 1;
+					char lastc = notes.charAt(last);
+					if (lastc == (char) 0xfffd || Character.isHighSurrogate(lastc))
+						notes = notes.substring(0, last);
+				}
+				props.setProperty("notes", notes);
+			} else {
+				// not working
+				//props.remove("notes");
+				props.setProperty("notes", "");
+			}
+			props.setProperty("list", getFileName());
+                        String now = Long.toString(_context.clock().now());
+                       	props.setProperty("m", now);
+			if (dests.size() > 1) {
+				// we don't have any API to update properties on a single dest
+				// so remove and re-add
+				getNamingService().remove(detail, dests.get(i), nsOptions);
+				getNamingService().addDestination(detail, dests.get(i), props);
+			} else {
+				getNamingService().put(detail, dests.get(i), props);
+			}
+			return;
+		}
 	}
 
 	public void setH(String h) {
 		this.detail = DataHelper.stripHTML(h);
+	}
+
+	/**
+	 *  @since 0.9.35
+	 */
+	public void setNofilter_notes(String n) {
+		notes = n;
 	}
 
 	public AddressBean getLookup() {
@@ -384,7 +585,7 @@ public class NamingServiceBean extends AddressbookBean
 		Destination dest = getNamingService().lookup(this.detail, nsOptions, outProps);
 		if (dest == null)
 			return null;
-		AddressBean rv = new AddressBean(this.detail, dest.toBase64());
+		AddressBean rv = new AddressBean(this.detail, dest);
 		rv.setProperties(outProps);
 		return rv;
 	}
@@ -410,11 +611,20 @@ public class NamingServiceBean extends AddressbookBean
 			return null;
 		List<AddressBean> rv = new ArrayList<AddressBean>(dests.size());
 		for (int i = 0; i < dests.size(); i++) {
-			AddressBean ab = new AddressBean(this.detail, dests.get(i).toBase64());
+			AddressBean ab = new AddressBean(this.detail, dests.get(i));
 			ab.setProperties(propsList.get(i));
 			rv.add(ab);
 		}
 		return rv;
+	}
+
+	/**
+	 *  @since 0.9.66
+	 */
+	private void clearBubbles() {
+		ClientAppManager cmgr = _context.clientAppManager();
+		if (cmgr != null)
+			cmgr.setBubble(PortMapper.SVC_SUSIDNS, 0, null);
 	}
 
 	/**
@@ -432,5 +642,96 @@ public class NamingServiceBean extends AddressbookBean
 			searchProps.setProperty("search", search.toLowerCase(Locale.US));
 		getNamingService().export(out, searchProps);
 		// No post-filtering for hosts.txt naming services. It is what it is.
+	}
+
+	/**
+	 *  @return messages about this action
+	 *  @since 0.9.40
+	 */
+	public String importFile(RequestWrapper wrequest) throws IOException {
+		String message = "";
+		InputStream in = wrequest.getInputStream("file");
+		OutputStream out = null;
+		File tmp = null;
+		SingleFileNamingService sfns = null;
+		try {
+			// non-null but zero bytes if no file entered, don't know why
+			if (in == null || in.available() <= 0) {
+				return styleMessage(_t("You must enter a file"));
+			}
+			// copy to temp file
+			tmp = new File(_context.getTempDir(), "susidns-import-" + _context.random().nextLong() + ".txt");
+			out = new FileOutputStream(tmp);
+			DataHelper.copy(in, out);
+                        in.close();
+                        in = null;
+                        out.close();
+                        out = null;
+			// new SingleFileNamingService
+			sfns = new SingleFileNamingService(_context, tmp.getAbsolutePath());
+			// getEntries, copy over
+			Map<String, Destination> entries = sfns.getEntries();
+			int count = entries.size();
+			if (count <= 0) {
+				return styleMessage(_t("No entries found in file"));
+			} else {
+				NamingService service = getNamingService();
+				int added = 0, dup = 0;
+				Properties nsOptions = new Properties();
+				nsOptions.setProperty("list", getFileName());
+	                        String now = Long.toString(_context.clock().now());
+	                       	nsOptions.setProperty("m", now);
+				String filename = wrequest.getFilename("file");
+				if (filename != null)
+					nsOptions.setProperty("s", _t("Imported from file {0}", filename));
+				else
+					nsOptions.setProperty("s", _t("Imported from file"));
+				for (Map.Entry<String, Destination> e : entries.entrySet()) {
+					String host = e.getKey();
+					Destination dest = e.getValue();
+					boolean ok = service.putIfAbsent(host, dest, nsOptions);
+					if (ok)
+						added++;
+					else
+						dup++;
+				}
+				StringBuilder buf = new StringBuilder(128);
+				if (added > 0)
+					buf.append(styleMessage(ngettext("Loaded {0} entry from file",
+				                                         "Loaded {0} entries from file",
+				                                         added)));
+				if (dup > 0)
+					buf.append(styleMessage(ngettext("Skipped {0} duplicate entry from file",
+				                                         "Skipped {0} duplicate entries from file",
+				                                         dup)));
+				return buf.toString();
+			}
+		} catch (IOException ioe) {
+			return styleMessage(_t("Import from file failed") + " - " + ioe);
+		} finally {
+			if (in != null)
+				try { in.close(); } catch (IOException ioe) {}
+			if (out != null)
+				try { out.close(); } catch (IOException ioe) {}
+			// shutdown SFNS
+			if (sfns != null)
+			    sfns.shutdown();
+			if (tmp != null)
+			    tmp.delete();
+		}
+	}
+
+	/**
+	 *  @since 0.9.40
+	 */
+	private static String styleMessage(String message) {
+		return "<p class=\"messages\">" + message + "</p>";
+	}
+	
+	/**
+	 *  @since 0.9.34
+	 */
+	public boolean haveImagegen() {
+		return _context.portMapper().isRegistered("imagegen");
 	}
 }

@@ -14,11 +14,12 @@ import java.util.Set;
 import java.util.StringTokenizer;
 
 import net.i2p.I2PAppContext;
+import net.i2p.util.FileSuffixFilter;
 
 import org.apache.tomcat.SimpleInstanceManager;
-import org.eclipse.jetty.webapp.Configuration;
-import org.eclipse.jetty.webapp.WebAppClassLoader;
-import org.eclipse.jetty.webapp.WebAppContext;
+import org.eclipse.jetty.ee8.webapp.Configuration;
+import org.eclipse.jetty.ee8.webapp.WebAppClassLoader;
+import org.eclipse.jetty.ee8.webapp.WebAppContext;
 
 
 /**
@@ -86,10 +87,13 @@ public class WebAppConfiguration implements Configuration {
 ****/
 
         I2PAppContext i2pContext = I2PAppContext.getGlobalContext();
-        File libDir = new File(i2pContext.getBaseDir(), "lib");
-        // FIXME this only works if war is the same name as the plugin
-        File pluginDir = new File(i2pContext.getConfigDir(),
-                                        PluginStarter.PLUGIN_DIR + ctxPath);
+        File libDir = i2pContext.getLibDir();
+        // Get the plugin name that WebAppStarter stuck in here for us
+        String pluginName = wac.getInitParameter(WebAppStarter.PARAM_PLUGIN_NAME);
+        if (pluginName == null)
+            pluginName = ctxPath;
+        File pluginDir = new File(i2pContext.getConfigDir(), PluginStarter.PLUGIN_DIR);
+        pluginDir = new File(pluginDir, pluginName);
 
         File dir = libDir;
         String cp;
@@ -99,6 +103,8 @@ public class WebAppConfiguration implements Configuration {
             // Only really required if started manually, but we don't know that from here
             cp = "jetty-util.jar";
 ****/
+        // Java 11+ fix to prevent dup contexts
+        wac.setParentLoaderPriority(true);
         if (ctxPath.equals("/susidns")) {
             // Old installs don't have this in their wrapper.config classpath
             cp = "addressbook.jar";
@@ -179,12 +185,12 @@ public class WebAppConfiguration implements Configuration {
         } else {
             // Java 9 - assume everything in lib/ is in the classpath
             // except addressbook.jar
-            File libDir = new File(ctx.getBaseDir(), "lib");
-            File[] files = libDir.listFiles();
+            File libDir = ctx.getLibDir();
+            File[] files = libDir.listFiles(new FileSuffixFilter(".jar"));
             if (files != null) {
                 for (int i = 0; i < files.length; i++) {
                     String name = files[i].getName();
-                    if (name.endsWith(".jar") && !name.equals("addressbook.jar"))
+                    if (!name.equals("addressbook.jar"))
                         rv.add(files[i].toURI());
                 }
             }
@@ -217,4 +223,14 @@ public class WebAppConfiguration implements Configuration {
 
     /** @since Jetty 7 */
     public void postConfigure(WebAppContext context) {}
+
+    /**
+     *  @since Jetty 12
+     */
+    public boolean abort(WebAppContext context) { return false; }
+
+    /**
+     *  @since Jetty 12
+     */
+    public boolean isEnabledByDefault() { return true; }
 }

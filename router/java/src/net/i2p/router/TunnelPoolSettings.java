@@ -7,6 +7,8 @@ import java.util.Properties;
 
 import net.i2p.data.Base64;
 import net.i2p.data.Hash;
+import net.i2p.data.SessionKey;
+import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.util.ConcurrentHashSet;
 import net.i2p.util.NativeBigInteger;
 import net.i2p.util.RandomSource;
@@ -31,7 +33,7 @@ public class TunnelPoolSettings {
     private boolean _allowZeroHop;
     private int _IPRestriction;
     private final Properties _unknownOptions;
-    private Hash _randomKey;
+    private SessionKey _randomKey;
     private int _priority;
     private final Set<Hash> _aliases;
     private Hash _aliasOf;
@@ -79,12 +81,14 @@ public class TunnelPoolSettings {
     private static final int    DEFAULT_OB_EXPL_LENGTH_VARIANCE = 0;
     //private static final int    DEFAULT_OB_EXPL_LENGTH_VARIANCE = isSlow ? 0 : 1;
 
-    public static final boolean DEFAULT_ALLOW_ZERO_HOP = true;
+    public static final boolean DEFAULT_ALLOW_ZERO_HOP = false;
     public static final int     DEFAULT_IP_RESTRICTION = 2;    // class B (/16)
     private static final int MIN_PRIORITY = -25;
     private static final int MAX_PRIORITY = 25;
     private static final int EXPLORATORY_PRIORITY = 30;
-    
+
+    private final long _msgIDBloomXor;
+
     /**
      *  Exploratory tunnel
      */
@@ -111,13 +115,12 @@ public class TunnelPoolSettings {
             _lengthVariance = _isExploratory ? DEFAULT_OB_EXPL_LENGTH_VARIANCE : DEFAULT_LENGTH_VARIANCE;
         }
         _lengthOverride = -1;
-        if (_isExploratory)
-            _allowZeroHop = true;
-        else
-            _allowZeroHop = DEFAULT_ALLOW_ZERO_HOP;
+        _allowZeroHop = DEFAULT_ALLOW_ZERO_HOP;
         _IPRestriction = DEFAULT_IP_RESTRICTION;
         _unknownOptions = new Properties();
         _randomKey = generateRandomKey();
+        _msgIDBloomXor = RandomSource.getInstance().nextLong(I2NPMessage.MAX_ID_VALUE);
+
         if (_isExploratory && !_isInbound)
             _priority = EXPLORATORY_PRIORITY;
         if (!_isExploratory)
@@ -161,16 +164,29 @@ public class TunnelPoolSettings {
     
     /**
      * If there are no tunnels to build with, will this pool allow 0 hop tunnels?
-     * Always true for exploratory.
-     * Generally true for client, but should probably be ignored...
-     * use getLength() + getLengthVariance() &gt; 0 instead.
+     *
+     * As of 0.9.44, same goes for exploratory:
+     * Prior to 0.9.35, generally true for client.
+     * As of 0.9.35, generally false for client, but true if
+     * getLength() + Math.min(getLengthVariance(), 0) &lt;= 0,
+     * OR if getLengthOverride() == 0
+     * OR if setAllowZeroHop(true) was called or set in properties.
      */
-    public boolean getAllowZeroHop() { return _allowZeroHop; }
+    public boolean getAllowZeroHop() {
+        return _allowZeroHop ||
+               _length + Math.min(_lengthVariance, 0) <= 0 ||
+               _lengthOverride == 0;
+    }
 
     /**
      * If there are no tunnels to build with, will this pool allow 0 hop tunnels?
      * No effect on exploratory (always true)
+     *
+     * @param ok if true, getAllowZeroHop() will always return true
+     *           if false, getAllowZeroHop will return as documented.
+     * @deprecated unused
      */
+    @Deprecated
     public void setAllowZeroHop(boolean ok) {
         if (!_isExploratory)
             _allowZeroHop = ok;
@@ -245,7 +261,7 @@ public class TunnelPoolSettings {
      *
      *  @return non-null
      */
-    public Hash getRandomKey() { return _randomKey; }
+    public SessionKey getRandomKey() { return _randomKey; }
 
     /** what user supplied name was given to the client connected (can be null) */
     public String getDestinationNickname() { return _destinationNickname; }
@@ -256,9 +272,12 @@ public class TunnelPoolSettings {
      *  to be in the same tunnel
      *  (1-4, 0 to disable)
      *
+     *  Support removed in the ClientPeerSelector in 0.8.6; restored in 0.9.53
+     *
+     *  @return 0-4 Number of bytes to match to determine if peers in the same IP range should
+     *          not be in the same tunnel. 0 = disable check; 1 = /8; 2 = /16; 3 = /24; 4 = exact IP match
      */
-    public int getIPRestriction() { int r = _IPRestriction; if (r>4) r=4; else if (r<0) r=0; return r;}
-    public void setIPRestriction(int b) { _IPRestriction = b; }
+    public int getIPRestriction() { return _IPRestriction; }
     
     /**
      *  Outbound message priority - for outbound tunnels only
@@ -267,7 +286,12 @@ public class TunnelPoolSettings {
      */
     public int getPriority() { return _priority; }
 
+    /**
+     *  @return non-null
+     */
     public Properties getUnknownOptions() { return _unknownOptions; }
+
+    public long getMsgIdBloomXor() { return _msgIDBloomXor; }
 
     /**
      *  Defaults in props are NOT honored.
@@ -303,16 +327,21 @@ public class TunnelPoolSettings {
                 //     _rebuildPeriod = getInt(value, DEFAULT_REBUILD_PERIOD);
                 else if (name.equalsIgnoreCase(prefix + PROP_NICKNAME))
                     _destinationNickname = value;
-                else if (name.equalsIgnoreCase(prefix + PROP_IP_RESTRICTION))
-                    _IPRestriction = getInt(value, DEFAULT_IP_RESTRICTION);
-                else if ((!_isInbound) && name.equalsIgnoreCase(prefix + PROP_PRIORITY)) {
+                else if (name.equalsIgnoreCase(prefix + PROP_IP_RESTRICTION)) {
+                    int r = getInt(value, DEFAULT_IP_RESTRICTION);
+                    if (r > 4)
+                        r = 4;
+                    else if (r < 0)
+                        r = 0;
+                    _IPRestriction = r;
+                } else if ((!_isInbound) && name.equalsIgnoreCase(prefix + PROP_PRIORITY)) {
                      int def = _isExploratory ? EXPLORATORY_PRIORITY : 0;
                      int max = _isExploratory ? EXPLORATORY_PRIORITY : MAX_PRIORITY;
                     _priority = Math.min(max, Math.max(MIN_PRIORITY, getInt(value, def)));
                 } else if (name.equalsIgnoreCase(prefix + PROP_RANDOM_KEY)) {
                     byte[] rk = Base64.decode(value);
-                    if (rk != null && rk.length == Hash.HASH_LENGTH)
-                        _randomKey = new Hash(rk);
+                    if (rk != null && rk.length == SessionKey.KEYSIZE_BYTES)
+                        _randomKey = new SessionKey(rk);
                 } else
                     _unknownOptions.setProperty(name.substring(prefix.length()), value);
             }
@@ -324,16 +353,16 @@ public class TunnelPoolSettings {
      */
     public void writeToProperties(String prefix, Properties props) {
         if (props == null) return;
-        props.setProperty(prefix + PROP_ALLOW_ZERO_HOP, ""+_allowZeroHop);
-        props.setProperty(prefix + PROP_BACKUP_QUANTITY, ""+_backupQuantity);
+        props.setProperty(prefix + PROP_ALLOW_ZERO_HOP, Boolean.toString(_allowZeroHop));
+        props.setProperty(prefix + PROP_BACKUP_QUANTITY, Integer.toString(_backupQuantity));
         //props.setProperty(prefix + PROP_DURATION, ""+_duration);
-        props.setProperty(prefix + PROP_LENGTH, ""+_length);
-        props.setProperty(prefix + PROP_LENGTH_VARIANCE, ""+_lengthVariance);
+        props.setProperty(prefix + PROP_LENGTH, Integer.toString(_length));
+        props.setProperty(prefix + PROP_LENGTH_VARIANCE, Integer.toString(_lengthVariance));
         if (_destinationNickname != null)
-            props.setProperty(prefix + PROP_NICKNAME, ""+_destinationNickname);
-        props.setProperty(prefix + PROP_QUANTITY, ""+_quantity);
+            props.setProperty(prefix + PROP_NICKNAME, _destinationNickname);
+        props.setProperty(prefix + PROP_QUANTITY, Integer.toString(_quantity));
         // props.setProperty(prefix + PROP_REBUILD_PERIOD, ""+_rebuildPeriod);
-        props.setProperty(prefix + PROP_IP_RESTRICTION, ""+_IPRestriction);
+        props.setProperty(prefix + PROP_IP_RESTRICTION, Integer.toString(_IPRestriction));
         if (!_isInbound)
             props.setProperty(prefix + PROP_PRIORITY, Integer.toString(_priority));
         for (Map.Entry<Object, Object> e : _unknownOptions.entrySet()) {
@@ -362,10 +391,10 @@ public class TunnelPoolSettings {
     }
     
     // used for strict peer ordering
-    private static Hash generateRandomKey() {
-        byte hash[] = new byte[Hash.HASH_LENGTH];
-        RandomSource.getInstance().nextBytes(hash);
-        return new Hash(hash);
+    private static SessionKey generateRandomKey() {
+        byte data[] = new byte[SessionKey.KEYSIZE_BYTES];
+        RandomSource.getInstance().nextBytes(data);
+        return new SessionKey(data);
     }
     
     private static final boolean getBoolean(String str, boolean defaultValue) { 

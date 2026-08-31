@@ -19,6 +19,8 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.channels.SocketChannel;
 import java.nio.ByteBuffer;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -31,6 +33,7 @@ import net.i2p.data.Base64;
 import net.i2p.data.DataFormatException;
 import net.i2p.data.DataHelper;
 import net.i2p.data.Destination;
+import net.i2p.data.Hash;
 import net.i2p.util.Log;
 
 /**
@@ -277,7 +280,7 @@ class SAMv1Handler extends SAMHandler implements SAMRawReceiver, SAMDatagramRece
                     rawSession = new SAMRawSession(destKeystream, props, this);
                     rawSession.start();
                 } else if (style.equals("DATAGRAM")) {
-                    datagramSession = new SAMDatagramSession(destKeystream, props,this);
+                    datagramSession = new SAMDatagramSession(destKeystream, props, this, 1);
                     datagramSession.start();
                 } else if (style.equals("STREAM")) {
                     String dir = (String) props.remove("DIRECTION");
@@ -347,7 +350,7 @@ class SAMv1Handler extends SAMHandler implements SAMRawReceiver, SAMDatagramRece
             }
 
             ByteArrayOutputStream priv = new ByteArrayOutputStream(663);
-            ByteArrayOutputStream pub = new ByteArrayOutputStream(387);
+            ByteArrayOutputStream pub = new ByteArrayOutputStream(391);
             
             SAMUtils.genRandomKey(priv, pub, sigType);
             return writeString("DEST REPLY"
@@ -374,6 +377,9 @@ class SAMv1Handler extends SAMHandler implements SAMRawReceiver, SAMDatagramRece
                 return writeString("NAMING REPLY RESULT=KEY_NOT_FOUND NAME=\"\" MESSAGE=\"Must specify NAME\"\n");
             }
 
+            // proposal 167
+            boolean reqopts = "true".equals(props.getProperty("OPTIONS"));
+            Properties lsopts = reqopts ? new Properties() : null;
             Destination dest = null ;
             if (name.equals("ME")) {
                 if (rawSession != null) {
@@ -385,19 +391,78 @@ class SAMv1Handler extends SAMHandler implements SAMRawReceiver, SAMDatagramRece
                 } else {
                     if (_log.shouldLog(Log.DEBUG))
                         _log.debug("Lookup for SESSION destination, but session is null");
-                    return false;
+                    return writeString("NAMING REPLY RESULT=KEY_NOT_FOUND NAME=\"\" MESSAGE=\"Name=ME requires established session\"\n");
                 }
             } else {
-            	try {
-            		dest = SAMUtils.getDest(name);
-            	} catch (DataFormatException e) {
-            	}
+                try {
+                    if (name.length() >= 516 || !name.toLowerCase(Locale.US).endsWith(".b32.i2p")) {
+                        // out of session
+                        dest = SAMUtils.getDest(name, lsopts);
+                    } else if (streamSession != null) {
+                        // lookup in-session so the router will use the client tunnels to get the LS
+                        // and put the LS in the client's netdb
+                        dest = streamSession.lookupDest(name, lsopts);
+                    } else if (datagramSession != null) {
+                        dest = datagramSession.lookupDest(name, lsopts);
+                    } else if (rawSession != null) {
+                        dest = rawSession.lookupDest(name, lsopts);
+                    } else {
+                        // out of session
+                        // leaseset will end up in the main netdb
+                        // and will have to be looked up again by the router if a message is sent to it.
+                        dest = SAMUtils.getDest(name, lsopts);
+                    }
+                } catch (I2PSessionException e) {
+                    if (_log.shouldWarn())
+                        _log.warn("lookup error", e);
+                    return writeString("NAMING REPLY RESULT=KEY_NOT_FOUND NAME=" + name, e.getMessage());
+                } catch (DataFormatException e) {
+                    if (_log.shouldWarn())
+                        _log.warn("lookup error", e);
+                    return writeString("NAMING REPLY RESULT=KEY_NOT_FOUND NAME=" + name, e.getMessage());
+                }
             }
             
             if (dest == null) {
                 return writeString("NAMING REPLY RESULT=KEY_NOT_FOUND NAME=" + name + "\n");
             }
             
+            if (lsopts != null && !lsopts.isEmpty()) {
+                // proposal 167
+                StringBuilder buf = new StringBuilder(1024);
+                buf.append("NAMING REPLY RESULT=OK NAME=").append(name).append(" VALUE=").append(dest.toBase64());
+                for (Map.Entry<Object, Object> entry : lsopts.entrySet()) {
+                    String k = (String) entry.getKey();
+                    if (k.indexOf('\n') >= 0 ||
+                        k.indexOf('\r') >= 0 ||
+                        k.indexOf('\t') >= 0 ||
+                        k.indexOf(' ') >= 0  ||
+                        k.indexOf('"') >= 0  ||
+                        k.indexOf('\\') >= 0 ||
+                        k.indexOf('=') >= 0  ||   // prefixed with = by addressbook Daemon for subscription params
+                        k.length() == 0      ||
+                        (!name.toLowerCase(Locale.US).endsWith(".b32.i2p") &&
+                         (k.equals("a") ||                                     // blockfile builtins
+                          k.equals("s") ||
+                          k.equals("v")))) {
+                        // no facility for escaping keys
+                        if (_log.shouldInfo())
+                            _log.info("Stripping LS option key \"" + k + '"');
+                        continue;
+                    }
+                    String v = (String) entry.getValue();
+                    v = v.replace('\n', ' ');
+                    v = v.replace('\r', ' ');
+                    v = v.replace("\\", "\\\\");
+                    v = v.replace("\"", "\\\"");
+                    buf.append(" OPTION:").append(k).append("=\"").append(v).append('"');
+                }
+                buf.append('\n');
+                return writeString(buf.toString());
+            } else if (lsopts != null) {
+                if (_log.shouldInfo())
+                    _log.info("Options requested for " + name + " but none received");
+            }
             return writeString("NAMING REPLY RESULT=OK NAME=" + name
                                + " VALUE="
                                + dest.toBase64()
@@ -829,6 +894,11 @@ class SAMv1Handler extends SAMHandler implements SAMRawReceiver, SAMDatagramRece
         writeBytes(ByteBuffer.wrap(msg.toByteArray()));
     }
 
+    public void receiveDatagramBytes(Hash sender, byte data[], int proto,
+                                     int fromPort, int toPort) throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
     public void stopDatagramReceiving() {
         if (_log.shouldLog(Log.DEBUG))
             _log.debug("stopDatagramReceiving() invoked");
@@ -925,8 +995,8 @@ class SAMv1Handler extends SAMHandler implements SAMRawReceiver, SAMDatagramRece
     protected static String createMessageString(String msg) {
         String rv;
         if ( msg != null ) {
-            msg = msg.replace("\n", " ");
-            msg = msg.replace("\r", " ");
+            msg = msg.replace('\n', ' ');
+            msg = msg.replace('\r', ' ');
             if (!msg.startsWith("\"")) {
                 msg = msg.replace("\"", "");
                 if (msg.contains(" ") || msg.contains("\t"))

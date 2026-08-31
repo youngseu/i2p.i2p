@@ -21,6 +21,8 @@
 
 package org.klomp.snark;
 
+import net.i2p.data.Hash;
+
 /**
  * Callback used when some peer changes state.
  */
@@ -42,15 +44,15 @@ interface CoordinatorListener
    */
   public boolean overUploadLimit(int uploaders);
 
-  /**
-   * Are we currently over the upstream bandwidth limit?
-   */
-  public boolean overUpBWLimit();
-
-  /**
-   * Is the total (in Bps) over the upstream bandwidth limit?
-   */
-  public boolean overUpBWLimit(long total);
-
   public void addMessage(String message);
+
+  /**
+   *  @since 0.9.71
+   */
+  public boolean isBanned(Hash h);
+
+  /**
+   *  @since 0.9.71
+   */
+  public void ban(Hash h);
 }

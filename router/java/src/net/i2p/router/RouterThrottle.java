@@ -36,17 +36,18 @@ public interface RouterThrottle {
     public long getMessageDelay();
     /** How backed up our tunnels are at the moment (in milliseconds) */
     public long getTunnelLag();
-    /** 
-     * How much faster (or if negative, slower) we are receiving data as 
-     * opposed to our longer term averages?
-     *
-     */
-    public double getInboundRateDelta();
+
     /**
      * Message on the state of participating tunnel acceptance
      */
     public String getTunnelStatus();
     public void setTunnelStatus(String msg);
+
+    /**
+     * getTunnelStatus(), translated if available.
+     * @since 0.9.45
+     */
+    public String getLocalizedTunnelStatus();
 
     /** @since 0.8.12 */
     public void setShutdownStatus();

@@ -1,7 +1,7 @@
 <%
 /*
  *  This file is part of susidns project, see http://susi.i2p/
- *  
+ *
  *  Copyright (C) 2005 <susi23@mail.i2p>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -17,54 +17,44 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *  
+ *
  */
-
-    // http://www.crazysquirrel.com/computing/general/form-encoding.jspx
-    if (request.getCharacterEncoding() == null)
-        request.setCharacterEncoding("UTF-8");
-
-    response.setHeader("X-Frame-Options", "SAMEORIGIN");
-    response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'");
-    response.setHeader("X-XSS-Protection", "1; mode=block");
-    response.setHeader("X-Content-Type-Options", "nosniff");
-    response.setHeader("Referrer-Policy", "no-referrer");
-
 %>
+<%@include file="headers.jsi" %>
 <%@page pageEncoding="UTF-8"%>
 <%@ page contentType="text/html"%>
-<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core"%>
 <jsp:useBean id="version" class="i2p.susi.dns.VersionBean" scope="application" />
 <jsp:useBean id="book" class="i2p.susi.dns.NamingServiceBean" scope="session" />
 <jsp:useBean id="intl" class="i2p.susi.dns.Messages" scope="application" />
 <jsp:setProperty name="book" property="*" />
+<% book.storeMethod(request.getMethod()); %>
 <jsp:setProperty name="book" property="resetDeletionMarks" value="1"/>
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!DOCTYPE html>
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>${book.book} <%=intl._t("addressbook")%> - susidns</title>
+<title>${book.book} <%=intl._t("address book")%> - susidns</title>
 <link rel="stylesheet" type="text/css" href="<%=book.getTheme()%>susidns.css?<%=net.i2p.CoreVersion.VERSION%>">
+<script src="/js/iframeResizer.contentWindow.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
+<script src="js/messages.js?<%=net.i2p.CoreVersion.VERSION%>" type="text/javascript"></script>
 </head>
 <body>
 <div class="page">
-<div id="logo">
-<a href="index"><img src="<%=book.getTheme()%>images/logo.png" alt="" title="<%=intl._t("Overview")%>" border="0"/></a>
-</div>
 <hr>
-<div id="navi">
+<div id="navi" class="${book.getBook()}">
 <a id="overview" href="index"><%=intl._t("Overview")%></a>&nbsp;
-<a class="abook" href="addressbook?book=private"><%=intl._t("Private")%></a>&nbsp;
-<a class="abook" href="addressbook?book=master"><%=intl._t("Master")%></a>&nbsp;
-<a class="abook" href="addressbook?book=router"><%=intl._t("Router")%></a>&nbsp;
-<a class="abook" href="addressbook?book=published"><%=intl._t("Published")%></a>&nbsp;
+<a class="abook private" href="addressbook?book=private&amp;filter=none"><%=intl._t("Private")%></a>&nbsp;
+<a class="abook local" href="addressbook?book=local&amp;filter=none"><%=intl._t("Local")%></a>&nbsp;
+<a class="abook router" href="addressbook?book=router&amp;filter=none"><%=intl._t("Router")%></a>&nbsp;
+<a class="abook conflicts" href="addressbook?book=conflicts&amp;filter=none"><%=intl._t("Conflicts")%></a>&nbsp;
+<a class="abook published" href="addressbook?book=published&amp;filter=none"><%=intl._t("Published")%></a>&nbsp;
 <a id="subs" href="subscriptions"><%=intl._t("Subscriptions")%></a>&nbsp;
 <a id="config" href="config"><%=intl._t("Configuration")%></a>
 </div>
 <hr>
-<div class="headline">
+<div class="headline" id="addressbook">
 <h3><%=intl._t("Address book")%>: <%=intl._t(book.getBook())%></h3>
-<h4><%=intl._t("Storage")%>: ${book.displayName}</h4>
+<h4 id="storagepath"><%=intl._t("Storage")%>: ${book.displayName}</h4>
 </div>
 <div id="book">
 <%
@@ -72,28 +62,79 @@
     if (detail == null) {
         %><p>No host specified</p><%
     } else {
+        // process save notes form
+        book.saveNotes();
         detail = net.i2p.data.DataHelper.stripHTML(detail);
         java.util.List<i2p.susi.dns.AddressBean> addrs = book.getLookupAll();
         if (addrs == null) {
             %><p>Not found: <%=detail%></p><%
         } else {
+            boolean isConflicts = book.getBook().equals("conflicts");
+            int conflictCount = 0;
+            if (isConflicts) {
+                %><h4><%=intl._t("Conflicting Entry")%></h4><%
+                conflictCount = addrs.size();
+                // temp. switch book and get the hosts.txt entries
+                book.setBook("hosts.txt");
+                java.util.List<i2p.susi.dns.AddressBean> addrs2 = book.getLookupAll();
+                if (addrs2 != null)
+                    addrs.addAll(addrs2);
+                book.setBook("conflicts");
+            }
+            boolean haveImagegen = !isConflicts && book.haveImagegen();
             // use one nonce for all
             String nonce = book.getSerial();
+            boolean showNotes = !isConflicts && !book.getBook().equals("published");
+            int i = 0;
             for (i2p.susi.dns.AddressBean addr : addrs) {
+                if (isConflicts && i++ == conflictCount) {
+                    %><br><br><h4><%=intl._t("Router Address Book Entry")%></h4><%
+                }
                 String b32 = addr.getB32();
 %>
 <jsp:setProperty name="book" property="trClass"	value="0" />
+<% if (showNotes) { %>
+<form method="POST" action="details">
+<input type="hidden" name="book" value="${book.book}">
+<input type="hidden" name="serial" value="<%=nonce%>">
+<input type="hidden" name="h" value="<%=detail%>">
+<input type="hidden" name="destination" value="<%=addr.getDestination()%>">
+<% }  // showNotes  %>
 <table class="book" id="host_details" cellspacing="0" cellpadding="5">
 <tr class="list${book.trClass}">
 <td><%=intl._t("Hostname")%></td>
-<td><a href="http://<%=addr.getName()%>/" target="_top"><%=addr.getDisplayName()%></a></td>
+<td>
+<%
+   if (!isConflicts) {
+%>
+<a href="http://<%=addr.getName()%>/" target="_top"><%=addr.getDisplayName()%></a>
+<%
+   } else {
+%>
+<%=addr.getDisplayName()%>
+<%
+   }
+%>
+</td>
 </tr>
 <tr class="list${book.trClass}">
 <%
     if (addr.isIDN()) {
 %>
 <td><%=intl._t("Encoded Name")%></td>
-<td><a href="http://<%=addr.getName()%>/" target="_top"><%=addr.getName()%></a></td>
+<td>
+<%
+       if (!isConflicts) {
+%>
+<a href="http://<%=addr.getName()%>/" target="_top"><%=addr.getName()%></a>
+<%
+       } else {
+%>
+<%=addr.getName()%>
+<%
+       }
+%>
+</td>
 </tr>
 <tr class="list${book.trClass}">
 <%
@@ -102,18 +143,28 @@
 <td><%=intl._t("Base 32 Address")%></td>
 <td><a href="http://<%=b32%>/" target="_top"><%=b32%></a></td>
 </tr>
+<%--
 <tr class="list${book.trClass}">
 <td><%=intl._t("Base 64 Hash")%></td>
 <td><%=addr.getB64()%></td>
 </tr>
+--%>
+<%
+       if (!isConflicts) {
+%>
 <tr class="list${book.trClass}">
 <td><%=intl._t("Address Helper")%></td>
 <td><a href="http://<%=addr.getName()%>/?i2paddresshelper=<%=addr.getDestination()%>" target="_top"><%=intl._t("link")%></a></td>
 </tr>
+<%
+       }
+%>
+<%--
 <tr class="list${book.trClass}">
 <td><%=intl._t("Public Key")%></td>
-<td><%=intl._t("ElGamal 2048 bit")%></td>
+<td><%=addr.getEncType()%></td>
 </tr>
+--%>
 <tr class="list${book.trClass}">
 <td><%=intl._t("Signing Key")%></td>
 <td><%=addr.getSigType()%></td>
@@ -123,31 +174,69 @@
 <td><%=addr.getCert()%></td>
 </tr>
 <tr class="list${book.trClass}">
-<td><%=intl._t("Added Date")%></td>
-<td><%=addr.getAdded()%></td>
-</tr>
-<tr class="list${book.trClass}">
 <td><%=intl._t("Validated")%></td>
 <td><%=addr.isValidated() ? intl._t("yes") : intl._t("no")%></td>
 </tr>
+<% if (showNotes || isConflicts) { %>
 <tr class="list${book.trClass}">
 <td><%=intl._t("Source")%></td>
-<td><%=addr.getSource()%></td>
-</tr>
+<td>
+<%
+       String src = addr.getSource();
+       if (isConflicts) {
+           %><b><%
+           src = src.replace("<a ", "<a class=\"conflict\" ");
+           %><%=src%><%
+           %></b><%
+       } else {
+           %><%=src%><%
+       }
+%>
+</td></tr>
+<tr class="list${book.trClass}">
+<td><%=intl._t("Added Date")%></td>
+<td>
+<%
+       if (isConflicts) {
+           %><b><span class="conflict"><%
+       }
+%>
+<%=addr.getAdded()%>
+<%
+       if (isConflicts) {
+           %></span></b><%
+       }
+%>
+</td></tr>
+<%
+       String lastmod = addr.getModded();
+       if (lastmod.length() > 0) {
+%>
 <tr class="list${book.trClass}">
 <td><%=intl._t("Last Modified")%></td>
-<td><%=addr.getModded()%></td>
+<td><%=lastmod%></td>
 </tr>
-<tr class="list${book.trClass}">
-<td><%=intl._t("Notes")%></td>
-<td><%=addr.getNotes()%></td>
-</tr>
+<%
+       }  // lastmod
+   }  // showNotes
+%>
 <tr class="list${book.trClass}">
 <td><%=intl._t("Destination")%></td>
 <td class="destinations"><div class="destaddress" tabindex="0"><%=addr.getDestination()%></div></td>
 </tr>
+<% if (showNotes) { %>
+<tr class="list${book.trClass}">
+<td><%=intl._t("Notes")%><br>
+<input class="accept" type="submit" name="action" value="<%=intl._t("Save Notes")%>"></td>
+<td><textarea name="nofilter_notes" rows="3" style="height:6em" wrap="off" cols="70"><%=addr.getNotes()%></textarea></td>
+</tr>
+<% }  // showNotes  %>
 </table>
-</div>
+<% if (showNotes) { %>
+</form>
+<% }  // showNotes
+   if (!isConflicts || i <= conflictCount) {
+%>
 <div id="buttons">
 <form method="POST" action="addressbook">
 <p class="buttons">
@@ -158,9 +247,20 @@
 <input type="hidden" name="checked" value="<%=detail%>">
 <input type="hidden" name="destination" value="<%=addr.getDestination()%>">
 <input class="delete" type="submit" name="action" value="<%=intl._t("Delete Entry")%>" >
+<%
+        if (isConflicts) {
+%>
+<input class="export" type="submit" name="action" value="<%=intl._t("Replace Router Entry")%>" title="<%=intl._t("Replace the router address book entry with this one")%>" >
+<%
+        }  // isConflicts
+%>
 </p>
 </form>
-</div>
+</div><%-- buttons --%>
+<%
+    }  // !isConflicts
+                if (haveImagegen) {
+%>
 <div id="visualid">
 <h3><%=intl._t("Visual Identification for")%> <span id="idAddress"><%=addr.getName()%></span></h3>
 <table>
@@ -172,18 +272,20 @@
 <td colspan="2"><a class="fakebutton" href="/imagegen" title="<%=intl._t("Create your own identification images")%>" target="_blank"><%=intl._t("Launch Image Generator")%></a></td>
 </tr>
 </table>
+</div><%-- visualid --%>
+<%
+                }  // haveImagegen
+%>
 <hr>
 <%
             }  // foreach addr
-%>
-</div>
-<%
         }  // addrs == null
     }  // detail == null
 %>
+</div><%-- book --%>
 <div id="footer">
 <p class="footer">susidns v${version.version} &copy; <a href="${version.url}" target="_top">susi</a> 2005</p>
 </div>
-</div>
+</div><%-- page --%>
 </body>
 </html>

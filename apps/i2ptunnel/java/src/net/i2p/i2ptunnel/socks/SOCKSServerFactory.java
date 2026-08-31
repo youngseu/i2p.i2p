@@ -15,6 +15,7 @@ import java.util.Properties;
 import net.i2p.I2PAppContext;
 import net.i2p.data.DataHelper;
 import net.i2p.i2ptunnel.I2PTunnelHTTPClientBase;
+import net.i2p.socks.SOCKSException;
 
 /**
  * Factory class for creating SOCKS forwarders through I2P
@@ -24,7 +25,7 @@ class SOCKSServerFactory {
     private final static String ERR_REQUEST_DENIED =
         "HTTP/1.1 403 Access Denied - This is a SOCKS proxy, not a HTTP proxy\r\n" +
         "Content-Type: text/html; charset=iso-8859-1\r\n" +
-        "Cache-control: no-cache\r\n" +
+        "Cache-Control: no-cache\r\n" +
         "\r\n" +
         "<html><body><H1>I2P SOCKS PROXY ERROR: REQUEST DENIED</H1>" +
         "Your browser is misconfigured. This is a SOCKS proxy, not a HTTP proxy" +
@@ -72,7 +73,7 @@ class SOCKSServerFactory {
             }
         } catch (IOException e) {
             //_log.debug("error reading SOCKS protocol version");
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
 
         return serv;

@@ -13,10 +13,8 @@ import net.i2p.client.naming.NamingService;
 import net.i2p.crypto.AESEngine;
 import net.i2p.crypto.CryptixAESEngine;
 import net.i2p.crypto.DSAEngine;
-import net.i2p.crypto.ElGamalAESEngine;
 import net.i2p.crypto.ElGamalEngine;
 import net.i2p.crypto.HMAC256Generator;
-import net.i2p.crypto.HMACGenerator;
 import net.i2p.crypto.KeyGenerator;
 import net.i2p.crypto.SHA256Generator;
 import net.i2p.crypto.SessionKeyManager;
@@ -37,6 +35,8 @@ import net.i2p.util.SecureDirectory;
 import net.i2p.util.SimpleScheduler;
 import net.i2p.util.SimpleTimer;
 import net.i2p.util.SimpleTimer2;
+import net.i2p.util.SystemVersion;
+import net.i2p.util.TempDirScanner;
 import net.i2p.util.I2PProperties.I2PPropertyCallback;
 
 /**
@@ -74,10 +74,8 @@ public class I2PAppContext {
     protected SessionKeyManager _sessionKeyManager;
     private NamingService _namingService;
     private ElGamalEngine _elGamalEngine;
-    private ElGamalAESEngine _elGamalAESEngine;
     private AESEngine _AESEngine;
     private LogManager _logManager;
-    private HMACGenerator _hmac;
     private HMAC256Generator _hmac256;
     private SHA256Generator _sha;
     protected Clock _clock; // overridden in RouterContext
@@ -94,10 +92,8 @@ public class I2PAppContext {
     protected volatile boolean _sessionKeyManagerInitialized;
     private volatile boolean _namingServiceInitialized;
     private volatile boolean _elGamalEngineInitialized;
-    private volatile boolean _elGamalAESEngineInitialized;
     private volatile boolean _AESEngineInitialized;
     private volatile boolean _logManagerInitialized;
-    private volatile boolean _hmacInitialized;
     private volatile boolean _hmac256Initialized;
     private volatile boolean _shaInitialized;
     protected volatile boolean _clockInitialized; // used in RouterContext
@@ -116,12 +112,13 @@ public class I2PAppContext {
     private final File _logDir;
     private final File _appDir;
     private volatile File _tmpDir;
+    private final File _libDir;
     private final Random _tmpDirRand = new Random();
     private final ClientAppManager _appManager;
     // split up big lock on this to avoid deadlocks
     private final Object _lock1 = new Object(), _lock2 = new Object(), _lock3 = new Object(), _lock4 = new Object(),
-                         _lock5 = new Object(), _lock6 = new Object(), _lock7 = new Object(), _lock8 = new Object(),
-                         _lock9 = new Object(), _lock10 = new Object(), _lock11 = new Object(), _lock12 = new Object(),
+                         _lock5 = new Object(), _lock7 = new Object(), _lock8 = new Object(),
+                         _lock10 = new Object(), _lock11 = new Object(), _lock12 = new Object(),
                          _lock13 = new Object(), _lock14 = new Object(), _lock16 = new Object(),
                          _lock17 = new Object(), _lock18 = new Object(), _lock19 = new Object(), _lock20 = new Object();
 
@@ -149,6 +146,26 @@ public class I2PAppContext {
         return _globalAppContext; 
     }
     
+    /**
+     * Sets the default context, unless there is one already.
+     * NOT a public API, for use by RouterContext only, NOT for external use.
+     *
+     * @param ctx context constructed with doInit = false
+     * @return success (false if previously set)
+     * @since 0.9.33
+     */
+    protected static boolean setGlobalContext(I2PAppContext ctx) {
+        synchronized (I2PAppContext.class) {
+            if (_globalAppContext == null) {
+                _globalAppContext = ctx;
+                return true;
+            }
+        }
+        System.out.println("Warning - New context not replacing old one, you now have a second one");
+        (new Exception("I did it")).printStackTrace();
+        return false;
+    }
+
     /**
      * Pull the default context, WITHOUT creating a new one.
      * Use this in static methods used early in router initialization,
@@ -190,10 +207,13 @@ public class I2PAppContext {
      * additional resources and threads, and may be the cause of logging
      * problems or hard-to-isolate bugs.
      *
+     * NOT a public API, for use by RouterContext only, NOT for external use.
+     *
      * @param doInit should this context be used as the global one (if necessary)?
      *               Will only apply if there is no global context now.
+     * @since protected since 0.9.33, NOT for external use
      */
-    private I2PAppContext(boolean doInit, Properties envProps) {
+    protected I2PAppContext(boolean doInit, Properties envProps) {
       synchronized (I2PAppContext.class) { 
         _overrideProps = new I2PProperties();
         if (envProps != null)
@@ -209,7 +229,8 @@ public class I2PAppContext {
     *
     *  Name	Property 	Method		Files
     *  -----	-------- 	-----		-----
-    *  Base	i2p.dir.base	getBaseDir()	lib/, webapps/, docs/, geoip/, licenses/, ...
+    *  Base	i2p.dir.base	getBaseDir()	webapps/, docs/, geoip/, licenses/, ...
+    *  Lib 	i2p.dir.lib 	getLibDir()	*.jar, libwrapper*.so
     *  Temp	i2p.dir.temp	getTempDir()	Temporary files
     *  Config	i2p.dir.config	getConfigDir()	*.config, hosts.txt, addressbook/, ...
     *
@@ -244,7 +265,7 @@ public class I2PAppContext {
     *  However this is provided for the router's use, and for backward compatibility should an app
     *  need to look there as well.
     *
-    *  All dirs except the base are created if they don't exist, but the creation will fail silently.
+    *  All dirs except the base and lib are created if they don't exist, but the creation will fail silently.
     *  @since 0.7.6
     */
 
@@ -299,24 +320,32 @@ public class I2PAppContext {
         } else {
             _appDir = _routerDir;
         }
-        /******
-        (new Exception("Initialized by")).printStackTrace();
-        System.err.println("Base directory:   " + _baseDir.getAbsolutePath());
-        System.err.println("Config directory: " + _configDir.getAbsolutePath());
-        System.err.println("Router directory: " + _routerDir.getAbsolutePath());
-        System.err.println("App directory:    " + _appDir.getAbsolutePath());
-        System.err.println("Log directory:    " + _logDir.getAbsolutePath());
-        System.err.println("PID directory:    " + _pidDir.getAbsolutePath());
-        System.err.println("Temp directory:   " + getTempDir().getAbsolutePath());
-        ******/
+
+        s = getProperty("i2p.dir.lib");
+        if (s != null) {
+            _libDir = new File(s);
+        } else {
+            _libDir = new File(_baseDir, "lib");
+        }
+        String isPortableStr = System.getProperty("i2p.dir.portableMode");
+        boolean isPortable = Boolean.parseBoolean(isPortableStr);
+        if (isPortable) {
+            // In portable we like debug information :)
+            //(new Exception("Initialized by")).printStackTrace();
+            System.err.println("Base directory:   " + _baseDir.getAbsolutePath());
+            System.err.println("Lib directory:    " + _libDir.getAbsolutePath());
+            System.err.println("Config directory: " + _configDir.getAbsolutePath());
+            System.err.println("Router directory: " + _routerDir.getAbsolutePath());
+            System.err.println("App directory:    " + _appDir.getAbsolutePath());
+            System.err.println("Log directory:    " + _logDir.getAbsolutePath());
+            System.err.println("PID directory:    " + _pidDir.getAbsolutePath());
+            System.err.println("Temp directory:   " + getTempDir().getAbsolutePath());
+        }
 
         if (doInit) {
-            if (_globalAppContext == null) {
-                _globalAppContext = this;
-            } else {
-                System.out.println("Warning - New context not replacing old one, you now have a second one");
-                (new Exception("I did it")).printStackTrace();
-            }
+            // Bad practice, sets a static field to this in constructor.
+            // doInit will be false when instantiated via Router.
+            setGlobalContext(this);
         }
       } // synch
     }
@@ -408,6 +437,8 @@ public class I2PAppContext {
                     // good or bad ? loop and try again?
                 } else if (_tmpDir.mkdir()) {
                     _tmpDir.deleteOnExit();
+                    if (!SystemVersion.isWindows() && !SystemVersion.isMac() && !SystemVersion.isAndroid())
+                        new TempDirScanner(this);
                 } else {
                     System.err.println("WARNING: Could not create temp dir " + _tmpDir.getAbsolutePath());
                     _tmpDir = new SecureDirectory(_routerDir, "tmp");
@@ -416,9 +447,19 @@ public class I2PAppContext {
                         System.err.println("ERROR: Could not create temp dir " + _tmpDir.getAbsolutePath());
                 }
             }
+            return _tmpDir;
         }
-        return _tmpDir;
     }
+
+    /**
+     *  This is the library dir, which is usually $I2P/lib.
+     *  It contains all the jars (i.e. the classpath).
+     *  Most applications will not need this, and must treat this directory as read-only.
+     *
+     *  @return dir constant for the life of the context
+     *  @since 0.9.52
+     */
+    public File getLibDir() { return _libDir; }
 
     /** don't rely on deleteOnExit() */
     public void deleteTempDir() {
@@ -658,28 +699,7 @@ public class I2PAppContext {
             _elGamalEngineInitialized = true;
         }
     }
-    
-    /**
-     * Access the ElGamal/AES+SessionTag engine for this context.  The algorithm
-     * makes use of the context's sessionKeyManager to coordinate transparent
-     * access to the sessionKeys and sessionTags, as well as the context's elGamal
-     * engine (which in turn keeps stats, etc).
-     *
-     */
-    public ElGamalAESEngine elGamalAESEngine() {
-        if (!_elGamalAESEngineInitialized)
-            initializeElGamalAESEngine();
-        return _elGamalAESEngine;
-    }
 
-    private void initializeElGamalAESEngine() {
-        synchronized (_lock6) {
-            if (_elGamalAESEngine == null)
-                _elGamalAESEngine = new ElGamalAESEngine(this);
-            _elGamalAESEngineInitialized = true;
-        }
-    }
-    
     /**
      * Ok, I'll admit it.  there is no good reason for having a context specific
      * AES engine.  We dont really keep stats on it, since its just too fast to
@@ -695,10 +715,7 @@ public class I2PAppContext {
     private void initializeAESEngine() {
         synchronized (_lock7) {
             if (_AESEngine == null) {
-                if ("off".equals(getProperty("i2p.encryption", "on")))
-                    _AESEngine = new AESEngine(this);
-                else
-                    _AESEngine = new CryptixAESEngine(this);
+                _AESEngine = new CryptixAESEngine(this);
             }
             _AESEngineInitialized = true;
         }
@@ -724,31 +741,23 @@ public class I2PAppContext {
         }
     }
 
-    /** 
-     * There is absolutely no good reason to make this context specific, 
-     * other than for consistency, and perhaps later we'll want to 
-     * include some stats.
-     *
-     * DEPRECATED - non-standard and used only by SSU.
-     * To be moved from context to SSU.
+    /**
+     * Overwrites the LogManager instance to be used by the router.
+     * This should only be called after the Router is instantiated but
+     * before it is started.  Calling this at any other time can have
+     * unpredictable side effects.
+     * @since 0.9.41
      */
-    public HMACGenerator hmac() { 
-        if (!_hmacInitialized)
-            initializeHMAC();
-        return _hmac;
-    }
-
-    private void initializeHMAC() {
-        synchronized (_lock9) {
-            if (_hmac == null) {
-                _hmac= new HMACGenerator(this);
-            }
-            _hmacInitialized = true;
+    public void setLogManager(LogManager logManager) {
+        synchronized (_lock8) {
+            _logManager = logManager;
+            _logManagerInitialized = true;
         }
     }
 
-    /** @deprecated used only by syndie */
-    @Deprecated
+    /**
+     * Un-deprecated in 0.9.38
+     */
     public HMAC256Generator hmac256() {
         if (!_hmac256Initialized)
             initializeHMAC256();
@@ -855,7 +864,11 @@ public class I2PAppContext {
     }
     
     /**
-     * Basic hash map
+     *  Basic hash map for LS1
+     *
+     *  Deprecated -
+     *  This is for the deprecated LS1 AES encrypted leasesets only.
+     *  LS2 encrypted leaseset data are stored in netdb BlindCache and router.blindcache.dat.
      */
     public KeyRing keyRing() {
         if (!_keyRingInitialized)
@@ -900,6 +913,13 @@ public class I2PAppContext {
     public void addShutdownTask(Runnable task) {
         _shutdownTasks.add(task);
     }
+
+    /**
+     *  @since 0.9.53
+     */
+    public void removeShutdownTask(Runnable task) {
+        _shutdownTasks.remove(task);
+    }
     
     /**
      *  @return an unmodifiable Set
@@ -931,7 +951,7 @@ public class I2PAppContext {
      *  @since 0.8.8
      */
     public boolean hasWrapper() {
-        return System.getProperty("wrapper.version") != null;
+        return SystemVersion.hasWrapper();
     }
 
     /**
@@ -1019,5 +1039,23 @@ public class I2PAppContext {
      */
     public ClientAppManager clientAppManager() {
         return _appManager;
+    }
+
+    /** 
+     *  How long this router was down before it started, or 0 if unknown.
+     *
+     *  This may be used for a determination of whether to regenerate keys, for example.
+     *  We use the timestamp of the previous ping file left behind on crash,
+     *  as set by isOnlyRouterRunning(), if present.
+     *  Otherwise, the last STOPPED entry in the event log.
+     *
+     *  May take a while to run the first time, if it has to go through the event log.
+     *  Once called, the result is cached.
+     *
+     *  @return 0 always in app context
+     *  @since 0.9.47
+     */
+    public long getEstimatedDowntime() {
+        return 0L;
     }
 }

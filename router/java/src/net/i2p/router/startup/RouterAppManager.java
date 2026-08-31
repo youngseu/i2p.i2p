@@ -2,6 +2,7 @@ package net.i2p.router.startup;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.text.Collator;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -15,6 +16,7 @@ import net.i2p.app.*;
 import static net.i2p.app.ClientAppState.*;
 import net.i2p.router.RouterContext;
 import net.i2p.util.Log;
+import net.i2p.util.SystemVersion;
 
 /**
  *  Notify the router of events, and provide methods for
@@ -29,12 +31,15 @@ public class RouterAppManager extends ClientAppManagerImpl {
     // client to args
     // this assumes clients do not override equals()
     private final ConcurrentHashMap<ClientApp, String[]> _clients;
+    private final ConcurrentHashMap<String, Bubble> _bubbles;
+    private static final String PROP_BUBBLES = "routerconsole.enableBubbles";
 
     public RouterAppManager(RouterContext ctx) {
         super(ctx);
         _context = ctx;
         _log = ctx.logManager().getLog(RouterAppManager.class);
         _clients = new ConcurrentHashMap<ClientApp, String[]>(16);
+        _bubbles = new ConcurrentHashMap<String, Bubble>(4);
         ctx.addShutdownTask(new Shutdown());
     }
 
@@ -75,6 +80,26 @@ public class RouterAppManager extends ClientAppManagerImpl {
                 Arrays.equals(e.getValue(), args))
                 return e.getKey();
         }
+        // workaround for Jetty stop and restart from i2ptunnel
+        // app becomes untracked so look in registered
+        if (className.equals("net.i2p.jetty.JettyStart") && args.length > 0) {
+            for (ClientApp app : _registered.values()) {
+                if (app.getClass().getName().equals(className)) {
+                    String dname = app.getDisplayName();
+                    int idx = 0;
+                    boolean match = true;
+                    for (String arg : args) {
+                        idx = dname.indexOf(arg, idx);
+                        if (idx < 0) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match)
+                        return app;
+                }
+            }
+        }
         return null;
     }
 
@@ -108,7 +133,10 @@ public class RouterAppManager extends ClientAppManagerImpl {
           case STOPPING:
           case STOPPED:
             _clients.remove(app);
-            _registered.remove(app.getName(), app);
+            boolean removed = _registered.remove(app.getName(), app);
+            if (removed && _log.shouldInfo()) {
+                _log.info("Client " + app.getDisplayName() + " UNREGISTERED AS " + app.getName());
+            }
             if (message == null)
                 message = "";
             if (_log.shouldLog(Log.INFO))
@@ -119,7 +147,10 @@ public class RouterAppManager extends ClientAppManagerImpl {
           case CRASHED:
           case START_FAILED:
             _clients.remove(app);
-            _registered.remove(app.getName(), app);
+            boolean removed2 = _registered.remove(app.getName(), app);
+            if (removed2 && _log.shouldInfo()) {
+                _log.info("Client " + app.getDisplayName() + " UNREGISTERED AS " + app.getName());
+            }
             if (message == null)
                 message = "";
             _log.log(Log.CRIT, "Client " + app.getDisplayName() + ' ' + state +
@@ -149,6 +180,94 @@ public class RouterAppManager extends ClientAppManagerImpl {
             _log.info("Client " + app.getDisplayName() + " REGISTERED AS " + app.getName());
         // TODO if old app in there is not running and != this app, allow replacement
         return super.register(app);
+    }
+    
+    /**
+     *  Unregister with the manager. Name must be the same as that from register().
+     *  Only required for apps used by other apps.
+     *
+     *  @param app non-null
+     *  @since 0.9.41 overridden for logging only
+     */
+    @Override
+    public void unregister(ClientApp app) {
+        if (_log.shouldInfo()) {
+            if (getRegisteredApp(app.getName()) != null)
+                _log.info("Client " + app.getDisplayName() + " UNREGISTERED AS " + app.getName());
+        }
+        super.unregister(app);
+        _bubbles.remove(app.getName());
+    }
+
+    /**
+     *  Bubbles
+     *  @since 0.9.66
+     */
+    private static class Bubble {
+        public final int cnt;
+        public final String text;
+
+        public Bubble(int count, String msg) {
+            cnt = count;
+            text = msg;
+        }
+    }
+
+    /**
+     *  Bubble count
+     *  @since 0.9.66
+     */
+    @Override
+    public int getBubbleCount(String svc) {
+        if (!_context.getBooleanPropertyDefaultTrue(PROP_BUBBLES))
+            return 0;
+        Bubble n = _bubbles.get(svc);
+        if (n == null)
+            return 0;
+        return n.cnt;
+    }
+
+    /**
+     *  Bubble message, translated, not HTML escaped
+     *  @return null if none
+     *  @since 0.9.66
+     */
+    @Override
+    public String getBubbleText(String svc) {
+        Bubble n = _bubbles.get(svc);
+        if (n == null)
+            return null;
+        return n.text;
+    }
+
+    /**
+     *  Update notifications for service
+     *  @param count 0 to clear
+     *  @param text translated, not HTML escaped, null if none
+     *  @since 0.9.66
+     */
+    @Override
+    public void setBubble(String svc, int count, String text) {
+        if (SystemVersion.isAndroid())
+            return;
+        if (count == 0 && text == null) {
+            _bubbles.remove(svc);
+        } else {
+            Bubble n = new Bubble(count, text);
+            _bubbles.put(svc, n);
+        }
+    }
+
+    /**
+     *  Increment the count and set the text
+     *  @param text translated, not HTML escaped, null if none
+     *  @since 0.9.66
+     */
+    @Override
+    public void addBubble(String svc, String text) {
+        synchronized(_bubbles) {
+            setBubble(svc, getBubbleCount(svc) + 1, text);
+        }
     }
 
     /// end ClientAppManager interface
@@ -194,7 +313,7 @@ public class RouterAppManager extends ClientAppManagerImpl {
         buf.append("<div class=\"debug_container\">");
         toString2(buf);
         buf.append("</div>");
-        out.write(buf.toString());
+        out.append(buf);
     }
 
     /**
@@ -206,9 +325,9 @@ public class RouterAppManager extends ClientAppManagerImpl {
         for (Map.Entry<ClientApp, String[]> entry : _clients.entrySet()) {
             ClientApp key = entry.getKey();
             String[] val = entry.getValue();
-            list.add("[<b>" + key.getName() + "</b>] = [" + key.getClass().getName() + ' ' + Arrays.toString(val) + "] <i>" + key.getState() + "</i><br>");
+            list.add("<b>" + key.getName() + "</b>: " + key.getClass().getName() + ' ' + Arrays.toString(val) + " <i>" + key.getState() + "</i><br>");
         }
-        Collections.sort(list);
+        Collections.sort(list, Collator.getInstance());
         for (String e : list) {
             buf.append(e);
         }
@@ -223,9 +342,9 @@ public class RouterAppManager extends ClientAppManagerImpl {
         for (Map.Entry<String, ClientApp> entry : _registered.entrySet()) {
             String key = entry.getKey();
             ClientApp val = entry.getValue();
-            list.add("[<b>" + key + "</b>] = [" + val.getClass().getName() + "]<br>");
+            list.add("<b>" + key + ":</b> " + val.getClass().getName() + "<br>");
         }
-        Collections.sort(list);
+        Collections.sort(list, Collator.getInstance());
         for (String e : list) {
             buf.append(e);
         }

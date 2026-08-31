@@ -17,6 +17,7 @@ import net.i2p.data.Hash;
 import net.i2p.data.router.RouterIdentity;
 import net.i2p.data.i2np.DatabaseLookupMessage;
 import net.i2p.data.i2np.DatabaseSearchReplyMessage;
+import net.i2p.data.i2np.DatabaseStoreMessage;
 import net.i2p.data.i2np.DeliveryStatusMessage;
 import net.i2p.data.i2np.I2NPMessage;
 import net.i2p.data.i2np.TunnelDataMessage;
@@ -44,7 +45,7 @@ public class InNetMessagePool implements Service {
     private SharedShortCircuitGatewayJob _shortCircuitGatewayJob;
 
     private boolean _alive;
-    private boolean _dispatchThreaded;
+    private final boolean _dispatchThreaded;
     
     /** Make this >= the max I2NP message type number (currently 24) */
     private static final int MAX_I2NP_MESSAGE_TYPE = 31;
@@ -56,20 +57,40 @@ public class InNetMessagePool implements Service {
      * if this is set to false, the messages will be queued up in the jobQueue,
      * using the jobQueue's single thread.
      *
+     * There's three possible cases that might work:
+     * DISPATCH_DIRECT=true (default, unqueued)
+     * DISPATCH_DIRECT=false with router.dispatchThreaded=false (job queue)
+     * DISPATCH_DIRECT=false with router.dispatchThreaded=true (INMP queue)
+     *
+     * The fourth case,
+     * DISPATCH_DIRECT=true with router.dispatchThreaded=true
+     * will never work, is now prevented below.
+     *
+     * Both must be configured before starting.
+     * Changing defaults not recommended, non-default code to be removed.
+     * Ref: Ticket 2688
      */
-    public static final String PROP_DISPATCH_THREADED = "router.dispatchThreaded";
-    public static final boolean DEFAULT_DISPATCH_THREADED = false;
+    private static final String PROP_DISPATCH_THREADED = "router.dispatchThreaded";
+    private static final boolean DEFAULT_DISPATCH_THREADED = false;
     /**
      * If we aren't doing threaded dispatch for tunnel messages, should we
      * call the actual dispatch() method inline (on the same thread which
      * called add())?  If false, we queue it up in a shared short circuit
      * job.
+     *
+     * false = job queue
+     * true = INMP queue
      */
-    private static final boolean DISPATCH_DIRECT = true;
+    private static final String PROP_DISPATCH_DIRECT = "router.dispatchDirect";
+    private static final boolean DEFAULT_DISPATCH_DIRECT = true;
+    private final boolean DISPATCH_DIRECT;
     
     public InNetMessagePool(RouterContext context) {
         _context = context;
         _handlerJobBuilders = new HandlerJobBuilder[MAX_I2NP_MESSAGE_TYPE + 1];
+        _dispatchThreaded = _context.getProperty(PROP_DISPATCH_THREADED, DEFAULT_DISPATCH_THREADED);
+        // must be false if threaded is true
+        DISPATCH_DIRECT = !_dispatchThreaded && _context.getProperty(PROP_DISPATCH_DIRECT, DEFAULT_DISPATCH_DIRECT);
         if (DISPATCH_DIRECT) {
             // keep the compiler happy since they are final
             _pendingDataMessages = null;
@@ -86,7 +107,6 @@ public class InNetMessagePool implements Service {
         _context.statManager().createRateStat("inNetPool.dropped", "How often do we drop a message", "InNetPool", new long[] { 60*60*1000l });
         _context.statManager().createRateStat("inNetPool.droppedDeliveryStatusDelay", "How long after a delivery status message is created do we receive it back again (for messages that are too slow to be handled)", "InNetPool", new long[] { 60*60*1000l });
         _context.statManager().createRateStat("inNetPool.duplicate", "How often do we receive a duplicate message", "InNetPool", new long[] { 60*60*1000l });
-        //_context.statManager().createRateStat("inNetPool.droppedTunnelCreateStatusMessage", "How often we drop a slow-to-arrive tunnel request response", "InNetPool", new long[] { 60*60*1000l, 24*60*60*1000l });
         _context.statManager().createRateStat("inNetPool.droppedDbLookupResponseMessage", "How often we drop a slow-to-arrive db search response", "InNetPool", new long[] { 60*60*1000l });
     }
   
@@ -99,25 +119,14 @@ public class InNetMessagePool implements Service {
         _handlerJobBuilders[i2npMessageType] = builder;
         return old;
     }
-  
-    /**
-     * @return previous builder for this message type, or null
-     * @throws ArrayIndexOutOfBoundsException if i2npMessageType is greater than MAX_I2NP_MESSAGE_TYPE
-     * @deprecated unused
-     */
-    @Deprecated
-    public synchronized HandlerJobBuilder unregisterHandlerJobBuilder(int i2npMessageType) {
-        HandlerJobBuilder old = _handlerJobBuilders[i2npMessageType];
-        _handlerJobBuilders[i2npMessageType] = null;
-        return old;
-    }
-    
+
     /**
      * Add a new message to the pool.
      * If there is 
      * a HandlerJobBuilder for the inbound message type, the message is loaded
      * into a job created by that builder and queued up for processing instead
-     * (though if the builder doesn't create a job, it is added to the pool)
+     * (though if the builder doesn't create a job, it is added to the pool).
+     * Equivalent to the 4-argument version with a 0-value msgIDBloomXor
      *
      * @param messageBody non-null
      * @param fromRouter may be null
@@ -127,11 +136,38 @@ public class InNetMessagePool implements Service {
      *         (was queue length, long ago)
      */
     public int add(I2NPMessage messageBody, RouterIdentity fromRouter, Hash fromRouterHash) {
+        return add(messageBody, fromRouter, fromRouterHash, 0);
+    }
+    
+    /**
+     * Add a new message to the pool.
+     * If there is 
+     * a HandlerJobBuilder for the inbound message type, the message is loaded
+     * into a job created by that builder and queued up for processing instead
+     * (though if the builder doesn't create a job, it is added to the pool)
+     * if msgIDBloomXor is 0 the Xor factor is 0, therefore the ID is returned unchanged.
+     *
+     * @param messageBody non-null
+     * @param fromRouter may be null
+     * @param fromRouterHash may be null, calculated from fromRouter if null
+     * @param msgIDBloomXor constant value to XOR with the messageID before passing to the bloom filter.
+     *
+     * @return -1 for some types of errors but not all; 0 otherwise
+     *         (was queue length, long ago)
+     */
+    public int add(I2NPMessage messageBody,
+                   RouterIdentity fromRouter,
+                   Hash fromRouterHash,
+                   long msgIDBloomXor) {
+        final MessageHistory history = _context.messageHistory();
+        final boolean doHistory = history.getDoLog();
+
         long exp = messageBody.getMessageExpiration();
         
-        if (_log.shouldLog(Log.INFO))
-                _log.info("Rcvd" 
+        if (_log.shouldDebug())
+                _log.debug("Rcvd" 
                           + " ID " + messageBody.getUniqueId()
+                          + " xor-ed ID " + messageBody.getUniqueId(msgIDBloomXor)
                           + " exp. " + new Date(exp)
                           + " type " + messageBody.getClass().getSimpleName());
         
@@ -147,7 +183,7 @@ public class InNetMessagePool implements Service {
             // just validate the expiration
             invalidReason = _context.messageValidator().validateMessage(exp);
         } else {
-            invalidReason = _context.messageValidator().validateMessage(messageBody.getUniqueId(), exp);
+            invalidReason = _context.messageValidator().validateMessage(messageBody.getUniqueId(msgIDBloomXor), exp);
         }
         
         if (invalidReason != null) {
@@ -155,55 +191,122 @@ public class InNetMessagePool implements Service {
             //if (messageBody instanceof TunnelCreateMessage)
             //    level = Log.INFO;
             if (_log.shouldLog(level))
-                _log.log(level, "Dropping message [" + messageBody.getUniqueId() 
+                _log.log(level, "Dropping message ID [" + messageBody.getUniqueId() + " xor-ed: " + messageBody.getUniqueId(msgIDBloomXor)
                           + " expiring on " + exp + "]: " + messageBody.getClass().getSimpleName() + ": " + invalidReason 
                           + ": " + messageBody);
             _context.statManager().addRateData("inNetPool.dropped", 1);
             // FIXME not necessarily a duplicate, could be expired too long ago / too far in future
             _context.statManager().addRateData("inNetPool.duplicate", 1);
-            _context.messageHistory().droppedOtherMessage(messageBody, (fromRouter != null ? fromRouter.calculateHash() : fromRouterHash));
-            _context.messageHistory().messageProcessingError(messageBody.getUniqueId(), 
+            if (doHistory) {
+                history.droppedOtherMessage(messageBody, (fromRouter != null ? fromRouter.calculateHash() : fromRouterHash));
+                history.messageProcessingError(messageBody.getUniqueId(msgIDBloomXor), 
                                                                 messageBody.getClass().getSimpleName(), 
                                                                 "Duplicate/expired");
+            }
             return -1;
-        } else {
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Message received [" + messageBody.getUniqueId() 
-                           + " expiring on " + exp + "] is NOT a duplicate or exipired");
         }
 
         boolean jobFound = false;
         boolean allowMatches = true;
         
-        if (type == TunnelGatewayMessage.MESSAGE_TYPE) {
+        switch (type) { 
+          case TunnelGatewayMessage.MESSAGE_TYPE:
             shortCircuitTunnelGateway(messageBody);
             allowMatches = false;
-        } else if (type == TunnelDataMessage.MESSAGE_TYPE) {
+            break;
+
+          case TunnelDataMessage.MESSAGE_TYPE:
             shortCircuitTunnelData(messageBody, fromRouterHash);
             allowMatches = false;
-        } else {
+            break;
+
+          // If a DSM has a reply job, run the DSM inline
+          // so the entry is stored in the netdb before the reply job runs.
+          // FloodOnlyLookupMatchJob no longer stores the entry
+          case DatabaseStoreMessage.MESSAGE_TYPE:
+            List<OutNetMessage> origMessages = _context.messageRegistry().getOriginalMessages(messageBody);
+            HandlerJobBuilder dsmbuilder = _handlerJobBuilders[DatabaseStoreMessage.MESSAGE_TYPE];
+            if (dsmbuilder == null) {
+                // startup, netdb not initialized yet
+                if (_log.shouldWarn())
+                    _log.warn("No job builder for DSM yet");
+                break;
+            }
+            Job dsmjob = dsmbuilder.createJob(messageBody, fromRouter, fromRouterHash);
+            int sz = origMessages.size();
+            if (sz > 0) {
+               DatabaseStoreMessage dbsm = (DatabaseStoreMessage) messageBody;
+               dbsm.setReceivedAsReply();
+               // DSM inline, reply jobs on queue
+               if (dsmjob != null)
+                   dsmjob.runJob();
+               for (int i = 0; i < sz; i++) {
+                    OutNetMessage omsg = origMessages.get(i);
+                    ReplyJob job = omsg.getOnReplyJob();
+                    if (job != null) {
+                        if (_log.shouldLog(Log.DEBUG))
+                            _log.debug("Setting ReplyJob ("
+                                       + job + ") for original message:"
+                                       + omsg + "; with reply message [id: "
+                                       + messageBody.getUniqueId()
+                                       + " Class: "
+                                       + messageBody.getClass().getSimpleName()
+                                       + "] full message: " + messageBody);
+                        else if (_log.shouldLog(Log.INFO))
+                            _log.info("Setting a ReplyJob ("
+                                      + job + ") for original message class "
+                                      + omsg.getClass().getSimpleName()
+                                      + " with reply message class "
+                                      + messageBody.getClass().getSimpleName());
+                        job.setMessage(messageBody);
+                        _context.jobQueue().addJob(job);
+                    }
+                }
+            } else {
+               // DSM on queue, no reply jobs
+               if (dsmjob != null)
+                   _context.jobQueue().addJob(dsmjob);
+            }
+            allowMatches = false;
+            if (_log.shouldLog(Log.DEBUG))
+                _log.debug("Finished processing dsm (allowMatches = false) from router "
+                           + fromRouter + " / " + fromRouterHash
+                           + " origMessages.size() = " + sz
+                           + " message: " + messageBody);
+            break;
+
+          case DatabaseSearchReplyMessage.MESSAGE_TYPE:
+          case DeliveryStatusMessage.MESSAGE_TYPE:
+            // shortcut, these two are common and do not have handlerJobBuilders
+            break;
+
+          default:
             // why don't we allow type 0? There used to be a message of type 0 long ago...
             if ( (type > 0) && (type < _handlerJobBuilders.length) ) {
                 HandlerJobBuilder builder = _handlerJobBuilders[type];
-
-                if (_log.shouldLog(Log.DEBUG))
-                    _log.debug("Add msg to the pool - builder: " + builder 
-                               + " type: " + messageBody.getClass().getSimpleName());
-
                 if (builder != null) {
+                    if (_log.shouldDebug())
+                        _log.debug("Add msg to the pool - builder: " + builder
+                                   + " type: " + messageBody.getClass().getSimpleName());
                     Job job = builder.createJob(messageBody, fromRouter, 
                                                 fromRouterHash);
                     if (job != null) {
                         _context.jobQueue().addJob(job);
-                        jobFound = true;
                     } else {
                         // ok, we may not have *found* a job, per se, but we could have, the
                         // job may have just executed inline
-                        jobFound = true;
                     }
+                    jobFound = true;
+                } else {
+                    if (_log.shouldWarn())
+                        _log.warn("No job builder for message type " + type);
                 }
+            } else {
+                if (_log.shouldWarn())
+                    _log.warn("No job builder for message type " + type);
             }
-        }
+            break;
+        } // switch
 
         if (allowMatches) {
             int replies = handleReplies(messageBody);
@@ -212,8 +315,11 @@ public class InNetMessagePool implements Service {
                 // not handled as a reply
                 if (!jobFound) { 
                     // was not handled via HandlerJobBuilder
-                    _context.messageHistory().droppedOtherMessage(messageBody, (fromRouter != null ? fromRouter.calculateHash() : fromRouterHash));
-                    if (type == DeliveryStatusMessage.MESSAGE_TYPE) {
+                    if (doHistory)
+                        history.droppedOtherMessage(messageBody, (fromRouter != null ? fromRouter.calculateHash() : fromRouterHash));
+
+                    switch (type) { 
+                      case DeliveryStatusMessage.MESSAGE_TYPE:
                         // Avoid logging side effect from a horrible UDP EstablishmentManager hack
                         // We could set up a separate stat for it but don't bother for now
                         long arr = ((DeliveryStatusMessage)messageBody).getArrival();
@@ -223,39 +329,49 @@ public class InNetMessagePool implements Service {
                                 _log.warn("Dropping unhandled delivery status message created " + timeSinceSent + "ms ago: " + messageBody);
                             _context.statManager().addRateData("inNetPool.droppedDeliveryStatusDelay", timeSinceSent);
                         }
-                    //} else if (type == TunnelCreateStatusMessage.MESSAGE_TYPE) {
-                    //    if (_log.shouldLog(Log.INFO))
-                    //        _log.info("Dropping slow tunnel create request response: " + messageBody);
-                    //    _context.statManager().addRateData("inNetPool.droppedTunnelCreateStatusMessage", 1, 0);
-                    } else if (type == DatabaseSearchReplyMessage.MESSAGE_TYPE) {
-                        if (_log.shouldLog(Log.INFO))
-                            _log.info("Dropping slow db lookup response: " + messageBody);
-                        _context.statManager().addRateData("inNetPool.droppedDbLookupResponseMessage", 1);
-                    } else if (type == DatabaseLookupMessage.MESSAGE_TYPE) {
+                        break;
+
+                      case DatabaseSearchReplyMessage.MESSAGE_TYPE:
+                        // This is normal.
+                        // The three netdb selectors,
+                        // FloodOnlyLookupSelector, IterativeLookupSelector, and SearchMessageSelector
+                        // never return true from isMatch() for a DSRM.
+                        // IterativeLookupSelector.isMatch() queues a new IterativeLookupJob
+                        // to fetch the responses.
+                        break;
+
+                      case DatabaseLookupMessage.MESSAGE_TYPE:
                         if (_log.shouldLog(Log.DEBUG))
                             _log.debug("Dropping netDb lookup due to throttling");
-                    } else {
+                        break;
+
+                      default:
                         if (_log.shouldLog(Log.WARN))
                             _log.warn("Message expiring on " 
                                       + messageBody.getMessageExpiration()
                                       + " was not handled by a HandlerJobBuilder - DROPPING: " + messageBody, 
                                       new Exception("f00!"));
                         _context.statManager().addRateData("inNetPool.dropped", 1);
-                    }
+                        break;
+                    }  // switch
                 } else {
-                    String mtype = messageBody.getClass().getName();
-                    _context.messageHistory().receiveMessage(mtype, messageBody.getUniqueId(), 
+                    if (doHistory) {
+                        String mtype = messageBody.getClass().getName();
+                        history.receiveMessage(mtype, messageBody.getUniqueId(msgIDBloomXor), 
                                                              messageBody.getMessageExpiration(), 
                                                              fromRouterHash, true);	
+                    }
                     return 0; // no queue
                 }
             }
         }
 
-        String mtype = messageBody.getClass().getName();
-        _context.messageHistory().receiveMessage(mtype, messageBody.getUniqueId(), 
+        if (doHistory) {
+            String mtype = messageBody.getClass().getName();
+            history.receiveMessage(mtype, messageBody.getUniqueId(msgIDBloomXor), 
                                                  messageBody.getMessageExpiration(), 
                                                  fromRouterHash, true);	
+        }
         return 0; // no queue
     }
     
@@ -264,18 +380,18 @@ public class InNetMessagePool implements Service {
         int sz = origMessages.size();
         if (sz <= 0)
             return 0;
-        if (_log.shouldLog(Log.DEBUG)) {
-            _log.debug("Original messages for inbound message: " + sz);
-            if (sz > 1)
-                _log.debug("Orig: " + origMessages + " \nthe above are replies for: " + messageBody);
-        }
+        //if (_log.shouldLog(Log.DEBUG)) {
+        //    _log.debug("Original messages for inbound message: " + sz);
+        //    if (sz > 1)
+        //        _log.debug("Orig: " + origMessages + " \nthe above are replies for: " + messageBody);
+        //}
 
         for (int i = 0; i < sz; i++) {
             OutNetMessage omsg = origMessages.get(i);
             ReplyJob job = omsg.getOnReplyJob();
-            if (_log.shouldLog(Log.DEBUG))
-                _log.debug("Original message [" + i + "] " + omsg.getReplySelector() 
-                           + " : " + omsg + ": reply job: " + job);
+            //if (_log.shouldLog(Log.DEBUG))
+            //    _log.debug("Original message [" + i + "] " + omsg.getReplySelector() 
+            //               + " : " + omsg + ": reply job: " + job);
 
             if (job != null) {
                 job.setMessage(messageBody);
@@ -303,8 +419,8 @@ public class InNetMessagePool implements Service {
     }
 
     private void doShortCircuitTunnelGateway(I2NPMessage messageBody) {
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Shortcut dispatch tunnelGateway message " + messageBody);
+        //if (_log.shouldLog(Log.DEBUG))
+        //    _log.debug("Shortcut dispatch tunnelGateway message " + messageBody);
         _context.tunnelDispatcher().dispatch((TunnelGatewayMessage)messageBody);
     }
     
@@ -323,8 +439,8 @@ public class InNetMessagePool implements Service {
         }
     }
     private void doShortCircuitTunnelData(I2NPMessage messageBody, Hash from) {
-        if (_log.shouldLog(Log.DEBUG))
-            _log.debug("Shortcut dispatch tunnelData message " + messageBody);
+        //if (_log.shouldLog(Log.DEBUG))
+        //    _log.debug("Shortcut dispatch tunnelData message " + messageBody);
         _context.tunnelDispatcher().dispatch((TunnelDataMessage)messageBody, from);
     }
     
@@ -352,11 +468,6 @@ public class InNetMessagePool implements Service {
     /** does nothing since we aren't threaded */
     public synchronized void startup() {
         _alive = true;
-        _dispatchThreaded = DEFAULT_DISPATCH_THREADED;
-        String threadedStr = _context.getProperty(PROP_DISPATCH_THREADED);
-        if (threadedStr != null) {
-            _dispatchThreaded = Boolean.parseBoolean(threadedStr);
-        }
         if (_dispatchThreaded) {
             _context.statManager().createRateStat("pool.dispatchDataTime", "How long a tunnel dispatch takes", "Tunnels", new long[] { 10*60*1000l, 60*60*1000l, 24*60*60*1000l });
             _context.statManager().createRateStat("pool.dispatchGatewayTime", "How long a tunnel gateway dispatch takes", "Tunnels", new long[] { 10*60*1000l, 60*60*1000l, 24*60*60*1000l });
